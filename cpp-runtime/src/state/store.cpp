@@ -314,8 +314,14 @@ Result<SubmitResult> FileEngine::submit(Command command) {
     return proposed.error();
   }
   const bool sync = options_.durability == storage::Durability::Sync;
+  if (auto blocked = fail_before_flush_unlocked(); !blocked) {
+    return blocked.error();
+  }
   if (auto written = wal_->append(proposed.value(), options_.durability); !written) {
     return written.error();
+  }
+  if (auto after = fail_after_flush_unlocked(); !after) {
+    return after.error();
   }
   if (auto applied = engine_.apply_committed(proposed.value()); !applied) {
     return applied.error();
@@ -346,7 +352,38 @@ Result<void> FileEngine::append_event(const Event& event) {
   if (event.index.value() != expected) {
     return Error{ErrorCode::IndexGap, "appended event is not the next log index"};
   }
-  return wal_->append(event, options_.durability);
+  if (auto blocked = fail_before_flush_unlocked(); !blocked) {
+    return blocked.error();
+  }
+  if (auto written = wal_->append(event, options_.durability); !written) {
+    return written.error();
+  }
+  return fail_after_flush_unlocked();
+}
+
+Result<void> FileEngine::arm_storage_fault(StorageFault fault) {
+  std::lock_guard<std::mutex> lock(*mutex_);
+  if (!options_.test_mode) {
+    return Error{ErrorCode::StoreError, "storage faults require test mode"};
+  }
+  fault_ = fault;
+  return {};
+}
+
+Result<void> FileEngine::fail_before_flush_unlocked() {
+  if (fault_ != StorageFault::FailBeforeFlush) {
+    return {};
+  }
+  fault_ = StorageFault::None;
+  return Error{ErrorCode::StoreError, "injected failure before flush"};
+}
+
+Result<void> FileEngine::fail_after_flush_unlocked() {
+  if (fault_ != StorageFault::FailAfterFlush) {
+    return {};
+  }
+  fault_ = StorageFault::None;
+  return Error{ErrorCode::StoreError, "injected failure after flush"};
 }
 
 Result<void> FileEngine::truncate_after(LogIndex index) {

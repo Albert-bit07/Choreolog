@@ -24,7 +24,12 @@ struct StoreOptions {
   // Single-node CLI commits every appended record. A cluster node sets this
   // false so entries stay uncommitted until a majority has them.
   bool commit_on_append = true;
+  // Fault injection stays off unless a test opts in. The node binary never sets this.
+  bool test_mode = false;
 };
+
+// One-shot storage fault. Armed only while test_mode is true, then cleared.
+enum class StorageFault { None, FailBeforeFlush, FailAfterFlush };
 
 struct RecoveryReport {
   bool used_snapshot = false;
@@ -69,7 +74,12 @@ class FileEngine {
   [[nodiscard]] const std::filesystem::path& directory() const noexcept { return directory_; }
   [[nodiscard]] const storage::WalStats& wal_stats() const;
 
+  // Returns an error when test_mode is false. The next append consumes the fault.
+  Result<void> arm_storage_fault(StorageFault fault);
+
  private:
+  Result<void> fail_before_flush_unlocked();
+  Result<void> fail_after_flush_unlocked();
   FileEngine(std::filesystem::path directory, StoreOptions options);
 
   std::filesystem::path directory_;
@@ -80,6 +90,7 @@ class FileEngine {
   RecoveryReport recovery_{};
   LogIndex commit_index_ = LogIndex::none();
   std::optional<storage::Snapshot> snapshot_;
+  StorageFault fault_ = StorageFault::None;
 };
 
 [[nodiscard]] std::filesystem::path event_log_path(const std::filesystem::path& directory);

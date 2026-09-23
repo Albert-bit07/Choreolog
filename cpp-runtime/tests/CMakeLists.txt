@@ -10,6 +10,7 @@ add_executable(
   unit/durability_test.cpp
   unit/protocol_test.cpp
   unit/replication_test.cpp
+  unit/faults_test.cpp
   integration/cluster_test.cpp
 )
 target_link_libraries(
