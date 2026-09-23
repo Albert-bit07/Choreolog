@@ -4,8 +4,18 @@ on:
   push:
   pull_request:
 
+# One in-flight run per branch. A new push cancels the previous one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
+env:
+  # Same vcpkg revision as vcpkg.json builtin-baseline. Clone HEAD would
+  # pick up registry changes that the manifest never reviewed.
+  VCPKG_COMMIT: 6e856794aebd1ee877acb74c9264d9552903c6fe
 
 jobs:
   format:
@@ -16,8 +26,13 @@ jobs:
 
       - name: Check formatting
         run: |
-          find cpp-runtime -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) \
-            -print0 | xargs -0 clang-format --dry-run --Werror
+          set -euo pipefail
+          clang-format --version
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("$file")
+          done < <(find cpp-runtime -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) -print0)
+          clang-format --dry-run --Werror "${files[@]}"
 
   build-and-test:
     strategy:
@@ -32,15 +47,18 @@ jobs:
       - name: Bootstrap vcpkg
         shell: bash
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git "$RUNNER_TEMP/vcpkg"
+          mkdir -p "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" init
+          git -C "$RUNNER_TEMP/vcpkg" remote add origin https://github.com/microsoft/vcpkg.git
+          git -C "$RUNNER_TEMP/vcpkg" fetch --depth 1 origin "$VCPKG_COMMIT"
+          git -C "$RUNNER_TEMP/vcpkg" checkout FETCH_HEAD
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.bat" -disableMetrics
           else
             "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           fi
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
-          # vcvars overwrites VCPKG_ROOT with Visual Studio's copy, which
-          # rejects a manifest that has no builtin-baseline.
+          # vcvars overwrites VCPKG_ROOT with Visual Studio's copy.
           echo "CHOREOOS_VCPKG=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
 
       # Ninja on windows-latest otherwise finds MinGW first. vcpkg's

@@ -133,7 +133,7 @@ void SimulatedNetwork::send(const std::string& from, const std::string& to,
     return;
   }
   const int copies = (forced_duplicate || (duplicate_percent_ > 0 &&
-                                            static_cast<int>(roll() % 100) < duplicate_percent_))
+                                           static_cast<int>(roll() % 100) < duplicate_percent_))
                          ? 2
                          : 1;
   for (int copy = 0; copy < copies; ++copy) {
