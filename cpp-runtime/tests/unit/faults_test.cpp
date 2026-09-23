@@ -6,6 +6,8 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,6 +16,7 @@
 #include "choreoos/replication/simulator.hpp"
 #include "choreoos/state/machine.hpp"
 #include "choreoos/state/store.hpp"
+#include "choreoos/storage/file_util.hpp"
 
 namespace choreoos {
 namespace {
@@ -27,11 +30,14 @@ using choreoos::state::Command;
 using choreoos::state::CommandId;
 using choreoos::state::CommandType;
 using choreoos::state::CreateChoreographyPayload;
+using choreoos::state::DancerId;
+using choreoos::state::DancerPayload;
 using choreoos::state::ErrorCode;
 using choreoos::state::FileEngine;
 using choreoos::state::kCurrentSchemaVersion;
 using choreoos::state::MusicalTick;
 using choreoos::state::OverlapPolicy;
+using choreoos::state::Position;
 using choreoos::state::propose;
 using choreoos::state::StageBounds;
 using choreoos::state::state_hash;
@@ -42,6 +48,15 @@ std::filesystem::path fresh_dir(const char* name) {
   auto dir = std::filesystem::temp_directory_path() / name;
   std::filesystem::remove_all(dir);
   return dir;
+}
+
+Command add_command(const char* id, std::int32_t x) {
+  return Command{CommandId::parse(id).value(),
+                 ChoreographyId::parse("opening").value(),
+                 CommandType::AddDancer,
+                 kCurrentSchemaVersion,
+                 MusicalTick::from_count(1).value(),
+                 DancerPayload{DancerId::parse(id).value(), Position::from_mm(x, 1000).value()}};
 }
 
 Command create_command() {
@@ -250,6 +265,172 @@ TEST(FaultTest, PartitionOfBothFollowersCannotCommitUntilHeal) {
             state_hash(follower_a.value().store().engine().state()));
   EXPECT_EQ(state_hash(leader.value().store().engine().state()),
             state_hash(follower_b.value().store().engine().state()));
+}
+
+void corrupt_byte(const std::filesystem::path& path, std::uint64_t offset) {
+  auto bytes = choreoos::storage::read_file(path);
+  ASSERT_TRUE(bytes);
+  ASSERT_LT(offset, bytes.value().size());
+  bytes.value()[static_cast<std::size_t>(offset)] ^= 0xFF;
+  std::ofstream out{path, std::ios::binary | std::ios::trunc};
+  out.write(reinterpret_cast<const char*>(bytes.value().data()),
+            static_cast<std::streamsize>(bytes.value().size()));
+  ASSERT_TRUE(out);
+}
+
+TEST(FaultTest, DelayedAppendStillCommits) {
+  SimulatedNetwork net{17};
+  net.enable_faults();
+  auto leader = Replica::open(config_for("node-1", fresh_dir("choreoos-delay-1"), {"node-2"}));
+  auto follower = Replica::open(config_for("node-2", fresh_dir("choreoos-delay-2"), {"node-1"}));
+  ASSERT_TRUE(leader);
+  ASSERT_TRUE(follower);
+  net.delay(MessageType::AppendEntries, "node-1", "node-2", 8);
+  net.attach(leader.value());
+  net.attach(follower.value());
+  ASSERT_TRUE(leader.value().enqueue(create_command()));
+  pump(net, leader.value(), 3);
+  EXPECT_EQ(leader.value().store().commit_index().value(), 0u);
+  pump(net, leader.value(), 20);
+  EXPECT_EQ(leader.value().store().commit_index().value(), 1u);
+  EXPECT_EQ(follower.value().store().commit_index().value(), 1u);
+}
+
+TEST(FaultTest, DuplicateAppendDoesNotDoubleApply) {
+  SimulatedNetwork net{19};
+  net.enable_faults();
+  auto leader = Replica::open(config_for("node-1", fresh_dir("choreoos-duplink-1"), {"node-2"}));
+  auto follower = Replica::open(config_for("node-2", fresh_dir("choreoos-duplink-2"), {"node-1"}));
+  ASSERT_TRUE(leader);
+  ASSERT_TRUE(follower);
+  net.duplicate_link(std::nullopt, "", "");
+  net.attach(leader.value());
+  net.attach(follower.value());
+  ASSERT_TRUE(leader.value().enqueue(create_command()));
+  pump(net, leader.value(), 20);
+  EXPECT_EQ(follower.value().store().log_events().size(), 1u);
+  EXPECT_EQ(state_hash(leader.value().store().engine().state()),
+            state_hash(follower.value().store().engine().state()));
+}
+
+TEST(FaultTest, DisconnectBlocksCommitUntilHeal) {
+  SimulatedNetwork net{23};
+  net.enable_faults();
+  auto leader = Replica::open(config_for("node-1", fresh_dir("choreoos-cut-1"), {"node-2"}));
+  auto follower = Replica::open(config_for("node-2", fresh_dir("choreoos-cut-2"), {"node-1"}));
+  ASSERT_TRUE(leader);
+  ASSERT_TRUE(follower);
+  net.attach(leader.value());
+  net.attach(follower.value());
+  net.disconnect("node-1", "node-2");
+  ASSERT_TRUE(leader.value().enqueue(create_command()));
+  pump(net, leader.value(), 10);
+  EXPECT_EQ(leader.value().store().commit_index().value(), 0u);
+  EXPECT_NE(net.schedule().find("disconnect"), std::string::npos);
+  net.heal();
+  pump(net, leader.value(), 20);
+  EXPECT_EQ(follower.value().store().commit_index().value(), 1u);
+}
+
+TEST(FaultTest, PausedFollowerCatchesUpAfterResume) {
+  SimulatedNetwork net{29};
+  net.enable_faults();
+  auto leader =
+      Replica::open(config_for("node-1", fresh_dir("choreoos-pause-1"), {"node-2", "node-3"}));
+  auto follower =
+      Replica::open(config_for("node-2", fresh_dir("choreoos-pause-2"), {"node-1", "node-3"}));
+  auto paused =
+      Replica::open(config_for("node-3", fresh_dir("choreoos-pause-3"), {"node-1", "node-2"}));
+  ASSERT_TRUE(leader);
+  ASSERT_TRUE(follower);
+  ASSERT_TRUE(paused);
+  net.attach(leader.value());
+  net.attach(follower.value());
+  net.attach(paused.value());
+  net.pause("node-3");
+  ASSERT_TRUE(leader.value().enqueue(create_command()));
+  pump(net, leader.value(), 15);
+  EXPECT_EQ(leader.value().store().commit_index().value(), 1u);
+  EXPECT_EQ(follower.value().store().commit_index().value(), 1u);
+  EXPECT_EQ(paused.value().store().commit_index().value(), 0u);
+  EXPECT_TRUE(net.paused("node-3"));
+  net.resume("node-3");
+  pump(net, leader.value(), 20);
+  EXPECT_EQ(state_hash(leader.value().store().engine().state()),
+            state_hash(paused.value().store().engine().state()));
+}
+
+TEST(FaultTest, TerminatedFollowerRestartsFromItsLog) {
+  SimulatedNetwork net{43};
+  const auto dir = fresh_dir("choreoos-term-3");
+  auto leader =
+      Replica::open(config_for("node-1", fresh_dir("choreoos-term-1"), {"node-2", "node-3"}));
+  auto follower =
+      Replica::open(config_for("node-2", fresh_dir("choreoos-term-2"), {"node-1", "node-3"}));
+  auto opened = Replica::open(config_for("node-3", dir, {"node-1", "node-2"}));
+  ASSERT_TRUE(opened);
+  std::optional<Replica> stopped{std::move(opened.value())};
+  ASSERT_TRUE(leader);
+  ASSERT_TRUE(follower);
+  net.attach(leader.value());
+  net.attach(follower.value());
+  net.attach(*stopped);
+  ASSERT_TRUE(leader.value().enqueue(create_command()));
+  pump(net, leader.value(), 15);
+  EXPECT_EQ(stopped->store().commit_index().value(), 1u);
+
+  net.enable_faults();
+  net.terminate("node-3");
+  ASSERT_TRUE(leader.value().enqueue(add_command("alice", 1000)));
+  pump(net, leader.value(), 15);
+  EXPECT_EQ(leader.value().store().commit_index().value(), 2u);
+  EXPECT_EQ(stopped->store().commit_index().value(), 1u);
+  stopped.reset();
+
+  auto restarted = Replica::open(config_for("node-3", dir, {"node-1", "node-2"}));
+  ASSERT_TRUE(restarted);
+  net.attach(restarted.value());
+  pump(net, leader.value(), 30);
+  EXPECT_EQ(restarted.value().store().commit_index().value(), 2u);
+  EXPECT_EQ(state_hash(leader.value().store().engine().state()),
+            state_hash(restarted.value().store().engine().state()));
+}
+
+TEST(FaultTest, CorruptLogIsRejectedAndCorruptSnapshotFallsBackToWal) {
+  const auto wal_dir = fresh_dir("choreoos-corrupt-wal");
+  {
+    auto store = FileEngine::open(wal_dir);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().submit(create_command()));
+  }
+  const auto wal_bytes = std::filesystem::file_size(wal_dir / "wal.bin");
+  corrupt_byte(wal_dir / "wal.bin", wal_bytes - 1);
+  EXPECT_FALSE(FileEngine::open(wal_dir));
+
+  const auto snap_dir = fresh_dir("choreoos-corrupt-snap");
+  StoreOptions options;
+  options.snapshot_every = 2;
+  std::string hash;
+  {
+    auto store = FileEngine::open(snap_dir, options);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().submit(create_command()));
+    ASSERT_TRUE(store.value().submit(add_command("alice", 1000)));
+    ASSERT_TRUE(store.value().submit(add_command("bob", 4000)));
+    hash = state_hash(store.value().engine().state());
+  }
+  std::filesystem::path snapshot;
+  for (const auto& entry : std::filesystem::directory_iterator(snap_dir / "snapshots")) {
+    if (entry.path().extension() == ".snap") {
+      snapshot = entry.path();
+    }
+  }
+  ASSERT_FALSE(snapshot.empty());
+  corrupt_byte(snapshot, 20);
+  auto recovered = FileEngine::open(snap_dir, options);
+  ASSERT_TRUE(recovered);
+  EXPECT_FALSE(recovered.value().recovery().used_snapshot);
+  EXPECT_EQ(state_hash(recovered.value().engine().state()), hash);
 }
 
 }  // namespace

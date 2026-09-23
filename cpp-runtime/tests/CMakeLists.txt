@@ -11,6 +11,8 @@ add_executable(
   unit/protocol_test.cpp
   unit/replication_test.cpp
   unit/faults_test.cpp
+  unit/workload.cpp
+  unit/property_test.cpp
   integration/cluster_test.cpp
 )
 target_link_libraries(

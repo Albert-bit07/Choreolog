@@ -344,35 +344,39 @@ Exit criterion: documented election and log-safety properties pass simulator and
 
 ### Step 28: Build explicit failure controls
 
-- [ ] Delay messages by type, source, and destination.
-- [ ] Drop and duplicate selected messages.
-- [ ] Disconnect peers.
-- [ ] Pause, terminate, and restart nodes.
-- [ ] Create and heal partitions.
-- [ ] Inject log and snapshot test corruption.
-- [ ] Inject storage failures around flush boundaries.
-- [ ] Require explicit test mode.
+- [x] Delay messages by type, source, and destination.
+- [x] Drop and duplicate selected messages.
+- [x] Disconnect peers.
+- [x] Pause, terminate, and restart nodes.
+- [x] Create and heal partitions.
+- [x] Inject log and snapshot test corruption.
+- [x] Inject storage failures around flush boundaries.
+- [x] Require explicit test mode.
 
 ### Step 29: Build seeded workload generation
 
-- [ ] Generate valid command streams.
-- [ ] Generate invalid commands.
-- [ ] Generate concurrent client retries.
-- [ ] Generate network and node failures.
-- [ ] Record seed, configuration, and message schedule.
-- [ ] Save minimized or reduced failing scenarios.
+- [x] Generate valid command streams.
+- [x] Generate invalid commands.
+- [x] Generate concurrent client retries.
+- [x] Generate network and node failures.
+- [x] Record seed, configuration, and message schedule.
+- [x] Save minimized or reduced failing scenarios.
 
 ### Step 30: Assert system properties
 
-- [ ] Deterministic replay.
-- [ ] Replica convergence.
-- [ ] Idempotent command and message retries.
-- [ ] Invariant preservation.
-- [ ] Snapshot/full-replay equivalence.
-- [ ] No lost committed events under documented durability.
-- [ ] No conflicting committed entry at one index.
-- [ ] No minority commits.
-- [ ] Eventual catch-up after faults heal.
+- [x] Deterministic replay.
+- [x] Replica convergence.
+- [x] Idempotent command and message retries.
+- [x] Invariant preservation.
+- [x] Snapshot/full-replay equivalence.
+- [x] No lost committed events under documented durability.
+- [x] No conflicting committed entry at one index.
+- [x] No minority commits.
+- [x] Eventual catch-up after faults heal.
+
+Exit criterion: seeded fault injection and property tests pass. A passing seed is evidence, not a proof over every schedule. Storage faults stay off unless test mode is set. Describe elections as Raft-like.
+
+Verified: `StorageFaultTest`, `FaultTest`, and `PropertyTest` (seeds 1–8 for replay, seeds 2, 5, and 11 for a dropped follower that heals). A corrupt log is rejected. A corrupt snapshot is skipped and the write-ahead log is replayed.
 
 ## Milestone 6 — Benchmarking and performance engineering
 
@@ -602,6 +606,6 @@ Exit criterion: demonstrations clearly identify whether recovery came from C++ r
 
 ## Start here
 
-Milestone 3 is complete as fixed-leader replication, not consensus. The next implementation session should begin Milestone 4 at Step 22: leader election. Do not describe the fixed leader as Raft.
+Milestones 0–3 are on main. Milestone 3 is fixed-leader replication, not consensus. Milestone 4 election code is on main and is Raft-like, not production Raft; a few Step 27 boxes (every two-versus-one process partition, multi-chunk snapshots) are still open. Milestone 5 seeded fault injection and property tests now pass locally. A green seed is evidence, not a proof.
 
-Do not start networking, the dashboard, or Temporal workflows until their prerequisite milestones pass. Temporal orchestration begins only after the C++ management API and C# client can provide retry-safe committed command results.
+The next implementation session should begin Milestone 6 at Step 31: benchmark harnesses. Do not start the dashboard or Temporal workflows until the C++ management API and C# client can return retry-safe committed results.
