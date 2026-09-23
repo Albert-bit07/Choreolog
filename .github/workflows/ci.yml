@@ -39,6 +39,9 @@ jobs:
             "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
           fi
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+          # vcvars overwrites VCPKG_ROOT with Visual Studio's copy, which
+          # rejects a manifest that has no builtin-baseline.
+          echo "CHOREOOS_VCPKG=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
 
       # Ninja on windows-latest otherwise finds MinGW first. vcpkg's
       # x64-windows GoogleTest is built with MSVC, so the test binary must
@@ -52,9 +55,14 @@ jobs:
       - name: Configure
         shell: bash
         run: |
+          export VCPKG_ROOT="$CHOREOOS_VCPKG"
           args=(-S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Debug)
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             args+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+            ninja_path="$(command -v ninja || true)"
+            if [[ -n "$ninja_path" ]]; then
+              args+=(-DCMAKE_MAKE_PROGRAM="$ninja_path")
+            fi
           fi
           args+=(
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
