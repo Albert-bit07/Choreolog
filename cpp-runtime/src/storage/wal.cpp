@@ -87,6 +87,22 @@ Result<void> WriteAheadLog::truncate_after(choreoos::state::LogIndex index) {
   return {};
 }
 
+Result<void> WriteAheadLog::rewrite(const std::vector<choreoos::state::Event>& events) {
+  std::error_code ec;
+  std::filesystem::remove(path_, ec);
+  if (auto header = write_new_header(path_); !header) {
+    return header.error();
+  }
+  events_.clear();
+  record_ends_.clear();
+  for (const auto& event : events) {
+    if (auto written = append(event, Durability::Sync); !written) {
+      return written.error();
+    }
+  }
+  return {};
+}
+
 Result<choreoos::state::Event> WriteAheadLog::at(choreoos::state::LogIndex index) const {
   for (const auto& event : events_) {
     if (event.index == index) {

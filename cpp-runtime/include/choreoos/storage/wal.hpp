@@ -42,6 +42,11 @@ class WriteAheadLog {
   // Drop every record with an index greater than `index`. Used for conflict repair.
   [[nodiscard]] choreoos::state::Result<void> truncate_after(choreoos::state::LogIndex index);
 
+  // Replace wal.bin with exactly these events, in order. Used after a snapshot
+  // has taken ownership of the prefix.
+  [[nodiscard]] choreoos::state::Result<void> rewrite(
+      const std::vector<choreoos::state::Event>& events);
+
   [[nodiscard]] const std::vector<choreoos::state::Event>& events() const noexcept {
     return events_;
   }

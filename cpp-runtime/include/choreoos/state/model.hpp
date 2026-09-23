@@ -36,6 +36,9 @@ enum class EventType {
   FormationChanged,
   MusicCueTriggered,
   LightingCueTriggered,
+  // Leadership marker. It changes no dancers or cues. A leader appends one
+  // in its own term so older replicated entries can commit under that term.
+  NoOp,
 };
 
 struct CreateChoreographyPayload {

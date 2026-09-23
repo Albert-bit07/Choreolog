@@ -180,7 +180,19 @@ std::optional<LeaderEndpoint> parse_leader(const std::string& text) {
   }
 }
 
-int run_remote(const Options& options, const LeaderEndpoint& leader) {
+std::optional<LeaderEndpoint> leader_from_rejection(const std::string& message) {
+  const auto marker = message.find("leader is ");
+  if (marker == std::string::npos) {
+    return std::nullopt;
+  }
+  const auto at = message.find('@', marker);
+  if (at == std::string::npos) {
+    return std::nullopt;
+  }
+  return parse_leader(message.substr(at + 1));
+}
+
+int run_remote(const Options& options, const LeaderEndpoint& leader, int redirects = 0) {
   if (options.command == "status" || options.command == "show") {
     choreoos::protocol::Frame frame;
     frame.type = choreoos::protocol::MessageType::StatusQuery;
@@ -297,6 +309,11 @@ int run_remote(const Options& options, const LeaderEndpoint& leader) {
     return fail(decoded.error(), options.output);
   }
   if (!decoded.value().ok) {
+    if (redirects < 1) {
+      if (auto next = leader_from_rejection(decoded.value().error_message)) {
+        return run_remote(options, *next, redirects + 1);
+      }
+    }
     return fail(decoded.value().error_code + ": " + decoded.value().error_message, options.output);
   }
   std::cout << (decoded.value().duplicate ? "duplicate" : "committed")

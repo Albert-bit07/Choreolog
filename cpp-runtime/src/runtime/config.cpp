@@ -85,6 +85,10 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
         }
         config.peers.push_back(peer.value());
       }
+    } else if (key == "elections") {
+      config.elections = value == "true" || value == "1";
+    } else if (key == "rng_seed") {
+      config.rng_seed = std::stoull(value);
     }
   }
   if (config.id.empty() || config.leader_id.empty() || config.data.empty()) {

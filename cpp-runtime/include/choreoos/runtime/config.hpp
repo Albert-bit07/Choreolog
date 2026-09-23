@@ -25,6 +25,9 @@ struct NodeConfig {
   std::string host = "127.0.0.1";
   std::uint16_t port = 0;
   std::vector<PeerEndpoint> peers;
+  // False keeps the configured leader. True runs Raft-like elections.
+  bool elections = false;
+  std::uint64_t rng_seed = 1;
 };
 
 [[nodiscard]] choreoos::state::Result<NodeConfig> load_node_config(

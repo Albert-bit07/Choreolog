@@ -141,6 +141,14 @@ class Term {
   // Raw term number for the event envelope and hash.
   [[nodiscard]] std::uint64_t value() const noexcept { return value_; }
 
+  // Next election term. Terms only move forward; overflow is an error.
+  [[nodiscard]] Result<Term> next() const {
+    if (value_ == ~std::uint64_t{0}) {
+      return Error{ErrorCode::StoreError, "term overflow"};
+    }
+    return Term{value_ + 1};
+  }
+
   // Same term.
   friend bool operator==(Term lhs, Term rhs) noexcept { return lhs.value_ == rhs.value_; }
 

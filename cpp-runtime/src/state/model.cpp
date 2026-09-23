@@ -59,6 +59,8 @@ const char* event_type_name(EventType type) noexcept {
       return "MUSIC_CUE_TRIGGERED";
     case EventType::LightingCueTriggered:
       return "LIGHTING_CUE_TRIGGERED";
+    case EventType::NoOp:
+      return "NOOP";
   }
   return "UNKNOWN";
 }
@@ -120,6 +122,9 @@ Result<EventType> parse_event_type(std::string_view name) {
   if (name == "LIGHTING_CUE_TRIGGERED") {
     return EventType::LightingCueTriggered;
   }
+  if (name == "NOOP") {
+    return EventType::NoOp;
+  }
   return Error{ErrorCode::UnsupportedType, "unknown event type"};
 }
 
@@ -161,6 +166,12 @@ std::string canonical_event(const Event& event) {
       << ";event=" << event.id.value() << ";cmd=" << event.command_id.value()
       << ";choreo=" << event.choreography_id.value() << ";tick=" << event.tick.ticks()
       << ";index=" << event.index.value() << ";term=" << event.term.value();
+
+  // A no-op has no choreography fields. Leaving them out keeps the log line
+  // stable even though the in-memory variant still holds a dummy payload.
+  if (event.type == EventType::NoOp) {
+    return out.str();
+  }
 
   if (const auto* created = std::get_if<CreateChoreographyPayload>(&event.payload)) {
     out << ";width=" << created->stage.width().mm() << ";depth=" << created->stage.depth().mm()

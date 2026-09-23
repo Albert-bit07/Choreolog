@@ -47,9 +47,9 @@ choreoos::protocol::ClientResponse response_from(const choreoos::replication::En
 struct NodeServer::Impl {
   struct Session;
 
-  Impl(choreoos::runtime::NodeConfig config, choreoos::replication::Replica replica)
-      : config(std::move(config)),
-        replica(std::move(replica)),
+  Impl(choreoos::runtime::NodeConfig node_config, choreoos::replication::Replica opened_replica)
+      : config(std::move(node_config)),
+        replica(std::move(opened_replica)),
         strand(boost::asio::make_strand(io)),
         acceptor(io),
         heartbeat(io),
@@ -76,6 +76,7 @@ struct NodeServer::Impl {
   void accept_next();
   void dial_missing();
   void schedule_heartbeat();
+  [[nodiscard]] std::string leader_contact() const;
   void schedule_reconnect();
   void complete_waiters();
   void on_client(const std::shared_ptr<Session>& session, const choreoos::protocol::Frame& frame);
@@ -103,8 +104,8 @@ struct NodeServer::Impl {
 };
 
 struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
-  Session(tcp::socket socket, Impl* node, std::string peer_id)
-      : socket(std::move(socket)), node(node), peer_id(std::move(peer_id)) {}
+  Session(tcp::socket accepted, Impl* owner, std::string remote_id)
+      : socket(std::move(accepted)), node(owner), peer_id(std::move(remote_id)) {}
 
   void start() { read_header(); }
 
@@ -274,6 +275,22 @@ void NodeServer::Impl::dial_missing() {
   }
 }
 
+std::string NodeServer::Impl::leader_contact() const {
+  const std::string id = replica.status().leader_id;
+  if (id.empty()) {
+    return {};
+  }
+  if (id == config.id) {
+    return id + "@" + config.host + ":" + std::to_string(config.port);
+  }
+  for (const auto& peer : config.peers) {
+    if (peer.id == id) {
+      return peer.id + "@" + peer.host + ":" + std::to_string(peer.port);
+    }
+  }
+  return id;
+}
+
 void NodeServer::Impl::schedule_heartbeat() {
   heartbeat.expires_after(std::chrono::milliseconds(50));
   heartbeat.async_wait(
@@ -378,7 +395,14 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
   }
   auto queued = replica.enqueue(command.value());
   if (!queued) {
-    reply(response_from(queued.error(), config.leader_id));
+    auto response = response_from(queued.error(), replica.status().leader_id);
+    if (queued.error().code() == choreoos::state::ErrorCode::NotLeader) {
+      const std::string contact = leader_contact();
+      if (!contact.empty()) {
+        response.error_message = "leader is " + contact;
+      }
+    }
+    reply(response);
     return;
   }
   if (queued.value().committed) {
@@ -450,6 +474,8 @@ choreoos::state::Result<std::unique_ptr<NodeServer>> NodeServer::open(
     replica_config.id = config.id;
     replica_config.leader_id = config.leader_id;
     replica_config.directory = config.data;
+    replica_config.elections = config.elections;
+    replica_config.rng_seed = config.rng_seed == 0 ? 1 : config.rng_seed;
     for (const auto& peer : config.peers) {
       replica_config.peers.push_back(peer.id);
     }

@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <iostream>
 #include <thread>
 
 #include "choreoos/network/node_server.hpp"
@@ -34,7 +35,8 @@ std::filesystem::path fresh(const char* name) {
 
 choreoos::runtime::NodeConfig node_config(const char* id, const char* leader,
                                           std::filesystem::path data, std::uint16_t port,
-                                          std::vector<choreoos::runtime::PeerEndpoint> peers) {
+                                          std::vector<choreoos::runtime::PeerEndpoint> peers,
+                                          bool elections = false, std::uint64_t seed = 1) {
   choreoos::runtime::NodeConfig config;
   config.id = id;
   config.leader_id = leader;
@@ -42,6 +44,8 @@ choreoos::runtime::NodeConfig node_config(const char* id, const char* leader,
   config.host = "127.0.0.1";
   config.port = port;
   config.peers = std::move(peers);
+  config.elections = elections;
+  config.rng_seed = seed;
   return config;
 }
 
@@ -164,6 +168,173 @@ TEST(ClusterTest, ThreeTcpNodesCommitAndCatchUp) {
   leader_thread.join();
   follower_a_thread.join();
   follower_b_thread.join();
+}
+
+TEST(ClusterTest, LeaderFailoverElectsAndConverges) {
+  const auto root = fresh("choreoos-tcp-failover");
+  const std::uint16_t ports[3] = {19141, 19142, 19143};
+  const char* ids[3] = {"node-1", "node-2", "node-3"};
+  auto opened = [&](int index) {
+    std::vector<choreoos::runtime::PeerEndpoint> peers;
+    for (int i = 0; i < 3; ++i) {
+      if (i != index) {
+        peers.push_back({ids[i], "127.0.0.1", ports[i]});
+      }
+    }
+    return NodeServer::open(node_config(ids[index], "node-1", root / ids[index], ports[index],
+                                        peers, true, static_cast<std::uint64_t>(11 + index)));
+  };
+  auto node_a = opened(0);
+  auto node_b = opened(1);
+  auto node_c = opened(2);
+  ASSERT_TRUE(node_a);
+  ASSERT_TRUE(node_b);
+  ASSERT_TRUE(node_c);
+  std::thread thread_a([&] { node_a.value()->run(); });
+  std::thread thread_b([&] { node_b.value()->run(); });
+  std::thread thread_c([&] { node_c.value()->run(); });
+
+  auto find_leader = [&](int attempts) -> int {
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+      for (int i = 0; i < 3; ++i) {
+        auto status = status_of(ports[i]);
+        if (status && status.value().role == "leader") {
+          return i;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return -1;
+  };
+
+  const auto started = std::chrono::steady_clock::now();
+  const int first = find_leader(160);
+  const auto elected = std::chrono::steady_clock::now();
+  ASSERT_GE(first, 0);
+
+  Command create{CommandId::parse("c-create").value(),
+                 ChoreographyId::parse("opening").value(),
+                 CommandType::CreateChoreography,
+                 kCurrentSchemaVersion,
+                 MusicalTick::from_count(0).value(),
+                 CreateChoreographyPayload{ChoreographyId::parse("opening").value(),
+                                           StageBounds::from_mm(20000, 12000).value(),
+                                           OverlapPolicy::Forbidden, 5000}};
+  bool committed = false;
+  for (int attempt = 0; attempt < 40 && !committed; ++attempt) {
+    auto reply = choreoos::protocol::transact("127.0.0.1", ports[first], command_frame(create),
+                                              std::chrono::milliseconds(1500));
+    if (reply) {
+      auto decoded = choreoos::protocol::decode_client_response(reply.value().payload);
+      committed = decoded && decoded.value().ok;
+    }
+    if (!committed) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  EXPECT_TRUE(committed);
+
+  NodeServer* servers[3] = {node_a.value().get(), node_b.value().get(), node_c.value().get()};
+  std::thread* threads[3] = {&thread_a, &thread_b, &thread_c};
+  const auto killed = std::chrono::steady_clock::now();
+  servers[first]->stop();
+  threads[first]->join();
+  // Release the port and the log before a new process reopens the same directory.
+  if (first == 0) {
+    node_a.value().reset();
+  } else if (first == 1) {
+    node_b.value().reset();
+  } else {
+    node_c.value().reset();
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+  int second = -1;
+  for (int attempt = 0; attempt < 160 && second < 0; ++attempt) {
+    for (int i = 0; i < 3; ++i) {
+      if (i == first) {
+        continue;
+      }
+      auto status = status_of(ports[i]);
+      if (status && status.value().role == "leader") {
+        second = i;
+      }
+    }
+    if (second < 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  const auto reelected = std::chrono::steady_clock::now();
+  ASSERT_GE(second, 0);
+  ASSERT_NE(second, first);
+
+  Command add{
+      CommandId::parse("c-alice").value(),
+      ChoreographyId::parse("opening").value(),
+      CommandType::AddDancer,
+      kCurrentSchemaVersion,
+      MusicalTick::from_count(1).value(),
+      DancerPayload{DancerId::parse("alice").value(), Position::from_mm(1000, 1000).value()}};
+  bool added = false;
+  for (int attempt = 0; attempt < 40 && !added; ++attempt) {
+    auto reply = choreoos::protocol::transact("127.0.0.1", ports[second], command_frame(add),
+                                              std::chrono::milliseconds(1500));
+    if (reply) {
+      auto decoded = choreoos::protocol::decode_client_response(reply.value().payload);
+      added = decoded && decoded.value().ok;
+    }
+    if (!added) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  }
+  const auto resumed = std::chrono::steady_clock::now();
+  EXPECT_TRUE(added);
+
+  auto revived = opened(first);
+  ASSERT_TRUE(revived);
+  std::thread revived_thread([&] { revived.value()->run(); });
+  bool converged = false;
+  std::string hash;
+  for (int attempt = 0; attempt < 80 && !converged; ++attempt) {
+    auto left = status_of(ports[second]);
+    auto right = status_of(ports[first]);
+    auto other = status_of(ports[3 - first - second]);
+    converged = left && right && other && left.value().commit_index >= 2 &&
+                left.value().state_hash == right.value().state_hash &&
+                left.value().state_hash == other.value().state_hash;
+    if (converged) {
+      hash = left.value().state_hash;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  EXPECT_TRUE(converged);
+  const auto elapsed = [](auto from, auto to) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+  };
+  std::cout << "election_ms=" << elapsed(started, elected)
+            << " failover_ms=" << elapsed(killed, reelected)
+            << " resumed_commit_ms=" << elapsed(reelected, resumed) << " hash=" << hash << '\n';
+
+  if (first != 0) {
+    node_a.value()->stop();
+  }
+  if (first != 1) {
+    node_b.value()->stop();
+  }
+  if (first != 2) {
+    node_c.value()->stop();
+  }
+  revived.value()->stop();
+  if (first != 0) {
+    thread_a.join();
+  }
+  if (first != 1) {
+    thread_b.join();
+  }
+  if (first != 2) {
+    thread_c.join();
+  }
+  revived_thread.join();
 }
 
 }  // namespace

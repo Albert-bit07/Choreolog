@@ -12,6 +12,8 @@
 #include <vector>
 
 #include "choreoos/state/machine.hpp"
+#include "choreoos/storage/metadata.hpp"
+#include "choreoos/storage/snapshot.hpp"
 #include "choreoos/storage/wal.hpp"
 
 namespace choreoos::state {
@@ -49,6 +51,19 @@ class FileEngine {
   Result<void> truncate_after(LogIndex index);
   Result<void> commit_through(LogIndex index);
 
+  // Election term and vote. Written before a node answers a vote or steps down.
+  // A higher term is kept even when the applied log term is still behind.
+  [[nodiscard]] storage::NodeMetadata consensus_metadata() const;
+  Result<void> persist_consensus(Term term, std::optional<NodeId> voted_for);
+
+  // Snapshot catch-up. The payload is the same event list a .snap file stores.
+  [[nodiscard]] const std::optional<storage::Snapshot>& latest_snapshot() const noexcept {
+    return snapshot_;
+  }
+  Result<void> install_snapshot(const storage::Snapshot& snapshot);
+  // Drop log records covered by the newest snapshot. Applied state stays.
+  Result<void> discard_compacted_prefix();
+
   [[nodiscard]] const Engine& engine() const noexcept { return engine_; }
   [[nodiscard]] const RecoveryReport& recovery() const noexcept { return recovery_; }
   [[nodiscard]] const std::filesystem::path& directory() const noexcept { return directory_; }
@@ -64,6 +79,7 @@ class FileEngine {
   Engine engine_{};
   RecoveryReport recovery_{};
   LogIndex commit_index_ = LogIndex::none();
+  std::optional<storage::Snapshot> snapshot_;
 };
 
 [[nodiscard]] std::filesystem::path event_log_path(const std::filesystem::path& directory);

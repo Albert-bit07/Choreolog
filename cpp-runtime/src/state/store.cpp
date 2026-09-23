@@ -201,6 +201,8 @@ Result<Event> parse_event(std::string_view line) {
       payload = CuePayload{cue.value(), depends};
       break;
     }
+    case EventType::NoOp:
+      break;
   }
 
   return Event{event_id.value(),
@@ -260,6 +262,7 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
     }
     store.recovery_.used_snapshot = true;
     store.recovery_.snapshot_index = snapshot.value()->index.value();
+    store.snapshot_ = snapshot.value();
     start_after = snapshot.value()->index.value();
   }
   for (const auto& event : store.wal_->events()) {
@@ -379,7 +382,10 @@ Result<void> FileEngine::commit_through(LogIndex index) {
   }
   storage::NodeMetadata updated = metadata.value();
   updated.commit_index = index;
-  updated.term = engine_.state().term;
+  // The election term can be ahead of the last applied event. Never roll it back.
+  if (updated.term.value() < engine_.state().term.value()) {
+    updated.term = engine_.state().term;
+  }
   const bool sync = options_.durability == storage::Durability::Sync;
   if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
     return stored.error();
@@ -392,14 +398,124 @@ Result<void> FileEngine::commit_through(LogIndex index) {
         !saved) {
       return saved.error();
     }
+    snapshot_ = storage::Snapshot{index, engine_.state().term, state_hash(engine_.state()),
+                                  engine_.events()};
   }
   return {};
 }
 
+storage::NodeMetadata FileEngine::consensus_metadata() const {
+  auto loaded = storage::load_metadata(directory_ / "meta.bin");
+  if (!loaded) {
+    return storage::NodeMetadata{};
+  }
+  return loaded.value();
+}
+
+Result<void> FileEngine::persist_consensus(Term term, std::optional<NodeId> voted_for) {
+  std::lock_guard<std::mutex> lock(*mutex_);
+  auto metadata = storage::load_metadata(directory_ / "meta.bin");
+  if (!metadata) {
+    return metadata.error();
+  }
+  if (term.value() < metadata.value().term.value()) {
+    return Error{ErrorCode::StoreError, "consensus term cannot move backwards"};
+  }
+  storage::NodeMetadata updated = metadata.value();
+  updated.term = term;
+  updated.voted_for = std::move(voted_for);
+  return storage::store_metadata(directory_ / "meta.bin", updated,
+                                 options_.durability == storage::Durability::Sync);
+}
+
+Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
+  std::lock_guard<std::mutex> lock(*mutex_);
+  if (snapshot.index <= commit_index_) {
+    return {};
+  }
+  auto replayed = replay(snapshot.events);
+  if (!replayed) {
+    return replayed.error();
+  }
+  if (state_hash(replayed.value()) != snapshot.state_hash ||
+      replayed.value().last_applied != snapshot.index) {
+    return Error{ErrorCode::StoreError, "snapshot checksum does not match its events"};
+  }
+
+  bool prefix_matches = false;
+  for (const auto& event : wal_->events()) {
+    if (event.index == snapshot.index && event.term == snapshot.term) {
+      prefix_matches = true;
+    }
+  }
+  std::vector<Event> suffix;
+  if (prefix_matches) {
+    for (const auto& event : wal_->events()) {
+      if (snapshot.index < event.index) {
+        suffix.push_back(event);
+      }
+    }
+  }
+  if (auto replaced = wal_->rewrite(suffix); !replaced) {
+    return replaced.error();
+  }
+
+  Engine replacement;
+  for (const auto& event : snapshot.events) {
+    if (auto applied = replacement.apply_committed(event); !applied) {
+      return applied.error();
+    }
+  }
+  engine_ = std::move(replacement);
+  commit_index_ = snapshot.index;
+  snapshot_ = snapshot;
+  recovery_.used_snapshot = true;
+  recovery_.snapshot_index = snapshot.index.value();
+  recovery_.commit_index = snapshot.index.value();
+  recovery_.state_hash = snapshot.state_hash;
+
+  auto metadata = storage::load_metadata(directory_ / "meta.bin");
+  if (!metadata) {
+    return metadata.error();
+  }
+  storage::NodeMetadata updated = metadata.value();
+  updated.commit_index = snapshot.index;
+  if (updated.term.value() < engine_.state().term.value()) {
+    updated.term = engine_.state().term;
+  }
+  const bool sync = options_.durability == storage::Durability::Sync;
+  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
+    return stored.error();
+  }
+  return storage::save_snapshot(directory_, snapshot.events, engine_.state(), sync);
+}
+
+Result<void> FileEngine::discard_compacted_prefix() {
+  std::lock_guard<std::mutex> lock(*mutex_);
+  if (!snapshot_) {
+    return Error{ErrorCode::StoreError, "no snapshot to compact against"};
+  }
+  std::vector<Event> suffix;
+  for (const auto& event : wal_->events()) {
+    if (snapshot_->index < event.index) {
+      suffix.push_back(event);
+    }
+  }
+  return wal_->rewrite(suffix);
+}
+
 Result<void> FileEngine::checkpoint() {
   std::lock_guard<std::mutex> lock(*mutex_);
-  return storage::save_snapshot(directory_, engine_.events(), engine_.state(),
-                                options_.durability == storage::Durability::Sync);
+  const bool sync = options_.durability == storage::Durability::Sync;
+  if (auto saved = storage::save_snapshot(directory_, engine_.events(), engine_.state(), sync);
+      !saved) {
+    return saved.error();
+  }
+  if (engine_.state().last_applied.value() > 0) {
+    snapshot_ = storage::Snapshot{engine_.state().last_applied, engine_.state().term,
+                                  state_hash(engine_.state()), engine_.events()};
+  }
+  return {};
 }
 
 }  // namespace choreoos::state

@@ -346,6 +346,9 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
         }
       }
       break;
+    case EventType::NoOp:
+      applied = {};
+      break;
   }
 
   if (!applied) {
@@ -353,6 +356,9 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
   }
 
   candidate.last_applied = event.index;
+  // Every committed event publishes its term into the hashed state. Existing
+  // logs are term 1, so this does not move hashes that were already recorded.
+  candidate.term = event.term;
   candidate.applied_events.insert({event.id.value(), canonical_event(event)});
   candidate.applied_commands.insert({event.command_id.value(), event.id.value()});
   state = std::move(candidate);
