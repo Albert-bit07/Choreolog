@@ -40,14 +40,28 @@ jobs:
           fi
           echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
 
+      # Ninja on windows-latest otherwise finds MinGW first. vcpkg's
+      # x64-windows GoogleTest is built with MSVC, so the test binary must
+      # be compiled with cl or the testing:: symbols never resolve.
+      - name: Enter MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Configure
         shell: bash
-        run: >
-          cmake -S . -B build/ci -G Ninja
-          -DCMAKE_BUILD_TYPE=Debug
-          -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-          -DCHOREOOS_BUILD_TESTS=ON
-          -DCHOREOOS_WARNINGS_AS_ERRORS=ON
+        run: |
+          args=(-S . -B build/ci -G Ninja -DCMAKE_BUILD_TYPE=Debug)
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            args+=(-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl)
+          fi
+          args+=(
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            -DCHOREOOS_BUILD_TESTS=ON
+            -DCHOREOOS_WARNINGS_AS_ERRORS=ON
+          )
+          cmake "${args[@]}"
 
       - name: Build
         run: cmake --build build/ci
