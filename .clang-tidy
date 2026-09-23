@@ -1,0 +1,10 @@
+Checks: >-
+  -*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  modernize-use-nullptr,
+  modernize-use-override
+WarningsAsErrors: ''
+HeaderFilterRegex: 'cpp-runtime/(include|src|apps)/.*'
+FormatStyle: file

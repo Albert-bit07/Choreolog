@@ -1,0 +1,5 @@
+id: node-3
+leader: node-1
+data: node-data/node-3
+listen: 127.0.0.1:7103
+peers: node-1@127.0.0.1:7101,node-2@127.0.0.1:7102

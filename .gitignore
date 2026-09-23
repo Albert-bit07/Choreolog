@@ -1,0 +1,52 @@
+# Local configuration
+.env
+.env.local
+temporal/.env
+
+# CMake and C++ output
+bin/
+build/
+out/
+CMakeUserPresets.json
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+Testing/
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+*.a
+*.prof
+coverage/
+
+# vcpkg
+vcpkg_installed/
+
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local reports and generated data
+reports/
+results/raw/
+node-data/
+tmp/

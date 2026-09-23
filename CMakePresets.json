@@ -1,0 +1,83 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows MSVC Debug",
+      "generator": "Visual Studio 16 2019",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows-msvc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CHOREOOS_BUILD_TESTS": "ON",
+        "CHOREOOS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc",
+      "displayName": "Linux GCC Debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-gcc",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CHOREOOS_BUILD_TESTS": "ON",
+        "CHOREOOS_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "linux-sanitizers",
+      "displayName": "Linux GCC with ASan and UBSan",
+      "inherits": "linux-gcc",
+      "binaryDir": "${sourceDir}/build/linux-sanitizers",
+      "cacheVariables": {
+        "CHOREOOS_ENABLE_SANITIZERS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux-gcc",
+      "configurePreset": "linux-gcc"
+    },
+    {
+      "name": "linux-sanitizers",
+      "configurePreset": "linux-sanitizers"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-msvc",
+      "configurePreset": "windows-msvc",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-gcc",
+      "configurePreset": "linux-gcc",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-sanitizers",
+      "configurePreset": "linux-sanitizers",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

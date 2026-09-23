@@ -1,0 +1,113 @@
+name: choreoos-temporal
+
+# Temporal persists workflow history only. It never stores or determines
+# authoritative ChoreoOS choreography, log, or consensus state.
+services:
+  postgres:
+    image: postgres:${POSTGRESQL_VERSION:-16}
+    container_name: choreoos-temporal-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-temporal}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-temporal}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - temporal
+
+  temporal-schema:
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION:-1.31.0}
+    container_name: choreoos-temporal-schema
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-temporal}
+      POSTGRES_SEEDS: postgres
+      SQL_PASSWORD: ${POSTGRES_PASSWORD:-temporal}
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh"]
+    command: /scripts/setup-postgres.sh
+    restart: "no"
+    networks:
+      - temporal
+
+  temporal:
+    image: temporalio/server:${TEMPORAL_VERSION:-1.31.0}
+    container_name: choreoos-temporal-server
+    depends_on:
+      temporal-schema:
+        condition: service_completed_successfully
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-temporal}
+      POSTGRES_SEEDS: postgres
+      BIND_ON_IP: 0.0.0.0
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    ports:
+      - "7233:7233"
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks:
+      - temporal
+
+  temporal-namespace:
+    image: temporalio/admin-tools:${TEMPORAL_ADMINTOOLS_VERSION:-1.31.0}
+    container_name: choreoos-temporal-namespace
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-choreoos}
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh"]
+    command: /scripts/create-namespace.sh
+    restart: "no"
+    networks:
+      - temporal
+
+  temporal-ui:
+    image: temporalio/ui:${TEMPORAL_UI_VERSION:-2.49.1}
+    container_name: choreoos-temporal-ui
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "${TEMPORAL_UI_PORT:-8080}:8080"
+    networks:
+      - temporal
+
+volumes:
+  postgres-data:
+
+networks:
+  temporal:
+    name: choreoos-temporal

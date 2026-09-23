@@ -1,0 +1,9 @@
+{
+  "name": "choreoos",
+  "version-string": "0.1.0",
+  "description": "Distributed runtime for deterministic live-performance systems",
+  "dependencies": [
+    "boost-asio",
+    "gtest"
+  ]
+}
