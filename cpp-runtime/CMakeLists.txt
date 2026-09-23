@@ -32,6 +32,9 @@ target_sources(
 
 target_link_libraries(choreoos_core PUBLIC Boost::asio)
 if(WIN32)
+  # MSVC pulls Winsock in by itself. MinGW, which GitHub's Ninja build uses,
+  # needs these on the link line or WSAStartup/setsockopt/AcceptEx stay unresolved.
+  target_link_libraries(choreoos_core PUBLIC ws2_32 mswsock)
   target_compile_definitions(choreoos_core PUBLIC _WIN32_WINNT=0x0A00)
 endif()
 
