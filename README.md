@@ -1,8 +1,8 @@
 # ChoreoOS
 
-ChoreoOS is an educational distributed runtime for live-performance systems. It uses choreography as a concrete domain for implementing and measuring event sourcing, deterministic state machines, durable persistence, replication, leader election, recovery, failure injection, and performance engineering.
+ChoreoOS is a C++20 distributed runtime that uses choreography as a concrete domain for event sourcing: a deterministic state machine, a checksummed write-ahead log with snapshots, and three-node replication over TCP with majority commit.
 
-This is not an operating-system kernel, trading system, or production-grade consensus product. Guarantees are documented only when the implementation and tests support them.
+This is not an operating-system kernel or a production-grade consensus product. Guarantees are documented only where the implementation and tests support them. Fixed-leader replication is not consensus; the election mode is Raft-like, not a claim of full Raft.
 
 See [PLAN.md](PLAN.md) for the architecture and [TASKS.md](TASKS.md) for the ordered implementation checklist.
 
