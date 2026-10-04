@@ -2,7 +2,7 @@
 
 ## 1. Mission
 
-ChoreoOS is an educational distributed runtime for live-performance systems. Dance is the concrete domain; the engineering focus is deterministic state machines, event sourcing, durable storage, replication, consensus, concurrency, networking, recovery, correctness testing, and measured performance.
+ChoreoOS is a distributed runtime for live-performance systems. Dance is the concrete domain; the engineering focus is deterministic state machines, event sourcing, durable storage, replication, leader election, concurrency, networking, recovery, correctness testing, and measured performance.
 
 ChoreoOS is not an operating-system kernel, dance-management CRUD application, trading system, financial exchange, or production-grade consensus product. Claims must match implemented and tested guarantees.
 
