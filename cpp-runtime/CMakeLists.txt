@@ -61,3 +61,8 @@ choreoos_enable_sanitizers(choreoos-replay)
 if(CHOREOOS_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
+
+option(CHOREOOS_BUILD_BENCHMARKS "Build ChoreoOS benchmark harnesses" ON)
+if(CHOREOOS_BUILD_BENCHMARKS)
+  add_subdirectory(benchmarks)
+endif()
