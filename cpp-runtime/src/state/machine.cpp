@@ -299,7 +299,24 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
     return Error{ErrorCode::IndexGap, "event index must increase during filtered replay"};
   }
 
-  ChoreographyState candidate = state;
+  // Step 33 optimization: copy only the mutable domain state, NOT the
+  // append-only applied_events/applied_commands logs. Those logs grow with
+  // every event ever applied, so copying them made each apply O(history).
+  // The mutation below never reads the logs (duplicate checks use `state`
+  // directly above), so we update them in place on success. On failure,
+  // `state` is untouched, preserving the transactional guarantee.
+  ChoreographyState candidate;
+  candidate.created = state.created;
+  candidate.id = state.id;
+  candidate.stage = state.stage;
+  candidate.overlap = state.overlap;
+  candidate.max_travel_mm = state.max_travel_mm;
+  candidate.last_applied = state.last_applied;
+  candidate.term = state.term;
+  candidate.dancers = state.dancers;
+  candidate.formations = state.formations;
+  candidate.music_cues = state.music_cues;
+  candidate.lighting_cues = state.lighting_cues;
   Result<void> applied{Error{ErrorCode::UnsupportedType, "unhandled event type"}};
   switch (event.type) {
     case EventType::ChoreographyCreated:
@@ -359,9 +376,21 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
   // Every committed event publishes its term into the hashed state. Existing
   // logs are term 1, so this does not move hashes that were already recorded.
   candidate.term = event.term;
-  candidate.applied_events.insert({event.id.value(), canonical_event(event)});
-  candidate.applied_commands.insert({event.command_id.value(), event.id.value()});
-  state = std::move(candidate);
+  // Success path: move the mutated domain state back, then append to the
+  // logs in place (O(log n) inserts, no O(history) copy).
+  state.created = candidate.created;
+  state.id = std::move(candidate.id);
+  state.stage = std::move(candidate.stage);
+  state.overlap = candidate.overlap;
+  state.max_travel_mm = candidate.max_travel_mm;
+  state.dancers = std::move(candidate.dancers);
+  state.formations = std::move(candidate.formations);
+  state.music_cues = std::move(candidate.music_cues);
+  state.lighting_cues = std::move(candidate.lighting_cues);
+  state.last_applied = event.index;
+  state.term = event.term;
+  state.applied_events.insert({event.id.value(), canonical_event(event)});
+  state.applied_commands.insert({event.command_id.value(), event.id.value()});
   return {};
 }
 
