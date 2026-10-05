@@ -381,14 +381,14 @@ Verified: `StorageFaultTest`, `FaultTest`, and `PropertyTest` (seeds 1–8 for r
 
 ### Step 31: Create benchmark harnesses
 
-- [ ] Single-node apply throughput.
-- [ ] Serialization and hashing.
-- [ ] Log append and flush.
-- [ ] Full replay.
-- [ ] Snapshot creation and restore.
-- [ ] One-node and three-node command throughput.
-- [ ] Command-to-commit latency.
-- [ ] Catch-up and failover recovery.
+- [x ] Single-node apply throughput.
+- [x ] Serialization and hashing.
+- [x ] Log append and flush.
+- [x ] Full replay.
+- [x ] Snapshot creation and restore.
+- [x ] One-node and three-node command throughput.
+- [x ] Command-to-commit latency.
+- [x ] Catch-up and failover recovery.
 
 ### Step 32: Produce trustworthy measurements
 
