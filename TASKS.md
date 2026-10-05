@@ -287,56 +287,55 @@ Verified: `ReplicationTest.OneFollowerLossStillCommitsThenCatchesUp` and `Cluste
 
 ### Step 22: Implement consensus roles and terms
 
-- [ ] Add follower, candidate, and leader roles.
-- [ ] Persist term transitions before responses.
-- [ ] Step down on any higher term.
-- [ ] Ignore stale-term messages safely.
-- [ ] Publish role and term metrics.
+- [x] Add follower, candidate, and leader roles.
+- [x] Persist term transitions before responses.
+- [x] Step down on any higher term.
+- [x] Ignore stale-term messages safely.
+- [x] Publish role and term metrics.
 
 ### Step 23: Implement voting
 
-- [ ] Add randomized election timeouts.
-- [ ] Use injectable deterministic randomness in tests.
-- [ ] Persist one vote per term.
-- [ ] Enforce up-to-date-log voting rule.
-- [ ] Require majority to become leader.
-- [ ] Reset election timers only under valid conditions.
+- [x] Add randomized election timeouts.
+- [x] Use injectable deterministic randomness in tests.
+- [x] Persist one vote per term.
+- [x] Enforce up-to-date-log voting rule.
+- [x] Require majority to become leader.
+- [x] Reset election timers only under valid conditions.
 
 ### Step 24: Implement heartbeats and leader initialization
-
-- [ ] Send empty AppendEntries as heartbeat.
-- [ ] Initialize follower replication indexes.
-- [ ] Establish leadership with a current-term no-op entry if required.
-- [ ] Prevent stale leaders from committing.
-- [ ] Commit prior-term entries only under documented safe rules.
+- [x]  Send empty AppendEntries as heartbeat.
+- [x] Initialize follower replication indexes.
+- [x] Establish leadership with a current-term no-op entry if required.
+- [x] Prevent stale leaders from committing.
+- [x] Commit prior-term entries only under documented safe rules.
 
 ### Step 25: Test election safety
 
-- [ ] One leader maximum per term in simulated scenarios.
-- [ ] Minority partitions cannot elect or commit.
-- [ ] Split votes retry with new randomized timeouts.
-- [ ] Old leaders step down after healing.
-- [ ] Conflicting uncommitted entries are repaired.
-- [ ] Committed entries are never overwritten.
+- [x] One leader maximum per term in simulated scenarios.
+- [x] Minority partitions cannot elect or commit.
+- [x] Split votes retry with new randomized timeouts.
+- [x] Old leaders step down after healing.
+- [x] Conflicting uncommitted entries are repaired.
+- [x] Committed entries are never overwritten.
 
 ### Step 26: Implement restart and catch-up
 
-- [ ] Restart as follower from persisted term/vote/log/snapshot.
-- [ ] Catch up incrementally through AppendEntries.
-- [ ] Install snapshots for compacted history.
+- [x] Restart as follower from persisted term/vote/log/snapshot.
+- [x] Catch up incrementally through AppendEntries.
+- [x] Install snapshots for compacted history.
 - [ ] Verify snapshot chunks and final checksum.
-- [ ] Resume log replication after snapshot index.
-- [ ] Rejoin an old leader safely as follower.
+- [x] Resume log replication after snapshot index.
+- [x] Rejoin an old leader safely as follower.
 
 ### Step 27: Run process-level failover tests
 
-- [ ] Kill the current leader.
-- [ ] Observe a real majority election.
-- [ ] Commit through the new leader.
-- [ ] Restart the old leader.
-- [ ] Verify all state hashes converge.
+- [x] Kill the current leader.
+- [x] Observe a real majority election.
+- [x] Commit through the new leader.
+- [x] Restart the old leader.
+- [x] Verify all state hashes converge.
 - [ ] Test each two-versus-one partition arrangement.
-- [ ] Measure detection, election, and resumed-commit time.
+- [x] Measure detection, election, and resumed-commit time.
 
 Exit criterion: documented election and log-safety properties pass simulator and process tests. Describe the system as “Raft-like” until a compliance review justifies stronger wording.
 
