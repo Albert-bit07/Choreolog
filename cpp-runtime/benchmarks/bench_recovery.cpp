@@ -35,8 +35,8 @@ fs::path fresh_dir(const std::string& name) {
   return dir;
 }
 
-ReplicaConfig electing(const std::string& id, const fs::path& dir,
-                       std::vector<std::string> peers, std::uint64_t seed) {
+ReplicaConfig electing(const std::string& id, const fs::path& dir, std::vector<std::string> peers,
+                       std::uint64_t seed) {
   ReplicaConfig config;
   config.id = id;
   config.peers = std::move(peers);

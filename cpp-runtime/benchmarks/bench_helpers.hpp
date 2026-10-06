@@ -36,13 +36,14 @@ inline Command make_create(std::uint64_t seq) {
   // correctness suites already cover). Allow keeps generated positions
   // trivially collision-free at any scale.
   // The 1M x 1M stage is the maximum StageCoordinate accepts.
-  return Command{CommandId::parse(id).value(),
-                 show_id(),
-                 CommandType::CreateChoreography,
-                 kCurrentSchemaVersion,
-                 MusicalTick::from_count(0).value(),
-                 CreateChoreographyPayload{show_id(), StageBounds::from_mm(1000000, 1000000).value(),
-                                           OverlapPolicy::Allowed, 5000}};
+  return Command{
+      CommandId::parse(id).value(),
+      show_id(),
+      CommandType::CreateChoreography,
+      kCurrentSchemaVersion,
+      MusicalTick::from_count(0).value(),
+      CreateChoreographyPayload{show_id(), StageBounds::from_mm(1000000, 1000000).value(),
+                                OverlapPolicy::Allowed, 5000}};
 }
 
 inline Command make_add_dancer(std::uint64_t seq) {

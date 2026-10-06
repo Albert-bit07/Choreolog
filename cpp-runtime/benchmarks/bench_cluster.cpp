@@ -42,8 +42,8 @@ ReplicaConfig fixed_leader(const std::string& id, const fs::path& dir) {
   return config;
 }
 
-ReplicaConfig electing(const std::string& id, const fs::path& dir,
-                       std::vector<std::string> peers, std::uint64_t seed) {
+ReplicaConfig electing(const std::string& id, const fs::path& dir, std::vector<std::string> peers,
+                       std::uint64_t seed) {
   ReplicaConfig config;
   config.id = id;
   config.peers = std::move(peers);
@@ -123,8 +123,7 @@ void BM_OneNodeThroughput(benchmark::State& state) {
         return;
       }
       const auto want = node.store().commit_index();
-      pump_until_one(net, node,
-                     [&] { return node.store().commit_index().value() > want.value(); });
+      pump_until_one(net, node, [&] { return node.store().commit_index().value() > want.value(); });
     }
     benchmark::ClobberMemory();
   }
@@ -150,8 +149,9 @@ void BM_ThreeNodeThroughput(benchmark::State& state) {
   net.attach(rb.value());
   net.attach(rc.value());
   // Elect a leader before timing.
-  pump_until(net, ra.value(), rb.value(), rc.value(),
-             [&] { return current_leader(ra.value(), rb.value(), rc.value()) != nullptr; }, 200);
+  pump_until(
+      net, ra.value(), rb.value(), rc.value(),
+      [&] { return current_leader(ra.value(), rb.value(), rc.value()) != nullptr; }, 200);
   Replica* leader = current_leader(ra.value(), rb.value(), rc.value());
   if (leader == nullptr) {
     state.SkipWithError("no leader elected");
@@ -204,8 +204,9 @@ void BM_CommandToCommitLatency(benchmark::State& state) {
   net.attach(ra.value());
   net.attach(rb.value());
   net.attach(rc.value());
-  pump_until(net, ra.value(), rb.value(), rc.value(),
-             [&] { return current_leader(ra.value(), rb.value(), rc.value()) != nullptr; }, 200);
+  pump_until(
+      net, ra.value(), rb.value(), rc.value(),
+      [&] { return current_leader(ra.value(), rb.value(), rc.value()) != nullptr; }, 200);
   Replica* leader = current_leader(ra.value(), rb.value(), rc.value());
   if (leader == nullptr) {
     state.SkipWithError("no leader elected");
@@ -230,12 +231,13 @@ void BM_CommandToCommitLatency(benchmark::State& state) {
     }
     const auto want = leader->store().commit_index();
     state.ResumeTiming();
-    const int ticks = pump_until(net, ra.value(), rb.value(), rc.value(),
-                                 [&] { return leader->store().commit_index().value() > want.value(); });
+    const int ticks = pump_until(net, ra.value(), rb.value(), rc.value(), [&] {
+      return leader->store().commit_index().value() > want.value();
+    });
     state.PauseTiming();
     // Latency is logical ticks; report it as a custom counter.
-    state.counters["ticks_to_commit"] = benchmark::Counter(static_cast<double>(ticks),
-                                                           benchmark::Counter::kAvgThreads);
+    state.counters["ticks_to_commit"] =
+        benchmark::Counter(static_cast<double>(ticks), benchmark::Counter::kAvgThreads);
     state.ResumeTiming();
   }
   state.SetItemsProcessed(state.iterations());
