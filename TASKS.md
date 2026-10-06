@@ -1,4 +1,3 @@
-# ChoreoOS — Implementation Checklist
 
 This checklist implements `PLAN.md` in correctness-first order. Finish each exit criterion before beginning the next milestone. Record randomized seeds and retain raw benchmark data.
 
@@ -392,24 +391,24 @@ Verified: `StorageFaultTest`, `FaultTest`, and `PropertyTest` (seeds 1–8 for r
 
 ### Step 32: Produce trustworthy measurements
 
-- [ ] Capture p50, p95, and p99.
-- [ ] Record warmup and sample counts.
-- [ ] Record CPU, memory, OS, compiler, build mode, and commit.
-- [ ] Save raw JSON/CSV results.
-- [ ] Use fixed workloads and seeds for comparisons.
-- [ ] Add Python aggregation and plotting.
-- [ ] Never commit fabricated result data.
+- [x] Capture p50, p95, and p99.
+- [x] Record warmup and sample counts.
+- [x] Record CPU, memory, OS, compiler, build mode, and commit.
+- [x] Save raw JSON/CSV results.
+- [x] Use fixed workloads and seeds for comparisons.
+- [x] Add Python aggregation and plotting.
+- [x] Never commit fabricated result data.
 
 ### Step 33: Profile before optimizing
 
-- [ ] Capture CPU profiles.
-- [ ] Measure allocations.
-- [ ] Inspect lock contention.
-- [ ] Inspect network and storage timing.
-- [ ] Identify a measured bottleneck.
-- [ ] Make one controlled optimization.
-- [ ] Re-run correctness tests.
-- [ ] Report before/after data and trade-offs.
+- [x] Capture CPU profiles.
+- [x] Measure allocations.
+- [x] Inspect lock contention.
+- [x] Inspect network and storage timing.
+- [x] Identify a measured bottleneck.
+- [x] Make one controlled optimization.
+- [x] Re-run correctness tests.
+- [x] Report before/after data and trade-offs.
 
 Candidates only after profiling:
 
