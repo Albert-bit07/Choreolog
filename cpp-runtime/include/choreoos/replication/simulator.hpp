@@ -25,6 +25,9 @@ class SimulatedNetwork {
   void isolate(const std::string& id);
   void heal();
   void attach(Replica& replica);
+  // Frames larger than the wire limit are dropped here exactly as the TCP path
+  // would drop them, and counted so a test can assert none were attempted.
+  [[nodiscard]] std::uint64_t oversize_frames() const noexcept { return oversize_frames_; }
 
   // The controls below do nothing until this is called. Production nodes never
   // construct a SimulatedNetwork, and these rules stay out of the TCP path.
@@ -55,6 +58,7 @@ class SimulatedNetwork {
   [[nodiscard]] const std::string& schedule() const noexcept { return schedule_; }
 
  private:
+  std::uint64_t oversize_frames_ = 0;
   struct Packet {
     std::string from;
     std::string to;

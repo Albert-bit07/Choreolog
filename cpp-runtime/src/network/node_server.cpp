@@ -211,6 +211,7 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
 void NodeServer::Impl::send_to(const std::string& peer, const choreoos::protocol::Frame& frame) {
   auto encoded = choreoos::protocol::encode_frame(frame);
   if (!encoded) {
+    ++transport_metrics.dropped;
     return;
   }
   for (const auto& session : sessions) {

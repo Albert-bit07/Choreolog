@@ -268,10 +268,21 @@ void Replica::replicate(Peer& peer) {
       message.prev_log_term = 0;
     }
   }
-  for (const auto& event : store_.log_events()) {
-    if (event.index.value() >= peer.next_index) {
-      message.entries.push_back(event);
+  // Bounded batch: entries are contiguous, so walk by index instead of scanning
+  // the whole log, and stop before the message could exceed the frame limit.
+  std::size_t batch_bytes = 0;
+  for (std::uint64_t next = peer.next_index; next <= last_index(); ++next) {
+    const auto* entry = find_index(next);
+    if (entry == nullptr) {
+      break;
     }
+    const std::size_t cost = choreoos::state::canonical_event(*entry).size() + 32;
+    if (!message.entries.empty() && (message.entries.size() >= config_.max_append_entries ||
+                                     batch_bytes + cost > config_.max_append_bytes)) {
+      break;
+    }
+    batch_bytes += cost;
+    message.entries.push_back(*entry);
   }
   if (auto payload = choreoos::protocol::encode(message)) {
     send(peer.id, choreoos::protocol::MessageType::AppendEntries, next_correlation_++,
@@ -425,6 +436,11 @@ void Replica::on_append_response(const choreoos::protocol::AppendEntriesResponse
   }
   peer->next_index = peer->match_index + 1;
   advance_commit();
+  // Catch-up is batched, so keep sending until the peer reaches the log end
+  // instead of waiting a heartbeat per batch.
+  if (is_leader() && peer->next_index <= last_index()) {
+    replicate(*peer);
+  }
 }
 
 void Replica::on_vote(const choreoos::protocol::RequestVote& message, std::uint64_t correlation) {
@@ -801,6 +817,10 @@ std::uint64_t Replica::next_random() {
 void Replica::send(const std::string& peer, choreoos::protocol::MessageType type,
                    std::uint64_t correlation, std::string payload) {
   if (!sender_) {
+    return;
+  }
+  if (payload.size() > choreoos::protocol::kMaxFramePayload) {
+    ++metrics_.messages_dropped_oversize;
     return;
   }
   choreoos::protocol::Frame frame;

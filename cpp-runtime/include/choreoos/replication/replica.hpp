@@ -38,6 +38,10 @@ struct ReplicaConfig {
   int election_timeout_min = 3;
   int election_timeout_max = 6;
   std::uint64_t snapshot_every = 100;
+  // A catch-up batch is bounded so one AppendEntries always fits in a frame
+  // (protocol::kMaxFramePayload is 1 MiB). At least one entry is always sent.
+  std::size_t max_append_entries = 512;
+  std::size_t max_append_bytes = 256 * 1024;
 };
 
 struct EnqueueResult {
@@ -64,6 +68,9 @@ struct ConsensusMetrics {
   std::uint64_t elections_started = 0;
   std::uint64_t votes_granted = 0;
   std::uint64_t step_downs = 0;
+  // Messages the replica refused to send because they exceed the frame limit.
+  // A non-zero value means a peer cannot make progress through that message.
+  std::uint64_t messages_dropped_oversize = 0;
 };
 
 class Replica {

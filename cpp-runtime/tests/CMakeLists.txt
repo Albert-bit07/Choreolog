@@ -10,6 +10,7 @@ add_executable(
   unit/durability_test.cpp
   unit/protocol_test.cpp
   unit/replication_test.cpp
+  unit/catchup_test.cpp
   unit/faults_test.cpp
   unit/workload.cpp
   unit/property_test.cpp
