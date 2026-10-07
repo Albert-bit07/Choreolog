@@ -51,6 +51,9 @@ class FileEngine {
 
   // Cluster log. These do not apply an entry until commit_through().
   [[nodiscard]] const std::vector<Event>& log_events() const;
+  // O(1) lookups. The log is contiguous, so an index maps to a vector offset.
+  [[nodiscard]] const Event* log_entry(std::uint64_t index) const;
+  [[nodiscard]] std::uint64_t last_log_index() const;
   [[nodiscard]] LogIndex commit_index() const noexcept { return commit_index_; }
   Result<void> append_event(const Event& event);
   Result<void> truncate_after(LogIndex index);

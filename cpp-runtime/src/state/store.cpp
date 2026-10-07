@@ -345,6 +345,20 @@ Result<SubmitResult> FileEngine::submit(Command command) {
 
 const std::vector<Event>& FileEngine::log_events() const { return wal_->events(); }
 
+const Event* FileEngine::log_entry(std::uint64_t index) const {
+  const auto& events = wal_->events();
+  if (events.empty() || index < events.front().index.value() ||
+      index > events.back().index.value()) {
+    return nullptr;
+  }
+  return &events[static_cast<std::size_t>(index - events.front().index.value())];
+}
+
+std::uint64_t FileEngine::last_log_index() const {
+  const auto& events = wal_->events();
+  return events.empty() ? 0 : events.back().index.value();
+}
+
 Result<void> FileEngine::append_event(const Event& event) {
   std::lock_guard<std::mutex> lock(*mutex_);
   const std::uint64_t expected =
@@ -399,14 +413,12 @@ Result<void> FileEngine::commit_through(LogIndex index) {
   if (index < commit_index_) {
     return {};
   }
-  for (const auto& event : wal_->events()) {
-    if (event.index <= commit_index_) {
-      continue;
-    }
-    if (index < event.index) {
+  for (std::uint64_t next = commit_index_.value() + 1; next <= index.value(); ++next) {
+    const Event* event = log_entry(next);
+    if (event == nullptr) {
       break;
     }
-    if (auto applied = engine_.apply_committed(event); !applied) {
+    if (auto applied = engine_.apply_committed(*event); !applied) {
       return applied.error();
     }
   }

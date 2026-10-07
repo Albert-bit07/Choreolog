@@ -15,6 +15,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "choreoos/protocol/frame.hpp"
@@ -88,6 +89,13 @@ class Replica {
   void tick();
   void heartbeat();
   [[nodiscard]] NodeStatus status() const;
+  // Cheap accessors for hot paths. status() serializes and hashes the whole state.
+  [[nodiscard]] const std::string& leader_id() const noexcept { return config_.leader_id; }
+  [[nodiscard]] const std::string& committed_state_hash() const noexcept {
+    return store_.recovery().state_hash;
+  }
+  // O(1): the log entry carrying this command id, or nullptr.
+  [[nodiscard]] const choreoos::state::Event* find_command(const std::string& command_id) const;
   [[nodiscard]] const ConsensusMetrics& metrics() const noexcept { return metrics_; }
 
  private:
@@ -111,6 +119,10 @@ class Replica {
   void on_install_response(const choreoos::protocol::InstallSnapshotResponse& message);
   void advance_commit();
   void rebuild_speculative();
+  // Followers never propose, so they only mark speculative state stale. It is
+  // rebuilt when this node needs it (becoming leader, or a restamped term).
+  void ensure_speculative();
+  void rebuild_command_index();
   void start_election();
   void become_leader();
   bool step_down(std::uint64_t term);
@@ -129,6 +141,8 @@ class Replica {
   ReplicaConfig config_;
   choreoos::state::FileEngine store_;
   choreoos::state::ChoreographyState speculative_{};
+  bool speculative_dirty_ = false;
+  std::unordered_map<std::string, std::uint64_t> command_index_;  // command id -> log index
   std::vector<Peer> peers_;
   Sender sender_;
   std::function<void()> commit_hook_;

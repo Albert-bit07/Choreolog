@@ -50,6 +50,7 @@ choreoos::state::Result<Replica> Replica::open(ReplicaConfig config) {
   for (auto& peer : replica.peers_) {
     peer.next_index = next;
   }
+  replica.rebuild_command_index();
   return replica;
 }
 
@@ -99,11 +100,10 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
   if (!is_leader()) {
     return Error{ErrorCode::NotLeader, "leader is " + config_.leader_id};
   }
-  for (const auto& event : store_.log_events()) {
-    if (event.command_id.value() == command.id.value()) {
-      return EnqueueResult{event, true, event.index <= store_.commit_index(), config_.leader_id};
-    }
+  if (const auto* known = find_command(command.id.value())) {
+    return EnqueueResult{*known, true, known->index <= store_.commit_index(), config_.leader_id};
   }
+  ensure_speculative();
   // Propose against speculative state, which includes uncommitted entries, but
   // stamp the event with the election term rather than a stale applied term.
   auto proposed = choreoos::state::propose(speculative_, command);
@@ -130,6 +130,7 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
   if (auto written = store_.append_event(proposed.value()); !written) {
     return written.error();
   }
+  command_index_[proposed.value().command_id.value()] = proposed.value().index.value();
   if (!config_.elections) {
     if (auto applied = choreoos::state::apply(speculative_, proposed.value()); !applied) {
       return applied.error();
@@ -347,6 +348,8 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
           response.success = false;
           break;
         }
+        rebuild_command_index();
+        speculative_dirty_ = true;
       } else if (entry.index.value() != last_index() + 1) {
         response.success = false;
         response.hint_index = last_index();
@@ -356,9 +359,10 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
         response.success = false;
         break;
       }
+      command_index_[entry.command_id.value()] = entry.index.value();
+      speculative_dirty_ = true;
     }
     if (response.success) {
-      rebuild_speculative();
       const std::uint64_t covered =
           message.leader_commit < last_index() ? message.leader_commit : last_index();
       if (covered > store_.commit_index().value()) {
@@ -369,7 +373,10 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
           commit_hook_();
         }
       }
-      response.match_index = last_index();
+      // Raft: a follower acknowledges only what this message proved matches,
+      // not whatever extra suffix it happens to hold beyond it.
+      response.match_index =
+          message.entries.empty() ? message.prev_log_index : message.entries.back().index.value();
       response.hint_index = last_index();
     }
   }
@@ -528,6 +535,7 @@ void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
     if (parsed && !snapshot.events.empty() && snapshot.events.back().index == snapshot.index &&
         snapshot.events.back().term == snapshot.term) {
       if (auto installed = store_.install_snapshot(snapshot); installed) {
+        rebuild_command_index();
         rebuild_speculative();
         response.success = true;
         if (commit_hook_) {
@@ -600,7 +608,26 @@ void Replica::rebuild_speculative() {
   auto replayed = choreoos::state::replay(store_.log_events());
   if (replayed) {
     speculative_ = std::move(replayed.value());
+    speculative_dirty_ = false;
   }
+}
+
+void Replica::ensure_speculative() {
+  if (speculative_dirty_) {
+    rebuild_speculative();
+  }
+}
+
+void Replica::rebuild_command_index() {
+  command_index_.clear();
+  for (const auto& event : store_.log_events()) {
+    command_index_[event.command_id.value()] = event.index.value();
+  }
+}
+
+const choreoos::state::Event* Replica::find_command(const std::string& command_id) const {
+  const auto found = command_index_.find(command_id);
+  return found == command_index_.end() ? nullptr : find_index(found->second);
 }
 
 void Replica::start_election() {
@@ -649,6 +676,7 @@ void Replica::become_leader() {
   if (role_ == Role::Leader) {
     return;
   }
+  ensure_speculative();
   role_ = Role::Leader;
   config_.leader_id = config_.id;
   ++metrics_.role_changes;
@@ -689,6 +717,7 @@ void Replica::become_leader() {
     role_ = Role::Candidate;
     return;
   }
+  command_index_[noop.command_id.value()] = noop.index.value();
   if (auto applied = choreoos::state::apply(speculative_, noop); !applied) {
     role_ = Role::Candidate;
     return;
@@ -782,18 +811,10 @@ void Replica::send(const std::string& peer, choreoos::protocol::MessageType type
 }
 
 const choreoos::state::Event* Replica::find_index(std::uint64_t index) const {
-  for (const auto& event : store_.log_events()) {
-    if (event.index.value() == index) {
-      return &event;
-    }
-  }
-  return nullptr;
+  return store_.log_entry(index);
 }
 
-std::uint64_t Replica::last_index() const {
-  const auto& events = store_.log_events();
-  return events.empty() ? 0 : events.back().index.value();
-}
+std::uint64_t Replica::last_index() const { return store_.last_log_index(); }
 
 std::uint64_t Replica::last_term() const {
   const auto* event = find_index(last_index());

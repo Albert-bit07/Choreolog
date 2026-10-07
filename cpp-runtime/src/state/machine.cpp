@@ -19,6 +19,25 @@ Error unsupported_schema(std::uint16_t version) {
                "unsupported schema version " + std::to_string(version)};
 }
 
+// Copy only the mutable domain state, NOT the append-only applied_events and
+// applied_commands logs. Those logs grow with every event ever applied, so
+// copying them makes every apply or propose O(history).
+ChoreographyState domain_copy(const ChoreographyState& state) {
+  ChoreographyState copy;
+  copy.created = state.created;
+  copy.id = state.id;
+  copy.stage = state.stage;
+  copy.overlap = state.overlap;
+  copy.max_travel_mm = state.max_travel_mm;
+  copy.last_applied = state.last_applied;
+  copy.term = state.term;
+  copy.dancers = state.dancers;
+  copy.formations = state.formations;
+  copy.music_cues = state.music_cues;
+  copy.lighting_cues = state.lighting_cues;
+  return copy;
+}
+
 const DancerState* find_dancer(const ChoreographyState& state, const DancerId& id) {
   const auto it = state.dancers.find(id.value());
   if (it == state.dancers.end()) {
@@ -267,7 +286,9 @@ Result<Event> propose(const ChoreographyState& state, const Command& command) {
     formation->members = unique_sorted(formation->members);
   }
 
-  ChoreographyState candidate = state;
+  // propose() already rejected a reused command id (event id == command id),
+  // so the candidate does not need the history logs.
+  ChoreographyState candidate = domain_copy(state);
   auto tentative = make_event(command, state.last_applied.next(), state.term, payload);
   if (!tentative) {
     return tentative.error();
@@ -299,24 +320,10 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
     return Error{ErrorCode::IndexGap, "event index must increase during filtered replay"};
   }
 
-  // Step 33 optimization: copy only the mutable domain state, NOT the
-  // append-only applied_events/applied_commands logs. Those logs grow with
-  // every event ever applied, so copying them made each apply O(history).
-  // The mutation below never reads the logs (duplicate checks use `state`
-  // directly above), so we update them in place on success. On failure,
-  // `state` is untouched, preserving the transactional guarantee.
-  ChoreographyState candidate;
-  candidate.created = state.created;
-  candidate.id = state.id;
-  candidate.stage = state.stage;
-  candidate.overlap = state.overlap;
-  candidate.max_travel_mm = state.max_travel_mm;
-  candidate.last_applied = state.last_applied;
-  candidate.term = state.term;
-  candidate.dancers = state.dancers;
-  candidate.formations = state.formations;
-  candidate.music_cues = state.music_cues;
-  candidate.lighting_cues = state.lighting_cues;
+  // The mutation below never reads the history logs (duplicate checks use
+  // `state` directly above), so they are updated in place on success. On
+  // failure `state` is untouched, preserving the transactional guarantee.
+  ChoreographyState candidate = domain_copy(state);
   Result<void> applied{Error{ErrorCode::UnsupportedType, "unhandled event type"}};
   switch (event.type) {
     case EventType::ChoreographyCreated:

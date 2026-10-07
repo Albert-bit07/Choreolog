@@ -276,7 +276,7 @@ void NodeServer::Impl::dial_missing() {
 }
 
 std::string NodeServer::Impl::leader_contact() const {
-  const std::string id = replica.status().leader_id;
+  const std::string id = replica.leader_id();
   if (id.empty()) {
     return {};
   }
@@ -318,19 +318,14 @@ void NodeServer::Impl::schedule_reconnect() {
 void NodeServer::Impl::complete_waiters() {
   std::vector<Pending> still;
   for (auto& waiter : pending) {
-    const choreoos::state::Event* event = nullptr;
-    for (const auto& candidate : replica.store().log_events()) {
-      if (candidate.command_id.value() == waiter.command_id) {
-        event = &candidate;
-      }
-    }
+    const choreoos::state::Event* event = replica.find_command(waiter.command_id);
     if (event == nullptr || replica.store().commit_index() < event->index) {
       still.push_back(std::move(waiter));
       continue;
     }
     choreoos::replication::EnqueueResult result{*event, waiter.duplicate, true,
-                                                replica.status().leader_id};
-    auto response = response_from(result, replica.status().state_hash);
+                                                replica.leader_id()};
+    auto response = response_from(result, replica.committed_state_hash());
     if (auto payload = choreoos::protocol::encode(response)) {
       choreoos::protocol::Frame frame;
       frame.type = choreoos::protocol::MessageType::ClientResponse;
@@ -395,7 +390,7 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
   }
   auto queued = replica.enqueue(command.value());
   if (!queued) {
-    auto response = response_from(queued.error(), replica.status().leader_id);
+    auto response = response_from(queued.error(), replica.leader_id());
     if (queued.error().code() == choreoos::state::ErrorCode::NotLeader) {
       const std::string contact = leader_contact();
       if (!contact.empty()) {
@@ -406,7 +401,7 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
     return;
   }
   if (queued.value().committed) {
-    reply(response_from(queued.value(), replica.status().state_hash));
+    reply(response_from(queued.value(), replica.committed_state_hash()));
     return;
   }
   Pending waiter;
