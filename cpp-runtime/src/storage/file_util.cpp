@@ -9,7 +9,10 @@
 #include <io.h>
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <unistd.h>
+
+#include <cerrno>
 #endif
 
 #include "choreoos/storage/crc32.hpp"
@@ -92,12 +95,56 @@ Result<std::vector<std::uint8_t>> read_file(const std::filesystem::path& path) {
                                    std::istreambuf_iterator<char>());
 }
 
-Result<void> write_new_header(const std::filesystem::path& path) {
+std::string wal_file_header() {
   std::string header(16, '\0');
   header.replace(0, 8, "CHOSWAL1");
   write_u16(header, 8, 1);
   write_u16(header, 10, 0);
   write_u32(header, 12, crc32(header.substr(0, 12)));
+  return header;
+}
+
+Result<void> sync_directory(const std::filesystem::path& directory) {
+#ifdef _WIN32
+  (void)directory;
+  return {};
+#else
+  const std::string path = directory.empty() ? "." : directory.string();
+  const int fd = ::open(path.c_str(), O_RDONLY);
+  if (fd < 0) {
+    return io_error("unable to open directory " + path + " for sync");
+  }
+  const int rc = ::fsync(fd);
+  const int saved = errno;
+  ::close(fd);
+  // Some filesystems reject fsync on a directory with EINVAL; there is nothing
+  // more to do there, so only real I/O failures are errors.
+  if (rc != 0 && saved != EINVAL) {
+    return io_error("fsync failed for directory " + path);
+  }
+  return {};
+#endif
+}
+
+Result<void> sync_file(const std::filesystem::path& path) {
+  FILE* file = nullptr;
+#ifdef _WIN32
+  if (fopen_s(&file, path.string().c_str(), "r+b") != 0) {
+    file = nullptr;
+  }
+#else
+  file = std::fopen(path.string().c_str(), "r+b");
+#endif
+  if (file == nullptr) {
+    return io_error("unable to open " + path.string() + " for sync");
+  }
+  auto synced = sync_handle(file);
+  std::fclose(file);
+  return synced;
+}
+
+Result<void> write_new_header(const std::filesystem::path& path) {
+  const std::string header = wal_file_header();
   FILE* file = nullptr;
 #ifdef _WIN32
   if (fopen_s(&file, path.string().c_str(), "wb") != 0) {
@@ -112,7 +159,12 @@ Result<void> write_new_header(const std::filesystem::path& path) {
   const bool wrote = std::fwrite(header.data(), 1, header.size(), file) == header.size();
   auto synced = wrote ? sync_handle(file) : Result<void>{io_error("unable to write log header")};
   std::fclose(file);
-  return synced;
+  if (!synced) {
+    return synced;
+  }
+  // The new file's directory entry must be durable too, or a crash can lose
+  // the whole log even though its contents were flushed.
+  return sync_directory(path.parent_path());
 }
 
 Result<void> append_bytes(const std::filesystem::path& path, const std::string& bytes, bool sync) {
@@ -141,7 +193,7 @@ Result<void> append_bytes(const std::filesystem::path& path, const std::string& 
 }
 
 Result<void> write_atomic(const std::filesystem::path& destination, const std::string& bytes,
-                          bool sync) {
+                          bool sync, std::optional<bool> sync_dir) {
   const auto temporary = destination.string() + ".tmp";
   FILE* file = nullptr;
 #ifdef _WIN32
@@ -174,6 +226,9 @@ Result<void> write_atomic(const std::filesystem::path& destination, const std::s
   std::filesystem::rename(temporary, destination, ec);
   if (ec) {
     return io_error("atomic replace failed for " + destination.string());
+  }
+  if (sync_dir.value_or(sync)) {
+    return sync_directory(destination.parent_path());
   }
 #endif
   return {};

@@ -87,6 +87,13 @@ Result<void> save_snapshot(const std::filesystem::path& directory,
   if (ec) {
     return Error{ErrorCode::StoreError, "unable to create snapshot directory"};
   }
+  if (sync) {
+    // The snapshots/ directory entry itself must be durable, not just the
+    // renamed file inside it.
+    if (auto synced = sync_directory(directory); !synced) {
+      return synced.error();
+    }
+  }
   std::string payload;
   for (const auto& event : events) {
     if (!payload.empty()) {

@@ -55,7 +55,7 @@ Result<NodeMetadata> load_metadata(const std::filesystem::path& path) {
 }
 
 Result<void> store_metadata(const std::filesystem::path& path, const NodeMetadata& metadata,
-                            bool sync) {
+                            bool sync, std::optional<bool> sync_dir) {
   const std::string voted = metadata.voted_for ? metadata.voted_for->value() : "";
   if (voted.size() > 64) {
     return Error{ErrorCode::StoreError, "voted_for exceeds 64 characters"};
@@ -70,7 +70,7 @@ Result<void> store_metadata(const std::filesystem::path& path, const NodeMetadat
     bytes.replace(28, voted.size(), voted);
   }
   write_u32(bytes, bytes.size() - 4, crc32(bytes.substr(0, bytes.size() - 4)));
-  return write_atomic(path, bytes, sync);
+  return write_atomic(path, bytes, sync, sync_dir);
 }
 
 }  // namespace choreoos::storage

@@ -1,4 +1,4 @@
-// Parse and write canonical event lines. Not crash-safe; that is Milestone 2.
+// Durable directory store: canonical event lines, WAL, snapshots, metadata.
 
 #include "choreoos/state/store.hpp"
 
@@ -327,7 +327,8 @@ Result<SubmitResult> FileEngine::submit(Command command) {
     return applied.error();
   }
   storage::NodeMetadata metadata{engine_.state().term, engine_.state().last_applied, std::nullopt};
-  if (auto stored = storage::store_metadata(directory_ / "meta.bin", metadata, sync); !stored) {
+  if (auto stored = storage::store_metadata(directory_ / "meta.bin", metadata, sync, false);
+      !stored) {
     return stored.error();
   }
   if (options_.snapshot_every > 0 &&
@@ -436,7 +437,10 @@ Result<void> FileEngine::commit_through(LogIndex index) {
     updated.term = engine_.state().term;
   }
   const bool sync = options_.durability == storage::Durability::Sync;
-  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
+  // Only the commit index changes here, so an older durable copy is acceptable
+  // and the extra directory fsync is skipped.
+  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync, false);
+      !stored) {
     return stored.error();
   }
   commit_index_ = index;
@@ -482,6 +486,8 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
   if (snapshot.index <= commit_index_) {
     return {};
   }
+  // Validate and build the replacement entirely in memory first. Nothing on
+  // disk or in this object changes until the snapshot is known to be good.
   auto replayed = replay(snapshot.events);
   if (!replayed) {
     return replayed.error();
@@ -490,12 +496,16 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
       replayed.value().last_applied != snapshot.index) {
     return Error{ErrorCode::StoreError, "snapshot checksum does not match its events"};
   }
+  Engine replacement;
+  for (const auto& event : snapshot.events) {
+    if (auto applied = replacement.apply_committed(event); !applied) {
+      return applied.error();
+    }
+  }
 
   bool prefix_matches = false;
-  for (const auto& event : wal_->events()) {
-    if (event.index == snapshot.index && event.term == snapshot.term) {
-      prefix_matches = true;
-    }
+  if (const Event* anchor = log_entry(snapshot.index.value())) {
+    prefix_matches = anchor->term == snapshot.term;
   }
   std::vector<Event> suffix;
   if (prefix_matches) {
@@ -505,16 +515,36 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
       }
     }
   }
+
+  // Crash-safe order. Each step leaves a state open() can reconcile:
+  //   1. snapshot file durable      -> ignored on restart until meta covers it
+  //   2. metadata commit durable    -> restart restores from the snapshot, and
+  //                                    WAL records at or below it are skipped
+  //   3. WAL prefix dropped (atomic replace, never remove-then-write)
+  //   4. in-memory swap
+  // The old order rewrote the WAL first, so a crash before the snapshot was
+  // saved lost the committed prefix with nothing to restore it from.
+  const bool sync = options_.durability == storage::Durability::Sync;
+  if (auto saved = storage::save_snapshot(directory_, snapshot.events, replacement.state(), sync);
+      !saved) {
+    return saved.error();
+  }
+  auto metadata = storage::load_metadata(directory_ / "meta.bin");
+  if (!metadata) {
+    return metadata.error();
+  }
+  storage::NodeMetadata updated = metadata.value();
+  updated.commit_index = snapshot.index;
+  if (updated.term.value() < replacement.state().term.value()) {
+    updated.term = replacement.state().term;
+  }
+  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
+    return stored.error();
+  }
   if (auto replaced = wal_->rewrite(suffix); !replaced) {
     return replaced.error();
   }
 
-  Engine replacement;
-  for (const auto& event : snapshot.events) {
-    if (auto applied = replacement.apply_committed(event); !applied) {
-      return applied.error();
-    }
-  }
   engine_ = std::move(replacement);
   commit_index_ = snapshot.index;
   snapshot_ = snapshot;
@@ -522,21 +552,7 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
   recovery_.snapshot_index = snapshot.index.value();
   recovery_.commit_index = snapshot.index.value();
   recovery_.state_hash = snapshot.state_hash;
-
-  auto metadata = storage::load_metadata(directory_ / "meta.bin");
-  if (!metadata) {
-    return metadata.error();
-  }
-  storage::NodeMetadata updated = metadata.value();
-  updated.commit_index = snapshot.index;
-  if (updated.term.value() < engine_.state().term.value()) {
-    updated.term = engine_.state().term;
-  }
-  const bool sync = options_.durability == storage::Durability::Sync;
-  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
-    return stored.error();
-  }
-  return storage::save_snapshot(directory_, snapshot.events, engine_.state(), sync);
+  return {};
 }
 
 Result<void> FileEngine::discard_compacted_prefix() {
