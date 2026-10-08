@@ -474,6 +474,191 @@ std::string state_hash(const ChoreographyState& state) {
   return out.str();
 }
 
+std::string snapshot_payload(const ChoreographyState& state) {
+  std::ostringstream out;
+  out << "snapshot-state 1\n";
+  out << "schema " << kCurrentSchemaVersion << '\n';
+  out << "created " << (state.created ? 1 : 0) << '\n';
+  out << "choreography " << (state.id ? state.id->value() : "-") << '\n';
+  if (state.stage) {
+    out << "stage " << state.stage->width().mm() << ' ' << state.stage->depth().mm() << '\n';
+  } else {
+    out << "stage -\n";
+  }
+  out << "overlap " << overlap_policy_name(state.overlap) << '\n';
+  out << "max_travel " << state.max_travel_mm << '\n';
+  out << "last_applied " << state.last_applied.value() << '\n';
+  out << "term " << state.term.value() << '\n';
+  for (const auto& [id, dancer] : state.dancers) {
+    out << "dancer " << id << ' ' << dancer.position.x().mm() << ' ' << dancer.position.y().mm()
+        << ' ' << (dancer.active ? 1 : 0) << '\n';
+  }
+  for (const auto& [id, formation] : state.formations) {
+    out << "formation " << id;
+    for (const auto& member : formation.members) {
+      out << ' ' << member.value();
+    }
+    out << '\n';
+  }
+  for (const auto& [id, cue] : state.music_cues) {
+    out << "music " << id << ' ' << cue.tick.ticks() << ' '
+        << (cue.depends_on ? cue.depends_on->value() : "-") << '\n';
+  }
+  for (const auto& [id, cue] : state.lighting_cues) {
+    out << "light " << id << ' ' << cue.tick.ticks() << ' '
+        << (cue.depends_on ? cue.depends_on->value() : "-") << '\n';
+  }
+  for (const auto& [command, event] : state.applied_commands) {
+    // Event id equals command id by construction; only record it when not.
+    out << "applied " << command;
+    if (event != command) {
+      out << ' ' << event;
+    }
+    out << '\n';
+  }
+  return out.str();
+}
+
+Result<ChoreographyState> restore_state(std::string_view payload) {
+  const auto bad = [](const std::string& why) {
+    return Error{ErrorCode::StoreError, "snapshot state is invalid: " + why};
+  };
+  ChoreographyState state;
+  std::istringstream lines{std::string{payload}};
+  std::string line;
+  bool header = false;
+  while (std::getline(lines, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    std::istringstream fields{line};
+    std::string key;
+    fields >> key;
+    if (!header) {
+      std::string version;
+      fields >> version;
+      if (key != "snapshot-state" || version != "1") {
+        return bad("missing or unsupported header");
+      }
+      header = true;
+      continue;
+    }
+    if (key == "schema") {
+      std::uint32_t schema = 0;
+      fields >> schema;
+      if (schema != kCurrentSchemaVersion) {
+        return unsupported_schema(static_cast<std::uint16_t>(schema));
+      }
+    } else if (key == "created") {
+      int value = 0;
+      fields >> value;
+      state.created = value != 0;
+    } else if (key == "choreography") {
+      std::string id;
+      fields >> id;
+      if (id != "-") {
+        auto parsed = ChoreographyId::parse(id);
+        if (!parsed) {
+          return parsed.error();
+        }
+        state.id = parsed.value();
+      }
+    } else if (key == "stage") {
+      std::string width;
+      fields >> width;
+      if (width != "-") {
+        std::int32_t width_mm = 0;
+        std::int32_t depth = 0;
+        std::istringstream{width} >> width_mm;
+        fields >> depth;
+        auto stage = StageBounds::from_mm(width_mm, depth);
+        if (!stage) {
+          return stage.error();
+        }
+        state.stage = stage.value();
+      }
+    } else if (key == "overlap") {
+      std::string name;
+      fields >> name;
+      auto policy = parse_overlap_policy(name);
+      if (!policy) {
+        return policy.error();
+      }
+      state.overlap = policy.value();
+    } else if (key == "max_travel") {
+      fields >> state.max_travel_mm;
+    } else if (key == "last_applied") {
+      std::uint64_t value = 0;
+      fields >> value;
+      state.last_applied = LogIndex::parse(value).value();
+    } else if (key == "term") {
+      std::uint64_t value = 0;
+      fields >> value;
+      auto term = Term::parse(value);
+      if (!term) {
+        return term.error();
+      }
+      state.term = term.value();
+    } else if (key == "dancer") {
+      std::string id;
+      std::int32_t x = 0;
+      std::int32_t y = 0;
+      int active = 0;
+      fields >> id >> x >> y >> active;
+      auto position = Position::from_mm(x, y);
+      if (!position) {
+        return position.error();
+      }
+      state.dancers.insert_or_assign(id, DancerState{position.value(), active != 0});
+    } else if (key == "formation") {
+      std::string id;
+      fields >> id;
+      FormationState formation;
+      std::string member;
+      while (fields >> member) {
+        auto parsed = DancerId::parse(member);
+        if (!parsed) {
+          return parsed.error();
+        }
+        formation.members.push_back(parsed.value());
+      }
+      state.formations[id] = std::move(formation);
+    } else if (key == "music" || key == "light") {
+      std::string id;
+      std::int64_t ticks = 0;
+      std::string depends;
+      fields >> id >> ticks >> depends;
+      auto tick = MusicalTick::from_ticks(ticks);
+      if (!tick) {
+        return tick.error();
+      }
+      CueState cue{tick.value(), std::nullopt};
+      if (depends != "-" && !depends.empty()) {
+        auto parsed = CueId::parse(depends);
+        if (!parsed) {
+          return parsed.error();
+        }
+        cue.depends_on = parsed.value();
+      }
+      (key == "music" ? state.music_cues : state.lighting_cues).insert_or_assign(id, cue);
+    } else if (key == "applied") {
+      std::string command;
+      std::string event;
+      fields >> command >> event;
+      state.applied_commands[command] = event.empty() ? command : event;
+    } else {
+      return bad("unknown line '" + key + "'");
+    }
+    if (fields.fail() && !fields.eof()) {
+      return bad("malformed line '" + key + "'");
+    }
+  }
+  if (!header) {
+    return bad("empty payload");
+  }
+  return state;
+}
+
 // Single-node commit: reuse a prior command id, or propose + apply immediately.
 Result<SubmitResult> Engine::submit(Command command) {
   const auto seen = state_.applied_commands.find(command.id.value());
@@ -502,6 +687,11 @@ Result<void> Engine::apply_committed(const Event& event) {
   }
   events_.push_back(event);
   return {};
+}
+
+void Engine::restore(ChoreographyState state, std::vector<Event> history) {
+  state_ = std::move(state);
+  events_ = std::move(history);
 }
 
 Result<ChoreographyState> Engine::replay_through(std::optional<MusicalTick> through_tick,

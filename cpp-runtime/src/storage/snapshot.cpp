@@ -1,7 +1,10 @@
 #include "choreoos/storage/snapshot.hpp"
 
+#include <algorithm>
+#include <functional>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 #include "choreoos/state/store.hpp"
 #include "choreoos/storage/crc32.hpp"
@@ -32,7 +35,9 @@ Result<Snapshot> read_snapshot(const std::filesystem::path& path) {
   if (std::string(file.begin(), file.begin() + 8) != "CHOSSNAP") {
     return Error{ErrorCode::StoreError, "snapshot magic is invalid"};
   }
-  if (read_u16(file, 8) != 1 || read_u16(file, 10) != choreoos::state::kCurrentSchemaVersion) {
+  const std::uint16_t format = read_u16(file, 8);
+  if ((format != 1 && format != 2) ||
+      read_u16(file, 10) != choreoos::state::kCurrentSchemaVersion) {
     return Error{ErrorCode::StoreError, "snapshot version is unsupported"};
   }
   const std::uint32_t payload_len = read_u32(file, 44);
@@ -54,33 +59,48 @@ Result<Snapshot> read_snapshot(const std::filesystem::path& path) {
   snapshot.state_hash.assign(reinterpret_cast<const char*>(file.data() + 28), 16);
 
   std::string payload(reinterpret_cast<const char*>(file.data() + 48), payload_len);
-  std::istringstream lines{payload};
-  std::string line;
-  while (std::getline(lines, line)) {
-    if (line.empty()) {
-      continue;
+  if (format == 2) {
+    snapshot.state_payload = std::move(payload);
+  } else {
+    std::istringstream lines{payload};
+    std::string line;
+    while (std::getline(lines, line)) {
+      if (line.empty()) {
+        continue;
+      }
+      auto event = choreoos::state::parse_event(line);
+      if (!event) {
+        return event.error();
+      }
+      snapshot.events.push_back(event.value());
     }
-    auto event = choreoos::state::parse_event(line);
-    if (!event) {
-      return event.error();
-    }
-    snapshot.events.push_back(event.value());
   }
-  auto replayed = choreoos::state::replay(snapshot.events);
-  if (!replayed) {
-    return replayed.error();
-  }
-  if (choreoos::state::state_hash(replayed.value()) != snapshot.state_hash ||
-      replayed.value().last_applied != snapshot.index) {
-    return Error{ErrorCode::StoreError, "snapshot state hash does not match its events"};
+  if (auto verified = verify_snapshot(snapshot); !verified) {
+    return verified.error();
   }
   return snapshot;
 }
 
 }  // namespace
 
+Result<choreoos::state::ChoreographyState> verify_snapshot(const Snapshot& snapshot) {
+  Result<choreoos::state::ChoreographyState> state{Error{ErrorCode::StoreError, "empty snapshot"}};
+  if (snapshot.legacy()) {
+    state = choreoos::state::replay(snapshot.events);
+  } else {
+    state = choreoos::state::restore_state(snapshot.state_payload);
+  }
+  if (!state) {
+    return state.error();
+  }
+  if (choreoos::state::state_hash(state.value()) != snapshot.state_hash ||
+      state.value().last_applied != snapshot.index) {
+    return Error{ErrorCode::StoreError, "snapshot state hash does not match its contents"};
+  }
+  return state;
+}
+
 Result<void> save_snapshot(const std::filesystem::path& directory,
-                           const std::vector<choreoos::state::Event>& events,
                            const choreoos::state::ChoreographyState& state, bool sync) {
   std::error_code ec;
   std::filesystem::create_directories(directory / "snapshots", ec);
@@ -94,20 +114,17 @@ Result<void> save_snapshot(const std::filesystem::path& directory,
       return synced.error();
     }
   }
-  std::string payload;
-  for (const auto& event : events) {
-    if (!payload.empty()) {
-      payload.push_back('\n');
-    }
-    payload += choreoos::state::canonical_event(event);
-  }
+  const std::string payload = choreoos::state::snapshot_payload(state);
   const std::string hash = choreoos::state::state_hash(state);
   if (hash.size() != 16) {
     return Error{ErrorCode::StoreError, "state hash must be 16 hex characters"};
   }
+  if (payload.size() > UINT32_MAX - 64) {
+    return Error{ErrorCode::StoreError, "snapshot payload is too large"};
+  }
   std::string bytes(52 + payload.size(), '\0');
   bytes.replace(0, 8, "CHOSSNAP");
-  write_u16(bytes, 8, 1);
+  write_u16(bytes, 8, 2);
   write_u16(bytes, 10, choreoos::state::kCurrentSchemaVersion);
   write_u64(bytes, 12, state.last_applied.value());
   write_u64(bytes, 20, state.term.value());
@@ -125,20 +142,48 @@ Result<std::optional<Snapshot>> load_latest_snapshot(const std::filesystem::path
   if (!std::filesystem::exists(folder)) {
     return std::optional<Snapshot>{};
   }
-  std::optional<Snapshot> newest;
+  // File names are zero-padded indexes, so a descending name sort is a
+  // descending index sort. Stop at the newest snapshot that verifies instead of
+  // reading and replaying every file ever written.
+  std::vector<std::filesystem::path> files;
   for (const auto& entry : std::filesystem::directory_iterator(folder)) {
-    if (entry.path().extension() != ".snap") {
-      continue;
-    }
-    auto snapshot = read_snapshot(entry.path());
-    if (!snapshot) {
-      continue;
-    }
-    if (!newest || newest->index < snapshot.value().index) {
-      newest = snapshot.value();
+    if (entry.path().extension() == ".snap") {
+      files.push_back(entry.path());
     }
   }
-  return newest;
+  std::sort(files.begin(), files.end(), std::greater<>());
+  for (const auto& path : files) {
+    auto snapshot = read_snapshot(path);
+    if (snapshot) {
+      return std::optional<Snapshot>{std::move(snapshot.value())};
+    }
+  }
+  return std::optional<Snapshot>{};
+}
+
+Result<PruneResult> prune_snapshots(const std::filesystem::path& directory, std::size_t keep) {
+  const auto folder = directory / "snapshots";
+  if (!std::filesystem::exists(folder)) {
+    return PruneResult{};
+  }
+  std::vector<std::filesystem::path> files;
+  for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+    if (entry.path().extension() == ".snap") {
+      files.push_back(entry.path());
+    }
+  }
+  std::sort(files.begin(), files.end(), std::greater<>());
+  for (std::size_t i = keep; i < files.size(); ++i) {
+    std::error_code ec;
+    std::filesystem::remove(files[i], ec);  // best effort: a leftover file is harmless
+  }
+  PruneResult result;
+  result.remaining = std::min(keep, files.size());
+  if (result.remaining > 0) {
+    // File names are the zero-padded index.
+    result.oldest_index = std::stoull(files[result.remaining - 1].stem().string());
+  }
+  return result;
 }
 
 }  // namespace choreoos::storage

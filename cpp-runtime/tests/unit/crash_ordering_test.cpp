@@ -185,9 +185,10 @@ TEST(CrashOrderingTest, WalRewriteReplacesAtomicallyEvenWithStaleTempFile) {
   auto reopened = FileEngine::open(dir, reopen_options);
   ASSERT_TRUE(reopened) << reopened.error().to_string();
   EXPECT_EQ(state_hash(reopened.value().engine().state()), full_hash);
-  // The snapshot covers 1..6, so only 7 and 8 remain in the log.
-  ASSERT_EQ(reopened.value().log_events().size(), 2u);
-  EXPECT_EQ(reopened.value().log_events().front().index.value(), 7u);
+  // The snapshot covers 1..6. Records below it are gone; index 6 itself stays
+  // as the anchor, followed by 7 and 8.
+  ASSERT_EQ(reopened.value().log_events().size(), 3u);
+  EXPECT_EQ(reopened.value().log_events().front().index.value(), 6u);
 }
 
 TEST(CrashOrderingTest, WalFlushTimeIsPartOfAppendTimeNotACumulativeTotal) {

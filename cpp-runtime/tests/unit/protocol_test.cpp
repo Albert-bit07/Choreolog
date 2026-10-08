@@ -102,6 +102,43 @@ TEST(ProtocolTest, MessagesRoundTrip) {
   EXPECT_EQ(decoded_snapshot.value().payload, "events");
 }
 
+TEST(ProtocolTest, SnapshotChunkFieldsRoundTrip) {
+  InstallSnapshot chunk;
+  chunk.term = 3;
+  chunk.leader_id = "node-1";
+  chunk.last_included_index = 900;
+  chunk.last_included_term = 2;
+  chunk.state_hash = "0123456789abcdef";
+  chunk.payload = "middle of the payload";
+  chunk.offset = 262144;
+  chunk.more = true;
+  auto encoded = encode(chunk);
+  ASSERT_TRUE(encoded);
+  auto decoded = decode_install_snapshot(encoded.value());
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ(decoded.value().offset, 262144u);
+  EXPECT_TRUE(decoded.value().more);
+  EXPECT_EQ(decoded.value().payload, "middle of the payload");
+
+  // A message with neither field is the whole payload: offset 0, no more.
+  InstallSnapshot whole;
+  whole.leader_id = "node-1";
+  whole.payload = "all of it";
+  auto whole_decoded = decode_install_snapshot(encode(whole).value());
+  ASSERT_TRUE(whole_decoded);
+  EXPECT_EQ(whole_decoded.value().offset, 0u);
+  EXPECT_FALSE(whole_decoded.value().more);
+
+  InstallSnapshotResponse response;
+  response.follower_id = "node-2";
+  response.success = true;
+  response.next_offset = 524288;
+  auto response_decoded = decode_snapshot_response(encode(response).value());
+  ASSERT_TRUE(response_decoded);
+  EXPECT_TRUE(response_decoded.value().success);
+  EXPECT_EQ(response_decoded.value().next_offset, 524288u);
+}
+
 TEST(ProtocolTest, CommandTextRoundTrip) {
   Command command{CommandId::parse("c-create").value(),
                   ChoreographyId::parse("opening").value(),

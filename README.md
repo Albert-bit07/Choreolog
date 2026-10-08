@@ -79,7 +79,7 @@ The CLI and automated tests remain usable without the dashboard or Temporal.
 
 Milestone 3 is implemented: three nodes, one configured leader, and majority commit. A command succeeds only after a majority has stored it and the leader has applied it. Stopping one follower still allows commits. Restarting that follower catches it up to the same hash. This is replication, not consensus. The protocol is described in [docs/protocol.md](docs/protocol.md).
 
-Milestone 2 remains underneath: a checksummed write-ahead log (`wal.bin`), atomic node metadata, and snapshots. Disk formats are in [docs/persistence.md](docs/persistence.md).
+Milestone 2 remains underneath: a checksummed write-ahead log (`wal.bin`), atomic node metadata, and state snapshots. Snapshots hold serialized state rather than event history, cluster nodes compact their log behind them, and a far-behind follower catches up through bounded batches or a chunked snapshot. Disk formats and crash ordering are in [docs/persistence.md](docs/persistence.md).
 
 Milestone 1 remains the deterministic state machine underneath that log. Two
 independent replays of the same store still produce the same hash.

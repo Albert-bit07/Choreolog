@@ -322,7 +322,9 @@ Verified: `ReplicationTest.OneFollowerLossStillCommitsThenCatchesUp` and `Cluste
 - [x] Restart as follower from persisted term/vote/log/snapshot.
 - [x] Catch up incrementally through AppendEntries.
 - [x] Install snapshots for compacted history.
-- [ ] Verify snapshot chunks and final checksum.
+- [x] Snapshots hold serialized state (format 2), not the event history; the log is compacted back to the older retained snapshot.
+- [x] Bound catch-up `AppendEntries` by entries and bytes so a far-behind follower always fits a frame.
+- [x] Verify snapshot chunks and final checksum. Chunks carry offset and a `more` flag, the follower acknowledges `next_offset`, and nothing applies until the whole payload matches the state hash.
 - [x] Resume log replication after snapshot index.
 - [x] Rejoin an old leader safely as follower.
 

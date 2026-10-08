@@ -12,6 +12,7 @@ add_executable(
   unit/replication_test.cpp
   unit/catchup_test.cpp
   unit/crash_ordering_test.cpp
+  unit/snapshot_compaction_test.cpp
   unit/faults_test.cpp
   unit/workload.cpp
   unit/property_test.cpp

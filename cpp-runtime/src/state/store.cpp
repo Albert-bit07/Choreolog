@@ -255,15 +255,48 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
       options.commit_on_append ? UINT64_MAX : metadata.value().commit_index.value();
   std::uint64_t start_after = 0;
   if (snapshot.value() && snapshot.value()->index.value() <= apply_limit) {
-    for (const auto& event : snapshot.value()->events) {
-      if (auto applied = store.engine_.apply_committed(event); !applied) {
-        return applied.error();
+    auto restored = storage::verify_snapshot(*snapshot.value());
+    if (!restored) {
+      return restored.error();
+    }
+    // Always hold the snapshot in state form so a leader can serve it to a
+    // lagging peer, whichever format was on disk.
+    storage::Snapshot in_memory = *snapshot.value();
+    if (in_memory.legacy()) {
+      in_memory.state_payload = snapshot_payload(restored.value());
+      in_memory.events.clear();
+    }
+    if (snapshot.value()->legacy()) {
+      for (const auto& event : snapshot.value()->events) {
+        if (auto applied = store.engine_.apply_committed(event); !applied) {
+          return applied.error();
+        }
       }
+    } else {
+      // Keep committed history in memory only when the log still holds the
+      // whole prefix, so tools that replay to an index keep working.
+      std::vector<Event> history;
+      const auto& records = store.wal_->events();
+      if (!records.empty() && records.front().index.value() == 1) {
+        for (const auto& event : records) {
+          if (event.index.value() > snapshot.value()->index.value()) {
+            break;
+          }
+          history.push_back(event);
+        }
+      }
+      store.engine_.restore(std::move(restored.value()), std::move(history));
     }
     store.recovery_.used_snapshot = true;
     store.recovery_.snapshot_index = snapshot.value()->index.value();
-    store.snapshot_ = snapshot.value();
+    store.snapshot_ = std::move(in_memory);
     start_after = snapshot.value()->index.value();
+  }
+  if (start_after == 0 && !store.wal_->events().empty() &&
+      store.wal_->events().front().index.value() > 1 &&
+      store.wal_->events().front().index.value() <= apply_limit) {
+    return Error{ErrorCode::StoreError,
+                 "the log was compacted but no valid snapshot covers its missing prefix"};
   }
   for (const auto& event : store.wal_->events()) {
     if (event.index.value() <= start_after) {
@@ -331,16 +364,12 @@ Result<SubmitResult> FileEngine::submit(Command command) {
       !stored) {
     return stored.error();
   }
-  if (options_.snapshot_every > 0 &&
-      engine_.state().last_applied.value() % options_.snapshot_every == 0) {
-    if (auto saved = storage::save_snapshot(directory_, engine_.events(), engine_.state(), sync);
-        !saved) {
-      return saved.error();
-    }
-  }
   recovery_.commit_index = engine_.state().last_applied.value();
   recovery_.state_hash = state_hash(engine_.state());
   commit_index_ = engine_.state().last_applied;
+  if (auto snapshotted = maybe_snapshot_unlocked(); !snapshotted) {
+    return snapshotted.error();
+  }
   return SubmitResult{proposed.value(), false};
 }
 
@@ -357,13 +386,32 @@ const Event* FileEngine::log_entry(std::uint64_t index) const {
 
 std::uint64_t FileEngine::last_log_index() const {
   const auto& events = wal_->events();
-  return events.empty() ? 0 : events.back().index.value();
+  return events.empty() ? engine_.state().last_applied.value() : events.back().index.value();
+}
+
+std::uint64_t FileEngine::log_first_index() const {
+  const auto& events = wal_->events();
+  return events.empty() ? engine_.state().last_applied.value() + 1 : events.front().index.value();
+}
+
+std::optional<std::uint64_t> FileEngine::log_term_at(std::uint64_t index) const {
+  if (index == 0) {
+    return 0;
+  }
+  if (const Event* entry = log_entry(index)) {
+    return entry->term.value();
+  }
+  if (wal_->events().empty() && snapshot_ && snapshot_->index.value() == index) {
+    return snapshot_->term.value();
+  }
+  return std::nullopt;
 }
 
 Result<void> FileEngine::append_event(const Event& event) {
   std::lock_guard<std::mutex> lock(*mutex_);
-  const std::uint64_t expected =
-      wal_->events().empty() ? 1 : wal_->events().back().index.next().value();
+  const std::uint64_t expected = wal_->events().empty()
+                                     ? engine_.state().last_applied.value() + 1
+                                     : wal_->events().back().index.next().value();
   if (event.index.value() != expected) {
     return Error{ErrorCode::IndexGap, "appended event is not the next log index"};
   }
@@ -446,15 +494,56 @@ Result<void> FileEngine::commit_through(LogIndex index) {
   commit_index_ = index;
   recovery_.commit_index = index.value();
   recovery_.state_hash = state_hash(engine_.state());
-  if (options_.snapshot_every > 0 && index.value() % options_.snapshot_every == 0) {
-    if (auto saved = storage::save_snapshot(directory_, engine_.events(), engine_.state(), sync);
-        !saved) {
-      return saved.error();
-    }
-    snapshot_ = storage::Snapshot{index, engine_.state().term, state_hash(engine_.state()),
-                                  engine_.events()};
+  return maybe_snapshot_unlocked();
+}
+
+Result<void> FileEngine::maybe_snapshot_unlocked() {
+  const std::uint64_t every = options_.snapshot_every;
+  if (every == 0) {
+    return {};
+  }
+  // Compare snapshot "periods" rather than testing index % every, so a commit
+  // that jumps over a multiple (batched catch-up) still takes the snapshot.
+  const std::uint64_t applied = engine_.state().last_applied.value();
+  const std::uint64_t last = snapshot_ ? snapshot_->index.value() : 0;
+  if (applied / every <= last / every) {
+    return {};
+  }
+  return take_snapshot_unlocked();
+}
+
+Result<void> FileEngine::take_snapshot_unlocked() {
+  const bool sync = options_.durability == storage::Durability::Sync;
+  if (auto saved = storage::save_snapshot(directory_, engine_.state(), sync); !saved) {
+    return saved.error();
+  }
+  snapshot_ = storage::Snapshot{engine_.state().last_applied,
+                                engine_.state().term,
+                                state_hash(engine_.state()),
+                                {},
+                                snapshot_payload(engine_.state())};
+  // Two snapshots are enough: the newest, and one fallback if it is damaged.
+  auto pruned = storage::prune_snapshots(directory_, 2);
+  if (options_.compact_log && pruned && pruned.value().remaining >= 2) {
+    // Only compact once a fallback exists, and only back to the fallback.
+    return compact_unlocked(pruned.value().oldest_index);
   }
   return {};
+}
+
+Result<void> FileEngine::compact_unlocked(std::uint64_t anchor) {
+  const auto& events = wal_->events();
+  if (events.empty() || events.front().index.value() >= anchor) {
+    return {};
+  }
+  if (anchor > events.back().index.value()) {
+    return {};
+  }
+  // Keep the snapshot's own record: it supplies the term for the prev-entry
+  // check of the first AppendEntries after the boundary.
+  const auto offset = static_cast<std::ptrdiff_t>(anchor - events.front().index.value());
+  std::vector<Event> kept(events.begin() + offset, events.end());
+  return wal_->rewrite(kept);
 }
 
 storage::NodeMetadata FileEngine::consensus_metadata() const {
@@ -488,29 +577,31 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
   }
   // Validate and build the replacement entirely in memory first. Nothing on
   // disk or in this object changes until the snapshot is known to be good.
-  auto replayed = replay(snapshot.events);
-  if (!replayed) {
-    return replayed.error();
-  }
-  if (state_hash(replayed.value()) != snapshot.state_hash ||
-      replayed.value().last_applied != snapshot.index) {
-    return Error{ErrorCode::StoreError, "snapshot checksum does not match its events"};
+  auto restored = storage::verify_snapshot(snapshot);
+  if (!restored) {
+    return restored.error();
   }
   Engine replacement;
-  for (const auto& event : snapshot.events) {
-    if (auto applied = replacement.apply_committed(event); !applied) {
-      return applied.error();
+  if (snapshot.legacy()) {
+    for (const auto& event : snapshot.events) {
+      if (auto applied = replacement.apply_committed(event); !applied) {
+        return applied.error();
+      }
     }
+  } else {
+    replacement.restore(std::move(restored.value()));
   }
 
   bool prefix_matches = false;
   if (const Event* anchor = log_entry(snapshot.index.value())) {
     prefix_matches = anchor->term == snapshot.term;
   }
+  // Keep the snapshot's own record (the anchor) and anything after it when the
+  // local log agrees with the snapshot; otherwise the whole log is stale.
   std::vector<Event> suffix;
   if (prefix_matches) {
     for (const auto& event : wal_->events()) {
-      if (snapshot.index < event.index) {
+      if (snapshot.index <= event.index) {
         suffix.push_back(event);
       }
     }
@@ -525,8 +616,7 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
   // The old order rewrote the WAL first, so a crash before the snapshot was
   // saved lost the committed prefix with nothing to restore it from.
   const bool sync = options_.durability == storage::Durability::Sync;
-  if (auto saved = storage::save_snapshot(directory_, snapshot.events, replacement.state(), sync);
-      !saved) {
+  if (auto saved = storage::save_snapshot(directory_, replacement.state(), sync); !saved) {
     return saved.error();
   }
   auto metadata = storage::load_metadata(directory_ / "meta.bin");
@@ -547,7 +637,14 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
 
   engine_ = std::move(replacement);
   commit_index_ = snapshot.index;
-  snapshot_ = snapshot;
+  snapshot_ = storage::Snapshot{snapshot.index,
+                                snapshot.term,
+                                snapshot.state_hash,
+                                {},
+                                snapshot_payload(engine_.state())};
+  // An older snapshot cannot bridge to a log that now starts at this one, so
+  // keep only the installed snapshot.
+  (void)storage::prune_snapshots(directory_, 1);
   recovery_.used_snapshot = true;
   recovery_.snapshot_index = snapshot.index.value();
   recovery_.commit_index = snapshot.index.value();
@@ -560,27 +657,15 @@ Result<void> FileEngine::discard_compacted_prefix() {
   if (!snapshot_) {
     return Error{ErrorCode::StoreError, "no snapshot to compact against"};
   }
-  std::vector<Event> suffix;
-  for (const auto& event : wal_->events()) {
-    if (snapshot_->index < event.index) {
-      suffix.push_back(event);
-    }
-  }
-  return wal_->rewrite(suffix);
+  return compact_unlocked(snapshot_->index.value());
 }
 
 Result<void> FileEngine::checkpoint() {
   std::lock_guard<std::mutex> lock(*mutex_);
-  const bool sync = options_.durability == storage::Durability::Sync;
-  if (auto saved = storage::save_snapshot(directory_, engine_.events(), engine_.state(), sync);
-      !saved) {
-    return saved.error();
+  if (engine_.state().last_applied.value() == 0) {
+    return {};
   }
-  if (engine_.state().last_applied.value() > 0) {
-    snapshot_ = storage::Snapshot{engine_.state().last_applied, engine_.state().term,
-                                  state_hash(engine_.state()), engine_.events()};
-  }
-  return {};
+  return take_snapshot_unlocked();
 }
 
 }  // namespace choreoos::state

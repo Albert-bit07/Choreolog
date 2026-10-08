@@ -42,6 +42,8 @@ struct ReplicaConfig {
   // (protocol::kMaxFramePayload is 1 MiB). At least one entry is always sent.
   std::size_t max_append_entries = 512;
   std::size_t max_append_bytes = 256 * 1024;
+  // A snapshot longer than this is sent as several InstallSnapshot chunks.
+  std::size_t max_snapshot_chunk_bytes = 256 * 1024;
 };
 
 struct EnqueueResult {
@@ -71,6 +73,7 @@ struct ConsensusMetrics {
   // Messages the replica refused to send because they exceed the frame limit.
   // A non-zero value means a peer cannot make progress through that message.
   std::uint64_t messages_dropped_oversize = 0;
+  std::uint64_t snapshot_chunks_sent = 0;
 };
 
 class Replica {
@@ -113,10 +116,25 @@ class Replica {
     std::string id;
     std::uint64_t next_index = 1;
     std::uint64_t match_index = 0;
-    std::uint64_t snapshot_index = 0;
+    std::uint64_t snapshot_index = 0;   // snapshot currently being sent
+    std::uint64_t snapshot_offset = 0;  // next payload byte the peer needs
+    std::uint64_t snapshot_sent_tick = UINT64_MAX;
   };
 
-  void replicate(Peer& peer);
+  // A snapshot being assembled from chunks. Nothing is applied until the final
+  // chunk arrives and the whole payload verifies against its hash.
+  struct IncomingSnapshot {
+    bool active = false;
+    std::uint64_t index = 0;
+    std::uint64_t term = 0;
+    std::string hash;
+    std::string data;
+  };
+
+  // `force` bypasses the once-per-tick limit on re-sending a snapshot chunk; it
+  // is set when a peer acknowledged the previous chunk.
+  void replicate(Peer& peer, bool force = false);
+  void send_snapshot_chunk(Peer& peer, const choreoos::storage::Snapshot& snapshot, bool force);
   void replicate_all();
   void on_append(const choreoos::protocol::AppendEntries& message, std::uint64_t correlation);
   void on_append_response(const choreoos::protocol::AppendEntriesResponse& message);
@@ -126,6 +144,8 @@ class Replica {
   void on_install_response(const choreoos::protocol::InstallSnapshotResponse& message);
   void advance_commit();
   void rebuild_speculative();
+  void reply_install(const std::string& leader, std::uint64_t correlation, bool success,
+                     std::uint64_t next_offset);
   // Followers never propose, so they only mark speculative state stale. It is
   // rebuilt when this node needs it (becoming leader, or a restamped term).
   void ensure_speculative();
@@ -151,6 +171,8 @@ class Replica {
   bool speculative_dirty_ = false;
   std::unordered_map<std::string, std::uint64_t> command_index_;  // command id -> log index
   std::vector<Peer> peers_;
+  IncomingSnapshot incoming_snapshot_;
+  std::uint64_t ticks_ = 0;
   Sender sender_;
   std::function<void()> commit_hook_;
   std::uint64_t next_correlation_ = 1;
