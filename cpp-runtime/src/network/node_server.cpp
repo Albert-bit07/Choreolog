@@ -81,6 +81,10 @@ struct NodeServer::Impl {
   void complete_waiters();
   void on_client(const std::shared_ptr<Session>& session, const choreoos::protocol::Frame& frame);
   void dispatch(const std::shared_ptr<Session>& session, const choreoos::protocol::Frame& frame);
+  [[nodiscard]] bool is_configured_peer(const std::string& id) const {
+    return std::any_of(config.peers.begin(), config.peers.end(),
+                       [&](const auto& peer) { return peer.id == id; });
+  }
 
   choreoos::runtime::NodeConfig config;
   choreoos::replication::Replica replica;
@@ -452,12 +456,26 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
       ++transport_metrics.malformed;
       return;
     }
+    // Only configured peers may claim a peer identity. This is a gate against
+    // strangers, not authentication: a process that knows a peer id can still
+    // claim it, so real deployments need a shared secret or mTLS on top.
+    if (!is_configured_peer(hello.value().node_id)) {
+      ++transport_metrics.rejected;
+      return;
+    }
     session->assign_peer(hello.value().node_id);
     return;
   }
   if (frame.type == choreoos::protocol::MessageType::ClientCommand ||
       frame.type == choreoos::protocol::MessageType::StatusQuery) {
     on_client(session, frame);
+    return;
+  }
+  // Everything else is replication traffic (AppendEntries, votes, snapshots).
+  // It must not come from an unidentified connection: a forged high term would
+  // be persisted and could depose the leader or block elections.
+  if (!is_configured_peer(session->peer_id)) {
+    ++transport_metrics.rejected;
     return;
   }
   replica.handle(frame);

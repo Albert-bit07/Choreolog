@@ -71,6 +71,40 @@ choreoos::state::Result<choreoos::protocol::StatusResponse> status_of(std::uint1
   return choreoos::protocol::decode_status_response(reply.value().payload);
 }
 
+TEST(ClusterTest, ReplicationFramesFromUnidentifiedConnectionsAreRejected) {
+  const auto root = fresh("choreoos-tcp-gate");
+  auto node = NodeServer::open(node_config("node-2", "node-1", root / "node-2", 19141,
+                                           {{"node-1", "127.0.0.1", 19140}}, true, 3));
+  ASSERT_TRUE(node);
+  std::thread runner([&] { node.value()->run(); });
+
+  // A stranger sends AppendEntries with an enormous term and no handshake. If
+  // it reached the replica the term would be persisted and could depose a
+  // leader or block elections for good.
+  choreoos::protocol::AppendEntries forged;
+  forged.term = 999999;
+  forged.leader_id = "node-9";
+  choreoos::protocol::Frame frame;
+  frame.type = choreoos::protocol::MessageType::AppendEntries;
+  frame.correlation = 7;
+  frame.payload = choreoos::protocol::encode(forged).value();
+  (void)choreoos::protocol::transact("127.0.0.1", 19141, frame, std::chrono::milliseconds(300));
+
+  // A handshake claiming an id that is not a configured peer gains nothing.
+  choreoos::protocol::Frame hello;
+  hello.type = choreoos::protocol::MessageType::Handshake;
+  hello.payload =
+      choreoos::protocol::encode(choreoos::protocol::Handshake{"node-9", 1, 0}).value();
+  (void)choreoos::protocol::transact("127.0.0.1", 19141, hello, std::chrono::milliseconds(200));
+
+  auto status = status_of(19141);
+  ASSERT_TRUE(status);
+  EXPECT_LT(status.value().term, 1000u);
+  EXPECT_GE(node.value()->metrics().rejected, 2u);
+  node.value()->stop();
+  runner.join();
+}
+
 TEST(ClusterTest, ThreeTcpNodesCommitAndCatchUp) {
   const auto root = fresh("choreoos-tcp-cluster");
   const auto leader_dir = root / "node-1";

@@ -33,10 +33,7 @@ BINARIES=(
   echo "  \"compiler\": \"$(grep CMAKE_CXX_COMPILER:FILEPATH "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)\","
   echo "  \"cxx_flags\": \"$(grep CMAKE_CXX_FLAGS_RELEASE:STRING "$BUILD_DIR/CMakeCache.txt" | cut -d= -f2)\","
   echo "  \"cpu\": \"$(lscpu | grep 'Model name' | cut -d: -f2 | xargs)\","
-<<<<<<< HEAD
-=======
   echo "  \"memory\": \"$(free -h | awk '/^Mem:/{print $2}')\","
->>>>>>> c7c5b15 (Steps 32-33: benchmark aggregation and apply() optimization)
   echo "  \"os\": \"$(uname -srm)\","
   echo "  \"date_utc\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
   echo "}"

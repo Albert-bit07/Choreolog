@@ -606,6 +606,6 @@ Exit criterion: demonstrations clearly identify whether recovery came from C++ r
 
 ## Start here
 
-Milestones 0–3 are on main. Milestone 3 is fixed-leader replication, not consensus. Milestone 4 election code is on main and is Raft-like, not production Raft; a few Step 27 boxes (every two-versus-one process partition, multi-chunk snapshots) are still open. Milestone 5 seeded fault injection and property tests now pass locally. A green seed is evidence, not a proof.
+Milestones 0–3 are on main. Milestone 3 is fixed-leader replication, not consensus. Milestone 4 election code is on main and is Raft-like, not production Raft; a Step 27 box (every two-versus-one process partition) is still open. Multi-chunk snapshots are done. Milestone 5 seeded fault injection and property tests now pass locally. A green seed is evidence, not a proof.
 
 The next implementation session should begin Milestone 6 at Step 31: benchmark harnesses. Do not start the dashboard or Temporal workflows until the C++ management API and C# client can return retry-safe committed results.
