@@ -435,7 +435,11 @@ TEST(ReplicationTest, SnapshotInstallCatchesUpCompactedFollower) {
   ASSERT_GE(leader.value().store().commit_index().value(), 2u);
   ASSERT_TRUE(leader.value().store().latest_snapshot());
   ASSERT_TRUE(leader.value().store().discard_compacted_prefix());
-  EXPECT_TRUE(leader.value().store().log_events().empty());
+  // Everything below the snapshot is gone; its own record stays as the anchor
+  // that supplies the prev-entry term for a peer that is exactly caught up.
+  ASSERT_EQ(leader.value().store().log_events().size(), 1u);
+  EXPECT_EQ(leader.value().store().log_events().front().index,
+            leader.value().store().latest_snapshot()->index);
 
   auto behind = Replica::open(ReplicaConfig{
       "node-3", "node-1", {"node-1", "node-2"}, fresh("choreoos-snap-3"), false, 1, 3, 6, 1});

@@ -53,13 +53,21 @@ struct InstallSnapshot {
   std::uint64_t last_included_index = 0;
   std::uint64_t last_included_term = 0;
   std::string state_hash;
+  // One chunk of the snapshot payload. `offset` is where this chunk starts in
+  // the whole payload and `more` says another chunk follows. A message with
+  // offset 0 and more == false carries the entire payload.
   std::string payload;
+  std::uint64_t offset = 0;
+  bool more = false;
 };
 
 struct InstallSnapshotResponse {
   std::uint64_t term = 1;
   std::string follower_id;
   bool success = false;
+  // Offset the follower expects next. After the final chunk it equals the
+  // payload size. After a rejected chunk it is 0, so the leader restarts.
+  std::uint64_t next_offset = 0;
 };
 
 struct ProtocolError {

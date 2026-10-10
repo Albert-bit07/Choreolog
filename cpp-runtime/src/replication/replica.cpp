@@ -17,15 +17,39 @@ using choreoos::state::LogIndex;
 
 }  // namespace
 
+namespace {
+
+// The committed state plus every uncommitted log entry. Entries at or below the
+// commit index may already be compacted, so start from the applied state and
+// apply only the uncommitted suffix instead of replaying the whole log.
+choreoos::state::Result<choreoos::state::ChoreographyState> build_speculative(
+    const choreoos::state::FileEngine& store) {
+  choreoos::state::ChoreographyState state = store.engine().state();
+  for (std::uint64_t index = store.commit_index().value() + 1; index <= store.last_log_index();
+       ++index) {
+    const auto* entry = store.log_entry(index);
+    if (entry == nullptr) {
+      return Error{ErrorCode::IndexGap, "log is missing an uncommitted entry"};
+    }
+    if (auto applied = choreoos::state::apply(state, *entry); !applied) {
+      return applied.error();
+    }
+  }
+  return state;
+}
+
+}  // namespace
+
 choreoos::state::Result<Replica> Replica::open(ReplicaConfig config) {
   choreoos::state::StoreOptions options;
   options.commit_on_append = false;
   options.snapshot_every = config.snapshot_every;
+  options.compact_log = true;
   auto store = choreoos::state::FileEngine::open(config.directory, options);
   if (!store) {
     return store.error();
   }
-  auto speculative = choreoos::state::replay(store.value().log_events());
+  auto speculative = build_speculative(store.value());
   if (!speculative) {
     return speculative.error();
   }
@@ -50,6 +74,7 @@ choreoos::state::Result<Replica> Replica::open(ReplicaConfig config) {
   for (auto& peer : replica.peers_) {
     peer.next_index = next;
   }
+  replica.rebuild_command_index();
   return replica;
 }
 
@@ -99,11 +124,10 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
   if (!is_leader()) {
     return Error{ErrorCode::NotLeader, "leader is " + config_.leader_id};
   }
-  for (const auto& event : store_.log_events()) {
-    if (event.command_id.value() == command.id.value()) {
-      return EnqueueResult{event, true, event.index <= store_.commit_index(), config_.leader_id};
-    }
+  if (const auto* known = find_command(command.id.value())) {
+    return EnqueueResult{*known, true, known->index <= store_.commit_index(), config_.leader_id};
   }
+  ensure_speculative();
   // Propose against speculative state, which includes uncommitted entries, but
   // stamp the event with the election term rather than a stale applied term.
   auto proposed = choreoos::state::propose(speculative_, command);
@@ -130,6 +154,7 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
   if (auto written = store_.append_event(proposed.value()); !written) {
     return written.error();
   }
+  command_index_[proposed.value().command_id.value()] = proposed.value().index.value();
   if (!config_.elections) {
     if (auto applied = choreoos::state::apply(speculative_, proposed.value()); !applied) {
       return applied.error();
@@ -196,6 +221,7 @@ void Replica::handle(const choreoos::protocol::Frame& frame) {
 }
 
 void Replica::tick() {
+  ++ticks_;
   if (!config_.elections) {
     if (is_leader()) {
       replicate_all();
@@ -227,29 +253,47 @@ NodeStatus Replica::status() const {
   return status;
 }
 
-void Replica::replicate(Peer& peer) {
-  if (const auto& snapshot = store_.latest_snapshot()) {
-    const bool behind_snapshot = peer.match_index < snapshot->index.value();
-    const bool prev_missing = peer.next_index <= 1 ||
-                              find_index(peer.next_index == 0 ? 0 : peer.next_index - 1) == nullptr;
-    if (behind_snapshot && prev_missing && snapshot->index.value() > 0) {
-      choreoos::protocol::InstallSnapshot message;
-      message.term = current_term_.value();
-      message.leader_id = config_.id;
-      message.last_included_index = snapshot->index.value();
-      message.last_included_term = snapshot->term.value();
-      message.state_hash = snapshot->state_hash;
-      for (const auto& event : snapshot->events) {
-        if (!message.payload.empty()) {
-          message.payload.push_back('\n');
-        }
-        message.payload += choreoos::state::canonical_event(event);
-      }
-      peer.snapshot_index = snapshot->index.value();
-      if (auto payload = choreoos::protocol::encode(message)) {
-        send(peer.id, choreoos::protocol::MessageType::InstallSnapshot, next_correlation_++,
-             payload.value());
-      }
+void Replica::send_snapshot_chunk(Peer& peer, const choreoos::storage::Snapshot& snapshot,
+                                  bool force) {
+  if (peer.snapshot_index != snapshot.index.value()) {
+    // The leader took a newer snapshot mid-transfer; start that one over.
+    peer.snapshot_index = snapshot.index.value();
+    peer.snapshot_offset = 0;
+  }
+  if (!force && peer.snapshot_sent_tick == ticks_) {
+    return;
+  }
+  peer.snapshot_sent_tick = ticks_;
+  ++metrics_.snapshot_chunks_sent;
+  const std::string& data = snapshot.state_payload;
+  const std::size_t offset = std::min<std::size_t>(peer.snapshot_offset, data.size());
+  const std::size_t length =
+      std::min<std::size_t>(config_.max_snapshot_chunk_bytes, data.size() - offset);
+  choreoos::protocol::InstallSnapshot message;
+  message.term = current_term_.value();
+  message.leader_id = config_.id;
+  message.last_included_index = snapshot.index.value();
+  message.last_included_term = snapshot.term.value();
+  message.state_hash = snapshot.state_hash;
+  message.payload = data.substr(offset, length);
+  message.offset = offset;
+  message.more = offset + length < data.size();
+  if (auto payload = choreoos::protocol::encode(message)) {
+    send(peer.id, choreoos::protocol::MessageType::InstallSnapshot, next_correlation_++,
+         payload.value());
+  }
+}
+
+void Replica::replicate(Peer& peer, bool force) {
+  const std::uint64_t previous_index = peer.next_index == 0 ? 0 : peer.next_index - 1;
+  // The log can serve this peer when it still holds (or can name the term of)
+  // the entry just before next_index. After compaction, a peer behind that
+  // boundary can only be brought up to date with the snapshot.
+  const bool can_append = (previous_index == 0 && store_.log_first_index() <= 1) ||
+                          (previous_index > 0 && store_.log_term_at(previous_index).has_value());
+  if (!can_append) {
+    if (const auto& snapshot = store_.latest_snapshot(); snapshot && !snapshot->legacy()) {
+      send_snapshot_chunk(peer, *snapshot, force);
       return;
     }
   }
@@ -258,19 +302,30 @@ void Replica::replicate(Peer& peer) {
   message.term = current_term_.value();
   message.leader_id = config_.id;
   message.leader_commit = store_.commit_index().value();
-  message.prev_log_index = peer.next_index == 0 ? 0 : peer.next_index - 1;
+  message.prev_log_index = previous_index;
   if (message.prev_log_index > 0) {
-    if (const auto* previous = find_index(message.prev_log_index)) {
-      message.prev_log_term = previous->term.value();
+    if (const auto previous_term = store_.log_term_at(message.prev_log_index)) {
+      message.prev_log_term = *previous_term;
     } else {
       message.prev_log_index = 0;
       message.prev_log_term = 0;
     }
   }
-  for (const auto& event : store_.log_events()) {
-    if (event.index.value() >= peer.next_index) {
-      message.entries.push_back(event);
+  // Bounded batch: entries are contiguous, so walk by index instead of scanning
+  // the whole log, and stop before the message could exceed the frame limit.
+  std::size_t batch_bytes = 0;
+  for (std::uint64_t next = peer.next_index; next <= last_index(); ++next) {
+    const auto* entry = find_index(next);
+    if (entry == nullptr) {
+      break;
     }
+    const std::size_t cost = choreoos::state::canonical_event(*entry).size() + 32;
+    if (!message.entries.empty() && (message.entries.size() >= config_.max_append_entries ||
+                                     batch_bytes + cost > config_.max_append_bytes)) {
+      break;
+    }
+    batch_bytes += cost;
+    message.entries.push_back(*entry);
   }
   if (auto payload = choreoos::protocol::encode(message)) {
     send(peer.id, choreoos::protocol::MessageType::AppendEntries, next_correlation_++,
@@ -321,8 +376,15 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
   if (message.prev_log_index > last_index()) {
     response.hint_index = last_index();
   } else if (message.prev_log_index > 0) {
-    const auto* previous = find_index(message.prev_log_index);
-    if (previous != nullptr && previous->term.value() == message.prev_log_term) {
+    if (const auto term = store_.log_term_at(message.prev_log_index)) {
+      if (*term == message.prev_log_term) {
+        previous_matches = true;
+      } else {
+        response.hint_index = message.prev_log_index - 1;
+      }
+    } else if (message.prev_log_index < store_.log_first_index()) {
+      // Compacted away, so committed: the leader's copy of that prefix is the
+      // same as ours by the committed-prefix guarantee.
       previous_matches = true;
     } else {
       response.hint_index = message.prev_log_index - 1;
@@ -331,6 +393,9 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
   if (previous_matches) {
     response.success = true;
     for (const auto& entry : message.entries) {
+      if (entry.index.value() < store_.log_first_index()) {
+        continue;  // already compacted, hence committed and identical
+      }
       const auto* existing = find_index(entry.index.value());
       if (existing != nullptr &&
           choreoos::state::canonical_event(*existing) == choreoos::state::canonical_event(entry)) {
@@ -347,6 +412,8 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
           response.success = false;
           break;
         }
+        rebuild_command_index();
+        speculative_dirty_ = true;
       } else if (entry.index.value() != last_index() + 1) {
         response.success = false;
         response.hint_index = last_index();
@@ -356,9 +423,10 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
         response.success = false;
         break;
       }
+      command_index_[entry.command_id.value()] = entry.index.value();
+      speculative_dirty_ = true;
     }
     if (response.success) {
-      rebuild_speculative();
       const std::uint64_t covered =
           message.leader_commit < last_index() ? message.leader_commit : last_index();
       if (covered > store_.commit_index().value()) {
@@ -369,7 +437,10 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
           commit_hook_();
         }
       }
-      response.match_index = last_index();
+      // Raft: a follower acknowledges only what this message proved matches,
+      // not whatever extra suffix it happens to hold beyond it.
+      response.match_index =
+          message.entries.empty() ? message.prev_log_index : message.entries.back().index.value();
       response.hint_index = last_index();
     }
   }
@@ -418,6 +489,11 @@ void Replica::on_append_response(const choreoos::protocol::AppendEntriesResponse
   }
   peer->next_index = peer->match_index + 1;
   advance_commit();
+  // Catch-up is batched, so keep sending until the peer reaches the log end
+  // instead of waiting a heartbeat per batch.
+  if (is_leader() && peer->next_index <= last_index()) {
+    replicate(*peer);
+  }
 }
 
 void Replica::on_vote(const choreoos::protocol::RequestVote& message, std::uint64_t correlation) {
@@ -506,39 +582,72 @@ void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
 
   auto index = LogIndex::parse(message.last_included_index);
   auto term = choreoos::state::Term::parse(message.last_included_term);
-  if (index && term && message.state_hash.size() == 16) {
-    choreoos::storage::Snapshot snapshot;
-    snapshot.index = index.value();
-    snapshot.term = term.value();
-    snapshot.state_hash = message.state_hash;
-    std::istringstream lines{message.payload};
-    std::string line;
-    bool parsed = true;
-    while (std::getline(lines, line)) {
-      if (line.empty()) {
-        continue;
-      }
-      auto event = choreoos::state::parse_event(line);
-      if (!event) {
-        parsed = false;
-        break;
-      }
-      snapshot.events.push_back(event.value());
-    }
-    if (parsed && !snapshot.events.empty() && snapshot.events.back().index == snapshot.index &&
-        snapshot.events.back().term == snapshot.term) {
-      if (auto installed = store_.install_snapshot(snapshot); installed) {
-        rebuild_speculative();
-        response.success = true;
-        if (commit_hook_) {
-          commit_hook_();
-        }
-      }
-    }
+  if (!index || !term || message.state_hash.size() != 16) {
+    incoming_snapshot_ = {};
+    reply_install(message.leader_id, correlation, false, 0);
+    return;
   }
+
+  // Chunk assembly. Offset 0 starts (or restarts) a transfer.
+  if (message.offset == 0) {
+    incoming_snapshot_ = IncomingSnapshot{true, message.last_included_index,
+                                          message.last_included_term, message.state_hash, {}};
+  }
+  const bool same_snapshot = incoming_snapshot_.active &&
+                             incoming_snapshot_.index == message.last_included_index &&
+                             incoming_snapshot_.term == message.last_included_term &&
+                             incoming_snapshot_.hash == message.state_hash;
+  if (!same_snapshot || message.offset > incoming_snapshot_.data.size()) {
+    incoming_snapshot_ = {};
+    reply_install(message.leader_id, correlation, false, 0);
+    return;
+  }
+  if (message.offset < incoming_snapshot_.data.size()) {
+    // A re-sent chunk we already hold. Acknowledge where we actually are.
+    reply_install(message.leader_id, correlation, true, incoming_snapshot_.data.size());
+    return;
+  }
+  constexpr std::size_t kMaxSnapshotBytes = 64u * 1024u * 1024u;
+  if (incoming_snapshot_.data.size() + message.payload.size() > kMaxSnapshotBytes) {
+    incoming_snapshot_ = {};
+    reply_install(message.leader_id, correlation, false, 0);
+    return;
+  }
+  incoming_snapshot_.data += message.payload;
+  if (message.more) {
+    reply_install(message.leader_id, correlation, true, incoming_snapshot_.data.size());
+    return;
+  }
+
+  // Final chunk: verify and install the whole snapshot or nothing.
+  choreoos::storage::Snapshot snapshot;
+  snapshot.index = index.value();
+  snapshot.term = term.value();
+  snapshot.state_hash = message.state_hash;
+  snapshot.state_payload = std::move(incoming_snapshot_.data);
+  const std::size_t total = snapshot.state_payload.size();
+  incoming_snapshot_ = {};
+  if (auto installed = store_.install_snapshot(snapshot); installed) {
+    rebuild_command_index();
+    rebuild_speculative();
+    if (commit_hook_) {
+      commit_hook_();
+    }
+    reply_install(message.leader_id, correlation, true, total);
+    return;
+  }
+  reply_install(message.leader_id, correlation, false, 0);
+}
+
+void Replica::reply_install(const std::string& leader, std::uint64_t correlation, bool success,
+                            std::uint64_t next_offset) {
+  choreoos::protocol::InstallSnapshotResponse response;
+  response.follower_id = config_.id;
   response.term = current_term_.value();
+  response.success = success;
+  response.next_offset = next_offset;
   if (auto payload = choreoos::protocol::encode(response)) {
-    send(message.leader_id, choreoos::protocol::MessageType::InstallSnapshotResponse, correlation,
+    send(leader, choreoos::protocol::MessageType::InstallSnapshotResponse, correlation,
          payload.value());
   }
 }
@@ -548,19 +657,35 @@ void Replica::on_install_response(const choreoos::protocol::InstallSnapshotRespo
     step_down(message.term);
     return;
   }
-  if (!is_leader() || !message.success) {
+  if (!is_leader()) {
     return;
   }
   for (auto& peer : peers_) {
     if (peer.id != message.follower_id) {
       continue;
     }
+    if (!message.success) {
+      peer.snapshot_offset = 0;  // restart from the first chunk on the next heartbeat
+      return;
+    }
+    const auto& snapshot = store_.latest_snapshot();
+    if (!snapshot || peer.snapshot_index != snapshot->index.value()) {
+      peer.snapshot_offset = 0;
+      return;
+    }
+    if (message.next_offset < snapshot->state_payload.size()) {
+      // More chunks to go. Continue straight away instead of waiting a tick.
+      peer.snapshot_offset = message.next_offset;
+      send_snapshot_chunk(peer, *snapshot, true);
+      return;
+    }
+    peer.snapshot_offset = 0;
     if (peer.snapshot_index > peer.match_index) {
       peer.match_index = peer.snapshot_index;
     }
     peer.next_index = peer.match_index + 1;
     advance_commit();
-    replicate(peer);
+    replicate(peer, true);
     return;
   }
 }
@@ -597,10 +722,29 @@ void Replica::advance_commit() {
 }
 
 void Replica::rebuild_speculative() {
-  auto replayed = choreoos::state::replay(store_.log_events());
+  auto replayed = build_speculative(store_);
   if (replayed) {
     speculative_ = std::move(replayed.value());
+    speculative_dirty_ = false;
   }
+}
+
+void Replica::ensure_speculative() {
+  if (speculative_dirty_) {
+    rebuild_speculative();
+  }
+}
+
+void Replica::rebuild_command_index() {
+  command_index_.clear();
+  for (const auto& event : store_.log_events()) {
+    command_index_[event.command_id.value()] = event.index.value();
+  }
+}
+
+const choreoos::state::Event* Replica::find_command(const std::string& command_id) const {
+  const auto found = command_index_.find(command_id);
+  return found == command_index_.end() ? nullptr : find_index(found->second);
 }
 
 void Replica::start_election() {
@@ -649,6 +793,7 @@ void Replica::become_leader() {
   if (role_ == Role::Leader) {
     return;
   }
+  ensure_speculative();
   role_ = Role::Leader;
   config_.leader_id = config_.id;
   ++metrics_.role_changes;
@@ -689,6 +834,7 @@ void Replica::become_leader() {
     role_ = Role::Candidate;
     return;
   }
+  command_index_[noop.command_id.value()] = noop.index.value();
   if (auto applied = choreoos::state::apply(speculative_, noop); !applied) {
     role_ = Role::Candidate;
     return;
@@ -774,6 +920,10 @@ void Replica::send(const std::string& peer, choreoos::protocol::MessageType type
   if (!sender_) {
     return;
   }
+  if (payload.size() > choreoos::protocol::kMaxFramePayload) {
+    ++metrics_.messages_dropped_oversize;
+    return;
+  }
   choreoos::protocol::Frame frame;
   frame.type = type;
   frame.correlation = correlation;
@@ -782,22 +932,13 @@ void Replica::send(const std::string& peer, choreoos::protocol::MessageType type
 }
 
 const choreoos::state::Event* Replica::find_index(std::uint64_t index) const {
-  for (const auto& event : store_.log_events()) {
-    if (event.index.value() == index) {
-      return &event;
-    }
-  }
-  return nullptr;
+  return store_.log_entry(index);
 }
 
-std::uint64_t Replica::last_index() const {
-  const auto& events = store_.log_events();
-  return events.empty() ? 0 : events.back().index.value();
-}
+std::uint64_t Replica::last_index() const { return store_.last_log_index(); }
 
 std::uint64_t Replica::last_term() const {
-  const auto* event = find_index(last_index());
-  return event == nullptr ? 0 : event->term.value();
+  return store_.log_term_at(last_index()).value_or(0);
 }
 
 int Replica::majority() const { return static_cast<int>(peers_.size() + 1) / 2 + 1; }

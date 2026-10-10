@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -71,11 +72,25 @@ enum class IndexRule { Contiguous, Monotonic };
 [[nodiscard]] std::string canonical_state(const ChoreographyState& state);
 [[nodiscard]] std::string state_hash(const ChoreographyState& state);
 
+// Snapshot payload: the domain state plus the applied-command table, as
+// space-delimited lines. IDs never contain spaces, so unlike canonical_state()
+// this text parses unambiguously. Its size is the state plus one short line
+// per accepted command; it does not contain event history.
+[[nodiscard]] std::string snapshot_payload(const ChoreographyState& state);
+// Inverse of snapshot_payload(). The caller checks state_hash() against the
+// hash recorded with the snapshot. applied_events is left empty because event
+// text is history, not state.
+[[nodiscard]] Result<ChoreographyState> restore_state(std::string_view payload);
+
 // In-memory single-node engine: submit assigns the next index and applies.
 class Engine {
  public:
   Result<SubmitResult> submit(Command command);
   Result<void> apply_committed(const Event& event);
+  // Start from a snapshot instead of replaying from index 1. `history` is the
+  // committed events at or below the snapshot when the caller still has them
+  // (a store that has not compacted); it may be empty.
+  void restore(ChoreographyState state, std::vector<Event> history = {});
 
   [[nodiscard]] const ChoreographyState& state() const noexcept { return state_; }
   [[nodiscard]] const std::vector<Event>& events() const noexcept { return events_; }

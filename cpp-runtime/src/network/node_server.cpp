@@ -81,6 +81,10 @@ struct NodeServer::Impl {
   void complete_waiters();
   void on_client(const std::shared_ptr<Session>& session, const choreoos::protocol::Frame& frame);
   void dispatch(const std::shared_ptr<Session>& session, const choreoos::protocol::Frame& frame);
+  [[nodiscard]] bool is_configured_peer(const std::string& id) const {
+    return std::any_of(config.peers.begin(), config.peers.end(),
+                       [&](const auto& peer) { return peer.id == id; });
+  }
 
   choreoos::runtime::NodeConfig config;
   choreoos::replication::Replica replica;
@@ -211,6 +215,7 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
 void NodeServer::Impl::send_to(const std::string& peer, const choreoos::protocol::Frame& frame) {
   auto encoded = choreoos::protocol::encode_frame(frame);
   if (!encoded) {
+    ++transport_metrics.dropped;
     return;
   }
   for (const auto& session : sessions) {
@@ -276,7 +281,7 @@ void NodeServer::Impl::dial_missing() {
 }
 
 std::string NodeServer::Impl::leader_contact() const {
-  const std::string id = replica.status().leader_id;
+  const std::string id = replica.leader_id();
   if (id.empty()) {
     return {};
   }
@@ -318,19 +323,14 @@ void NodeServer::Impl::schedule_reconnect() {
 void NodeServer::Impl::complete_waiters() {
   std::vector<Pending> still;
   for (auto& waiter : pending) {
-    const choreoos::state::Event* event = nullptr;
-    for (const auto& candidate : replica.store().log_events()) {
-      if (candidate.command_id.value() == waiter.command_id) {
-        event = &candidate;
-      }
-    }
+    const choreoos::state::Event* event = replica.find_command(waiter.command_id);
     if (event == nullptr || replica.store().commit_index() < event->index) {
       still.push_back(std::move(waiter));
       continue;
     }
     choreoos::replication::EnqueueResult result{*event, waiter.duplicate, true,
-                                                replica.status().leader_id};
-    auto response = response_from(result, replica.status().state_hash);
+                                                replica.leader_id()};
+    auto response = response_from(result, replica.committed_state_hash());
     if (auto payload = choreoos::protocol::encode(response)) {
       choreoos::protocol::Frame frame;
       frame.type = choreoos::protocol::MessageType::ClientResponse;
@@ -395,7 +395,7 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
   }
   auto queued = replica.enqueue(command.value());
   if (!queued) {
-    auto response = response_from(queued.error(), replica.status().leader_id);
+    auto response = response_from(queued.error(), replica.leader_id());
     if (queued.error().code() == choreoos::state::ErrorCode::NotLeader) {
       const std::string contact = leader_contact();
       if (!contact.empty()) {
@@ -406,7 +406,7 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
     return;
   }
   if (queued.value().committed) {
-    reply(response_from(queued.value(), replica.status().state_hash));
+    reply(response_from(queued.value(), replica.committed_state_hash()));
     return;
   }
   Pending waiter;
@@ -456,12 +456,26 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
       ++transport_metrics.malformed;
       return;
     }
+    // Only configured peers may claim a peer identity. This is a gate against
+    // strangers, not authentication: a process that knows a peer id can still
+    // claim it, so real deployments need a shared secret or mTLS on top.
+    if (!is_configured_peer(hello.value().node_id)) {
+      ++transport_metrics.rejected;
+      return;
+    }
     session->assign_peer(hello.value().node_id);
     return;
   }
   if (frame.type == choreoos::protocol::MessageType::ClientCommand ||
       frame.type == choreoos::protocol::MessageType::StatusQuery) {
     on_client(session, frame);
+    return;
+  }
+  // Everything else is replication traffic (AppendEntries, votes, snapshots).
+  // It must not come from an unidentified connection: a forged high term would
+  // be persisted and could depose the leader or block elections.
+  if (!is_configured_peer(session->peer_id)) {
+    ++transport_metrics.rejected;
     return;
   }
   replica.handle(frame);

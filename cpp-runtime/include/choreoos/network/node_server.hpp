@@ -14,6 +14,8 @@ struct TransportMetrics {
   std::uint64_t frames_sent = 0;
   std::uint64_t frames_received = 0;
   std::uint64_t malformed = 0;
+  // Frames refused because the sender was not a configured peer.
+  std::uint64_t rejected = 0;
   std::uint64_t dropped = 0;
   std::uint64_t reconnects = 0;
 };

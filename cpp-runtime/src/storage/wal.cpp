@@ -36,13 +36,14 @@ Result<WriteAheadLog> WriteAheadLog::open(std::filesystem::path path) {
   return log;
 }
 
-Result<void> WriteAheadLog::append(const choreoos::state::Event& event, Durability durability) {
-  const auto started = std::chrono::steady_clock::now();
+namespace {
+
+// One framed record: prefix, canonical payload, CRC.
+Result<std::string> encode_record(const choreoos::state::Event& event) {
   const std::string payload = choreoos::state::canonical_event(event);
   if (payload.size() > kMaxPayloadBytes) {
     return corrupt("event payload exceeds 1 MiB");
   }
-
   std::string record(kRecordPrefix + payload.size() + 4, '\0');
   write_u32(record, 0, kRecordMagic);
   write_u16(record, 4, kVersion);
@@ -54,15 +55,30 @@ Result<void> WriteAheadLog::append(const choreoos::state::Event& event, Durabili
   const std::uint32_t sum =
       crc32(reinterpret_cast<const std::uint8_t*>(record.data()), kRecordPrefix + payload.size());
   write_u32(record, kRecordPrefix + payload.size(), sum);
+  return record;
+}
+
+}  // namespace
+
+Result<void> WriteAheadLog::append(const choreoos::state::Event& event, Durability durability) {
+  const auto started = std::chrono::steady_clock::now();
+  auto encoded = encode_record(event);
+  if (!encoded) {
+    return encoded.error();
+  }
+  const std::string& record = encoded.value();
 
   if (auto written = append_bytes(path_, record, durability == Durability::Sync); !written) {
     return written.error();
   }
   const auto finished = std::chrono::steady_clock::now();
-  stats_.append_ns += static_cast<std::uint64_t>(
+  const auto elapsed = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started).count());
+  stats_.append_ns += elapsed;
   if (durability == Durability::Sync) {
-    stats_.flush_ns += stats_.append_ns;
+    // Time spent in appends that included a flush. This must add only this
+    // call's time; adding the running append_ns total double counted.
+    stats_.flush_ns += elapsed;
   }
   ++stats_.appends;
   events_.push_back(event);
@@ -82,24 +98,37 @@ Result<void> WriteAheadLog::truncate_after(choreoos::state::LogIndex index) {
   if (ec) {
     return corrupt("unable to truncate write-ahead log");
   }
+  // A shrink that is not flushed can resurrect the removed (conflicting)
+  // suffix after a crash.
+  if (auto synced = sync_file(path_); !synced) {
+    return synced.error();
+  }
   events_.erase(events_.begin() + static_cast<std::ptrdiff_t>(keep), events_.end());
   record_ends_.erase(record_ends_.begin() + static_cast<std::ptrdiff_t>(keep), record_ends_.end());
   return {};
 }
 
 Result<void> WriteAheadLog::rewrite(const std::vector<choreoos::state::Event>& events) {
-  std::error_code ec;
-  std::filesystem::remove(path_, ec);
-  if (auto header = write_new_header(path_); !header) {
-    return header.error();
-  }
-  events_.clear();
-  record_ends_.clear();
+  // Build the whole replacement in memory and swap it in with an atomic
+  // replace. The old file stays intact until the new one is durable, so a
+  // crash at any point leaves either the complete old log or the complete new
+  // one. (Removing the file first, as before, could lose the log entirely.)
+  std::string bytes = wal_file_header();
+  std::vector<std::uint64_t> ends;
+  ends.reserve(events.size());
   for (const auto& event : events) {
-    if (auto written = append(event, Durability::Sync); !written) {
-      return written.error();
+    auto record = encode_record(event);
+    if (!record) {
+      return record.error();
     }
+    bytes += record.value();
+    ends.push_back(bytes.size());
   }
+  if (auto replaced = write_atomic(path_, bytes, true); !replaced) {
+    return replaced.error();
+  }
+  events_ = events;
+  record_ends_ = std::move(ends);
   return {};
 }
 

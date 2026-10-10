@@ -322,7 +322,9 @@ Verified: `ReplicationTest.OneFollowerLossStillCommitsThenCatchesUp` and `Cluste
 - [x] Restart as follower from persisted term/vote/log/snapshot.
 - [x] Catch up incrementally through AppendEntries.
 - [x] Install snapshots for compacted history.
-- [ ] Verify snapshot chunks and final checksum.
+- [x] Snapshots hold serialized state (format 2), not the event history; the log is compacted back to the older retained snapshot.
+- [x] Bound catch-up `AppendEntries` by entries and bytes so a far-behind follower always fits a frame.
+- [x] Verify snapshot chunks and final checksum. Chunks carry offset and a `more` flag, the follower acknowledges `next_offset`, and nothing applies until the whole payload matches the state hash.
 - [x] Resume log replication after snapshot index.
 - [x] Rejoin an old leader safely as follower.
 
@@ -604,6 +606,6 @@ Exit criterion: demonstrations clearly identify whether recovery came from C++ r
 
 ## Start here
 
-Milestones 0–3 are on main. Milestone 3 is fixed-leader replication, not consensus. Milestone 4 election code is on main and is Raft-like, not production Raft; a few Step 27 boxes (every two-versus-one process partition, multi-chunk snapshots) are still open. Milestone 5 seeded fault injection and property tests now pass locally. A green seed is evidence, not a proof.
+Milestones 0–3 are on main. Milestone 3 is fixed-leader replication, not consensus. Milestone 4 election code is on main and is Raft-like, not production Raft; a Step 27 box (every two-versus-one process partition) is still open. Multi-chunk snapshots are done. Milestone 5 seeded fault injection and property tests now pass locally. A green seed is evidence, not a proof.
 
 The next implementation session should begin Milestone 6 at Step 31: benchmark harnesses. Do not start the dashboard or Temporal workflows until the C++ management API and C# client can return retry-safe committed results.

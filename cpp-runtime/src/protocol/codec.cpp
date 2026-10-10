@@ -172,6 +172,8 @@ Result<std::string> encode(const InstallSnapshot& message) {
   write_uint(out, 4, message.last_included_term);
   write_bytes(out, 5, message.state_hash);
   write_bytes(out, 6, message.payload);
+  write_uint(out, 7, message.offset);
+  write_bool(out, 8, message.more);
   return out;
 }
 
@@ -180,6 +182,7 @@ Result<std::string> encode(const InstallSnapshotResponse& message) {
   write_uint(out, 1, message.term);
   write_bytes(out, 2, message.follower_id);
   write_bool(out, 3, message.success);
+  write_uint(out, 4, message.next_offset);
   return out;
 }
 
@@ -438,7 +441,7 @@ Result<InstallSnapshot> decode_install_snapshot(std::string_view bytes) {
     }
     const int field = static_cast<int>(key.value() >> 3);
     const int wire = static_cast<int>(key.value() & 7);
-    if (wire == kVarint && (field == 1 || field == 3 || field == 4)) {
+    if (wire == kVarint && (field == 1 || field == 3 || field == 4 || field == 7 || field == 8)) {
       auto value = reader.varint();
       if (!value) {
         return value.error();
@@ -447,8 +450,12 @@ Result<InstallSnapshot> decode_install_snapshot(std::string_view bytes) {
         message.term = value.value();
       } else if (field == 3) {
         message.last_included_index = value.value();
-      } else {
+      } else if (field == 4) {
         message.last_included_term = value.value();
+      } else if (field == 7) {
+        message.offset = value.value();
+      } else {
+        message.more = value.value() != 0;
       }
     } else if (wire == kLength && (field == 2 || field == 5 || field == 6)) {
       auto value = reader.skip_or_read(wire, true);
@@ -488,6 +495,8 @@ Result<InstallSnapshotResponse> decode_snapshot_response(std::string_view bytes)
         message.term = value.value();
       } else if (field == 3) {
         message.success = value.value() != 0;
+      } else if (field == 4) {
+        message.next_offset = value.value();
       }
     } else if (field == 2 && wire == kLength) {
       auto value = reader.skip_or_read(wire, true);

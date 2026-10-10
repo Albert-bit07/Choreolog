@@ -107,6 +107,11 @@ void SimulatedNetwork::attach(Replica& replica) {
 
 void SimulatedNetwork::send(const std::string& from, const std::string& to,
                             const choreoos::protocol::Frame& frame) {
+  if (frame.payload.size() > choreoos::protocol::kMaxFramePayload) {
+    ++oversize_frames_;
+    schedule_ += std::to_string(now_) + " drop " + from + " " + to + " oversize\n";
+    return;
+  }
   const auto roll = [this] {
     rng_ ^= rng_ << 13;
     rng_ ^= rng_ >> 7;
