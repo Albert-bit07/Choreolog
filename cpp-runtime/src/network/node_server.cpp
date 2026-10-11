@@ -6,6 +6,7 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <set>
 #include <utility>
 
 #include "choreoos/protocol/codec.hpp"
@@ -96,6 +97,7 @@ struct NodeServer::Impl {
   std::uint16_t bound_port = 0;
   TransportMetrics transport_metrics;
   std::vector<std::shared_ptr<Session>> sessions;
+  std::set<std::string> dialing;  // peers with a connect attempt in flight
 
   struct Pending {
     std::string command_id;
@@ -249,14 +251,19 @@ void NodeServer::Impl::dial_missing() {
         connected = true;
       }
     }
-    if (connected) {
+    // One attempt per peer at a time. async_connect has no timeout of its own,
+    // so without this an unreachable host collected a new pending socket every
+    // reconnect tick until the OS gave up on each.
+    if (connected || dialing.count(peer.id) != 0) {
       continue;
     }
+    dialing.insert(peer.id);
     auto socket = std::make_shared<tcp::socket>(io);
     tcp::endpoint endpoint{boost::asio::ip::make_address(peer.host), peer.port};
     socket->async_connect(
         endpoint, boost::asio::bind_executor(
                       strand, [this, socket, peer](const boost::system::error_code& error) {
+                        dialing.erase(peer.id);
                         if (error) {
                           return;
                         }
@@ -297,7 +304,7 @@ std::string NodeServer::Impl::leader_contact() const {
 }
 
 void NodeServer::Impl::schedule_heartbeat() {
-  heartbeat.expires_after(std::chrono::milliseconds(50));
+  heartbeat.expires_after(std::chrono::milliseconds(config.heartbeat_ms));
   heartbeat.async_wait(
       boost::asio::bind_executor(strand, [this](const boost::system::error_code& error) {
         if (error) {
@@ -490,6 +497,8 @@ choreoos::state::Result<std::unique_ptr<NodeServer>> NodeServer::open(
     replica_config.directory = config.data;
     replica_config.elections = config.elections;
     replica_config.rng_seed = config.rng_seed == 0 ? 1 : config.rng_seed;
+    replica_config.election_timeout_min = static_cast<int>(config.election_timeout_min);
+    replica_config.election_timeout_max = static_cast<int>(config.election_timeout_max);
     for (const auto& peer : config.peers) {
       replica_config.peers.push_back(peer.id);
     }

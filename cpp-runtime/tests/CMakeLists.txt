@@ -11,6 +11,7 @@ add_executable(
   unit/protocol_test.cpp
   unit/replication_test.cpp
   unit/catchup_test.cpp
+  unit/config_test.cpp
   unit/crash_ordering_test.cpp
   unit/snapshot_compaction_test.cpp
   unit/faults_test.cpp

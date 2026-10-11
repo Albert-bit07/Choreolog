@@ -1,6 +1,7 @@
 #include "choreoos/runtime/config.hpp"
 
 #include <cctype>
+#include <charconv>
 #include <fstream>
 #include <sstream>
 
@@ -38,6 +39,21 @@ Result<PeerEndpoint> parse_peer(const std::string& text) {
   return peer;
 }
 
+// Parse a whole decimal number within [min, max]. std::stoi and std::stoull
+// throw on bad input, which would terminate the node on a config typo.
+Result<std::uint64_t> parse_number(const std::string& key, const std::string& text,
+                                   std::uint64_t min, std::uint64_t max) {
+  std::uint64_t value = 0;
+  const char* begin = text.data();
+  const char* end = begin + text.size();
+  const auto [stop, error] = std::from_chars(begin, end, value);
+  if (text.empty() || error != std::errc{} || stop != end || value < min || value > max) {
+    return Error{ErrorCode::StoreError, "config " + key + " must be a whole number from " +
+                                            std::to_string(min) + " to " + std::to_string(max)};
+  }
+  return value;
+}
+
 }  // namespace
 
 Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
@@ -70,7 +86,11 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
         return Error{ErrorCode::StoreError, "listen must look like host:port"};
       }
       config.host = value.substr(0, split);
-      config.port = static_cast<std::uint16_t>(std::stoi(value.substr(split + 1)));
+      auto port = parse_number("listen port", value.substr(split + 1), 0, 65535);
+      if (!port) {
+        return port.error();
+      }
+      config.port = static_cast<std::uint16_t>(port.value());
     } else if (key == "peer" || key == "peers") {
       std::stringstream stream{value};
       std::string item;
@@ -88,8 +108,34 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
     } else if (key == "elections") {
       config.elections = value == "true" || value == "1";
     } else if (key == "rng_seed") {
-      config.rng_seed = std::stoull(value);
+      auto seed = parse_number(key, value, 0, UINT64_MAX);
+      if (!seed) {
+        return seed.error();
+      }
+      config.rng_seed = seed.value();
+    } else if (key == "heartbeat_ms") {
+      auto number = parse_number(key, value, 10, 10000);
+      if (!number) {
+        return number.error();
+      }
+      config.heartbeat_ms = static_cast<std::uint32_t>(number.value());
+    } else if (key == "election_timeout_min") {
+      auto number = parse_number(key, value, 2, 1000);
+      if (!number) {
+        return number.error();
+      }
+      config.election_timeout_min = static_cast<std::uint32_t>(number.value());
+    } else if (key == "election_timeout_max") {
+      auto number = parse_number(key, value, 2, 1000);
+      if (!number) {
+        return number.error();
+      }
+      config.election_timeout_max = static_cast<std::uint32_t>(number.value());
     }
+  }
+  if (config.election_timeout_max < config.election_timeout_min) {
+    return Error{ErrorCode::StoreError,
+                 "config election_timeout_max must not be below election_timeout_min"};
   }
   if (config.id.empty() || config.leader_id.empty() || config.data.empty()) {
     return Error{ErrorCode::StoreError, "config requires id, leader, and data"};

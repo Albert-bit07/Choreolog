@@ -66,7 +66,9 @@ Result<std::uint64_t> parse_u64(const Fields& fields, const char* key) {
   }
 }
 
-std::vector<DancerId> parse_members(std::string_view raw) {
+// An invalid member is an error, not something to skip: dropping it would make
+// replay produce a different formation than the one that was committed.
+Result<std::vector<DancerId>> parse_members(std::string_view raw) {
   std::vector<DancerId> members;
   if (raw.empty()) {
     return members;
@@ -76,9 +78,10 @@ std::vector<DancerId> parse_members(std::string_view raw) {
   std::string item;
   while (std::getline(stream, item, ',')) {
     auto id = DancerId::parse(item);
-    if (id) {
-      members.push_back(id.value());
+    if (!id) {
+      return id.error();
     }
+    members.push_back(id.value());
   }
   return members;
 }
@@ -176,7 +179,11 @@ Result<Event> parse_event(std::string_view line) {
       if (!formation) {
         return formation.error();
       }
-      payload = FormationPayload{formation.value(), parse_members(members_raw.value())};
+      auto members = parse_members(members_raw.value());
+      if (!members) {
+        return members.error();
+      }
+      payload = FormationPayload{formation.value(), std::move(members.value())};
       break;
     }
     case EventType::MusicCueTriggered:

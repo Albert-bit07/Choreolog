@@ -28,6 +28,14 @@ struct NodeConfig {
   // False keeps the configured leader. True runs Raft-like elections.
   bool elections = false;
   std::uint64_t rng_seed = 1;
+  // One replica tick every heartbeat_ms. A leader heartbeats on every tick and
+  // a follower starts an election after a random number of silent ticks drawn
+  // from [election_timeout_min, election_timeout_max]. Raise heartbeat_ms on
+  // slow disks or networks: a blocking fsync longer than the election timeout
+  // (heartbeat_ms * election_timeout_min) can trigger a spurious election.
+  std::uint32_t heartbeat_ms = 50;
+  std::uint32_t election_timeout_min = 3;
+  std::uint32_t election_timeout_max = 6;
 };
 
 [[nodiscard]] choreoos::state::Result<NodeConfig> load_node_config(

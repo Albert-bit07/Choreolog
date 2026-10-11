@@ -118,6 +118,27 @@ TEST(SnapshotStateTest, RejectsDamagedPayloads) {
   EXPECT_FALSE(restore_state(bad_overlap));
 }
 
+TEST(SnapshotStateTest, EventLineWithInvalidFormationMemberIsRejectedNotDropped) {
+  Engine engine;
+  ASSERT_TRUE(engine.submit(create_command()));
+  ASSERT_TRUE(engine.submit(add_command("lead", 1000, 1000)));
+  ASSERT_TRUE(engine.submit(add_command("back", 5000, 1000)));
+  ASSERT_TRUE(engine.submit(Command{
+      CommandId::parse("form-a").value(), show(), CommandType::DefineFormation,
+      kCurrentSchemaVersion, MusicalTick::from_count(3).value(),
+      FormationPayload{FormationId::parse("front").value(),
+                       {DancerId::parse("lead").value(), DancerId::parse("back").value()}}}));
+  const std::string line = canonical_event(engine.events().back());
+  ASSERT_TRUE(parse_event(line));
+  // Silently skipping the bad member would replay a different formation than
+  // the one that was committed.
+  std::string damaged = line;
+  const auto at = damaged.find("lead");
+  ASSERT_NE(at, std::string::npos);
+  damaged.replace(at, 4, "l ad");
+  EXPECT_FALSE(parse_event(damaged));
+}
+
 TEST(SnapshotStateTest, SizeFollowsStateNotHistory) {
   Engine engine;
   ASSERT_TRUE(engine.submit(create_command()));

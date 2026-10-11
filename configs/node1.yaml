@@ -4,3 +4,8 @@ leader: node-1
 data: node-data/node-1
 listen: 127.0.0.1:7101
 peers: node-2@127.0.0.1:7102,node-3@127.0.0.1:7103
+# Optional timing (defaults shown). One tick per heartbeat_ms; a follower starts an
+# election after election_timeout_min..max silent ticks.
+# heartbeat_ms: 50
+# election_timeout_min: 3
+# election_timeout_max: 6

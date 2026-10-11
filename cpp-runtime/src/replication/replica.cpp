@@ -516,11 +516,16 @@ void Replica::on_vote(const choreoos::protocol::RequestVote& message, std::uint6
   const bool vote_free = !voted_for_ || *voted_for_ == message.candidate_id;
   const bool up_to_date = log_is_up_to_date(message.last_log_term, message.last_log_index);
   if (current && vote_free && up_to_date) {
+    const auto previous_vote = voted_for_;
     voted_for_ = message.candidate_id;
     if (persist_vote()) {
       response.vote_granted = true;
       election_elapsed_ = 0;
       ++metrics_.votes_granted;
+    } else {
+      // The vote is not durable, so it was not cast. Forget it, or this node
+      // would refuse every other candidate this term for a vote it never sent.
+      voted_for_ = previous_vote;
     }
   }
   if (auto payload = choreoos::protocol::encode(response)) {
