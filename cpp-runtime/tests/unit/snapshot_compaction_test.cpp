@@ -31,22 +31,31 @@ std::filesystem::path fresh(const std::string& name) {
 ChoreographyId show() { return ChoreographyId::parse("opening").value(); }
 
 Command create_command() {
-  return Command{CommandId::parse("c-create").value(), show(), CommandType::CreateChoreography,
-                 kCurrentSchemaVersion, MusicalTick::from_count(0).value(),
+  return Command{CommandId::parse("c-create").value(),
+                 show(),
+                 CommandType::CreateChoreography,
+                 kCurrentSchemaVersion,
+                 MusicalTick::from_count(0).value(),
                  CreateChoreographyPayload{show(), StageBounds::from_mm(100000, 100000).value(),
                                            OverlapPolicy::Allowed, 5000}};
 }
 
 Command add_command(const std::string& id, int x, int y) {
-  return Command{CommandId::parse("add-" + id).value(), show(), CommandType::AddDancer,
-                 kCurrentSchemaVersion, MusicalTick::from_count(1).value(),
+  return Command{CommandId::parse("add-" + id).value(),
+                 show(),
+                 CommandType::AddDancer,
+                 kCurrentSchemaVersion,
+                 MusicalTick::from_count(1).value(),
                  DancerPayload{DancerId::parse(id).value(), Position::from_mm(x, y).value()}};
 }
 
 Command move_command(int i) {
   const std::string id = "w" + std::to_string(i % kDancers);
-  return Command{CommandId::parse("mv-" + std::to_string(i)).value(), show(),
-                 CommandType::MoveDancer, kCurrentSchemaVersion, MusicalTick::from_count(1).value(),
+  return Command{CommandId::parse("mv-" + std::to_string(i)).value(),
+                 show(),
+                 CommandType::MoveDancer,
+                 kCurrentSchemaVersion,
+                 MusicalTick::from_count(1).value(),
                  DancerPayload{DancerId::parse(id).value(),
                                Position::from_mm(((i / kDancers) % 2 == 0) ? 1000 : 2000,
                                                  (i % kDancers) * 1000)
@@ -69,11 +78,11 @@ ChoreographyState build_rich_state() {
   must(Command{CommandId::parse("rm-gone").value(), show(), CommandType::RemoveDancer,
                kCurrentSchemaVersion, MusicalTick::from_count(2).value(),
                RemoveDancerPayload{DancerId::parse("gone").value()}});
-  must(Command{CommandId::parse("form-a").value(), show(), CommandType::DefineFormation,
-               kCurrentSchemaVersion, MusicalTick::from_count(3).value(),
-               FormationPayload{FormationId::parse("front:line").value(),
-                                {DancerId::parse("lead:1").value(),
-                                 DancerId::parse("back.row").value()}}});
+  must(Command{
+      CommandId::parse("form-a").value(), show(), CommandType::DefineFormation,
+      kCurrentSchemaVersion, MusicalTick::from_count(3).value(),
+      FormationPayload{FormationId::parse("front:line").value(),
+                       {DancerId::parse("lead:1").value(), DancerId::parse("back.row").value()}}});
   must(Command{CommandId::parse("cue-1").value(), show(), CommandType::TriggerMusicCue,
                kCurrentSchemaVersion, MusicalTick::from_count(4).value(),
                CuePayload{CueId::parse("intro").value(), std::nullopt}});
@@ -346,7 +355,8 @@ TEST(SnapshotTransferTest, FreshFollowerCatchesUpFromACompactedLeaderInChunks) {
   ASSERT_GT(leader.store().log_first_index(), 100u);  // the early log is gone
   ASSERT_TRUE(leader.store().log_entry(5) == nullptr);
 
-  Replica& fresh_node = cluster.open(node_config("node-3", "choreoos-xfer-b2", {"node-1", "node-2"}));
+  Replica& fresh_node =
+      cluster.open(node_config("node-3", "choreoos-xfer-b2", {"node-1", "node-2"}));
   drive(cluster.net, leader, 400);
   EXPECT_TRUE(converged(leader, fresh_node));
   EXPECT_TRUE(converged(leader, helper));
@@ -371,7 +381,8 @@ TEST(SnapshotTransferTest, ChunkedTransferSurvivesLossAndDuplication) {
     drive(cluster.net, leader, 1);
   }
   drive(cluster.net, leader, 10);
-  Replica& fresh_node = cluster.open(node_config("node-3", "choreoos-xfer-b3", {"node-1", "node-2"}));
+  Replica& fresh_node =
+      cluster.open(node_config("node-3", "choreoos-xfer-b3", {"node-1", "node-2"}));
   cluster.net.enable_faults();
   cluster.net.set_drop_percent(25);
   cluster.net.set_duplicate_percent(25);

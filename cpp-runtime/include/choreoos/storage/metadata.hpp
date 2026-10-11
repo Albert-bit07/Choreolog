@@ -23,8 +23,8 @@ struct NodeMetadata {
 // `sync_dir` makes the rename durable. Term and vote changes need it, because a
 // reverted vote could be cast twice. A commit-index-only update does not: any
 // earlier version of the file still carries the latest durable term and vote.
-[[nodiscard]] choreoos::state::Result<void> store_metadata(const std::filesystem::path& path,
-                                                           const NodeMetadata& metadata, bool sync,
-                                                           std::optional<bool> sync_dir = std::nullopt);
+[[nodiscard]] choreoos::state::Result<void> store_metadata(
+    const std::filesystem::path& path, const NodeMetadata& metadata, bool sync,
+    std::optional<bool> sync_dir = std::nullopt);
 
 }  // namespace choreoos::storage

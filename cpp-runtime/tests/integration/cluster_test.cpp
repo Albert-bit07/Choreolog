@@ -93,8 +93,7 @@ TEST(ClusterTest, ReplicationFramesFromUnidentifiedConnectionsAreRejected) {
   // A handshake claiming an id that is not a configured peer gains nothing.
   choreoos::protocol::Frame hello;
   hello.type = choreoos::protocol::MessageType::Handshake;
-  hello.payload =
-      choreoos::protocol::encode(choreoos::protocol::Handshake{"node-9", 1, 0}).value();
+  hello.payload = choreoos::protocol::encode(choreoos::protocol::Handshake{"node-9", 1, 0}).value();
   (void)choreoos::protocol::transact("127.0.0.1", 19141, hello, std::chrono::milliseconds(200));
 
   auto status = status_of(19141);

@@ -50,12 +50,13 @@ Command create_command() {
 
 Command add_command(int i) {
   const std::string id = "w" + std::to_string(i);
-  return Command{CommandId::parse("add-" + id).value(),
-                 ChoreographyId::parse("opening").value(),
-                 CommandType::AddDancer,
-                 kCurrentSchemaVersion,
-                 MusicalTick::from_count(1).value(),
-                 DancerPayload{DancerId::parse(id).value(), Position::from_mm(1000, i * 1000).value()}};
+  return Command{
+      CommandId::parse("add-" + id).value(),
+      ChoreographyId::parse("opening").value(),
+      CommandType::AddDancer,
+      kCurrentSchemaVersion,
+      MusicalTick::from_count(1).value(),
+      DancerPayload{DancerId::parse(id).value(), Position::from_mm(1000, i * 1000).value()}};
 }
 
 Command move_command(int i) {
@@ -110,8 +111,10 @@ TEST(CatchUpTest, BacklogLargerThanOneFrameStillConverges) {
 
   SimulatedNetwork net{11};
   auto leader = Replica::open(ReplicaConfig{"node-1", "node-1", {"node-2", "node-3"}, leader_dir});
-  auto a = Replica::open(ReplicaConfig{"node-2", "node-1", {"node-1", "node-3"}, fresh("choreoos-catchup-a")});
-  auto b = Replica::open(ReplicaConfig{"node-3", "node-1", {"node-1", "node-2"}, fresh("choreoos-catchup-b")});
+  auto a = Replica::open(
+      ReplicaConfig{"node-2", "node-1", {"node-1", "node-3"}, fresh("choreoos-catchup-a")});
+  auto b = Replica::open(
+      ReplicaConfig{"node-3", "node-1", {"node-1", "node-2"}, fresh("choreoos-catchup-b")});
   ASSERT_TRUE(leader);
   ASSERT_TRUE(a);
   ASSERT_TRUE(b);
@@ -136,8 +139,10 @@ TEST(CatchUpTest, SmallBatchCapSplitsCatchUpAndStillConverges) {
   leader_config.max_append_entries = 7;
   SimulatedNetwork net{5};
   auto leader = Replica::open(std::move(leader_config));
-  auto a = Replica::open(ReplicaConfig{"node-2", "node-1", {"node-1", "node-3"}, fresh("choreoos-catchup-small-a")});
-  auto b = Replica::open(ReplicaConfig{"node-3", "node-1", {"node-1", "node-2"}, fresh("choreoos-catchup-small-b")});
+  auto a = Replica::open(
+      ReplicaConfig{"node-2", "node-1", {"node-1", "node-3"}, fresh("choreoos-catchup-small-a")});
+  auto b = Replica::open(
+      ReplicaConfig{"node-3", "node-1", {"node-1", "node-2"}, fresh("choreoos-catchup-small-b")});
   ASSERT_TRUE(leader);
   ASSERT_TRUE(a);
   ASSERT_TRUE(b);

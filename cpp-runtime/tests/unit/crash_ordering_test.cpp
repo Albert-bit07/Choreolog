@@ -30,14 +30,14 @@ Command create_command() {
 
 Command add_command(int i) {
   const std::string id = "d" + std::to_string(i);
-  return Command{cmd(id),
-                 show_id(),
-                 CommandType::AddDancer,
-                 kCurrentSchemaVersion,
-                 MusicalTick::from_count(1).value(),
-                 DancerPayload{DancerId::parse(id).value(),
-                               Position::from_mm(1000 + (i % 15) * 1000, 1000 + (i / 15) * 1000)
-                                   .value()}};
+  return Command{
+      cmd(id),
+      show_id(),
+      CommandType::AddDancer,
+      kCurrentSchemaVersion,
+      MusicalTick::from_count(1).value(),
+      DancerPayload{DancerId::parse(id).value(),
+                    Position::from_mm(1000 + (i % 15) * 1000, 1000 + (i / 15) * 1000).value()}};
 }
 
 std::filesystem::path fresh_dir(const std::string& name) {

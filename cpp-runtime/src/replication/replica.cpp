@@ -590,8 +590,8 @@ void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
 
   // Chunk assembly. Offset 0 starts (or restarts) a transfer.
   if (message.offset == 0) {
-    incoming_snapshot_ = IncomingSnapshot{true, message.last_included_index,
-                                          message.last_included_term, message.state_hash, {}};
+    incoming_snapshot_ = IncomingSnapshot{
+        true, message.last_included_index, message.last_included_term, message.state_hash, {}};
   }
   const bool same_snapshot = incoming_snapshot_.active &&
                              incoming_snapshot_.index == message.last_included_index &&
@@ -937,9 +937,7 @@ const choreoos::state::Event* Replica::find_index(std::uint64_t index) const {
 
 std::uint64_t Replica::last_index() const { return store_.last_log_index(); }
 
-std::uint64_t Replica::last_term() const {
-  return store_.log_term_at(last_index()).value_or(0);
-}
+std::uint64_t Replica::last_term() const { return store_.log_term_at(last_index()).value_or(0); }
 
 int Replica::majority() const { return static_cast<int>(peers_.size() + 1) / 2 + 1; }
 

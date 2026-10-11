@@ -637,11 +637,8 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
 
   engine_ = std::move(replacement);
   commit_index_ = snapshot.index;
-  snapshot_ = storage::Snapshot{snapshot.index,
-                                snapshot.term,
-                                snapshot.state_hash,
-                                {},
-                                snapshot_payload(engine_.state())};
+  snapshot_ = storage::Snapshot{
+      snapshot.index, snapshot.term, snapshot.state_hash, {}, snapshot_payload(engine_.state())};
   // An older snapshot cannot bridge to a log that now starts at this one, so
   // keep only the installed snapshot.
   (void)storage::prune_snapshots(directory_, 1);

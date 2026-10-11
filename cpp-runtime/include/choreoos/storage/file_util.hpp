@@ -32,9 +32,9 @@ void write_u64(std::string& out, std::size_t offset, std::uint64_t value);
 // fsyncs the parent directory so the rename itself survives power loss; it
 // defaults to `sync`. Skip it only for files whose previous version is an
 // acceptable result after a crash.
-[[nodiscard]] choreoos::state::Result<void> write_atomic(const std::filesystem::path& destination,
-                                                         const std::string& bytes, bool sync,
-                                                         std::optional<bool> sync_dir = std::nullopt);
+[[nodiscard]] choreoos::state::Result<void> write_atomic(
+    const std::filesystem::path& destination, const std::string& bytes, bool sync,
+    std::optional<bool> sync_dir = std::nullopt);
 
 // Make a directory entry change (create, rename) durable. POSIX fsyncs the
 // directory. Windows relies on MOVEFILE_WRITE_THROUGH for renames and the
