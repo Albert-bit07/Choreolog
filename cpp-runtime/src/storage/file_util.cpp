@@ -221,6 +221,9 @@ Result<void> write_atomic(const std::filesystem::path& destination, const std::s
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
     return io_error("atomic replace failed for " + destination.string());
   }
+  // MOVEFILE_WRITE_THROUGH already makes the rename durable on Windows, so
+  // there is no separate directory sync to request.
+  (void)sync_dir;
 #else
   std::error_code ec;
   std::filesystem::rename(temporary, destination, ec);
