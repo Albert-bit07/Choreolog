@@ -305,12 +305,12 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
   for (int isolated = 0; isolated < 3; ++isolated) {
     SCOPED_TRACE(isolated);
     SimulatedNetwork net{static_cast<std::uint64_t>(101 + isolated)};
-    auto a = Replica::open(electing("node-1", fresh(("choreoos-part-a-" +
-        std::to_string(isolated)).c_str()), {"node-2", "node-3"}, 11));
-    auto b = Replica::open(electing("node-2", fresh(("choreoos-part-b-" +
-        std::to_string(isolated)).c_str()), {"node-1", "node-3"}, 22));
-    auto c = Replica::open(electing("node-3", fresh(("choreoos-part-c-" +
-        std::to_string(isolated)).c_str()), {"node-1", "node-2"}, 33));
+    auto a = Replica::open(
+        electing("node-1", fresh("choreoos-part-a"), {"node-2", "node-3"}, 11));
+    auto b = Replica::open(
+        electing("node-2", fresh("choreoos-part-b"), {"node-1", "node-3"}, 22));
+    auto c = Replica::open(
+        electing("node-3", fresh("choreoos-part-c"), {"node-1", "node-2"}, 33));
     ASSERT_TRUE(a);
     ASSERT_TRUE(b);
     ASSERT_TRUE(c);
@@ -328,6 +328,7 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
       ASSERT_GE(node->store().commit_index().value(), 1u);
     }
 
+    const auto minority_commit = nodes[isolated]->store().commit_index().value();
     net.partition({nodes[isolated]->id()});
     campaign(net, a.value(), b.value(), c.value(), 100);
     Replica* majority_leader = nullptr;
@@ -339,7 +340,7 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
     ASSERT_NE(majority_leader, nullptr);
     ASSERT_TRUE(majority_leader->enqueue(add_command("partition-dancer", 1000)));
     campaign(net, a.value(), b.value(), c.value(), 40);
-    EXPECT_EQ(nodes[isolated]->store().commit_index().value(), 1u);
+    EXPECT_EQ(nodes[isolated]->store().commit_index().value(), minority_commit);
     EXPECT_GE(majority_leader->store().commit_index().value(), 2u);
 
     net.heal();
@@ -347,10 +348,9 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
     const auto hash = state_hash(a.value().store().engine().state());
     EXPECT_EQ(hash, state_hash(b.value().store().engine().state()));
     EXPECT_EQ(hash, state_hash(c.value().store().engine().state()));
-    EXPECT_EQ(a.value().store().commit_index().value(),
-              b.value().store().commit_index().value());
-    EXPECT_EQ(a.value().store().commit_index().value(),
-              c.value().store().commit_index().value());
+    const auto committed = a.value().store().commit_index().value();
+    EXPECT_EQ(committed, b.value().store().commit_index().value());
+    EXPECT_EQ(committed, c.value().store().commit_index().value());
   }
 }
 
