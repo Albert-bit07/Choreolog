@@ -46,6 +46,21 @@ TEST(ConfigTest, BadNumbersAreErrorsNotCrashes) {
   EXPECT_FALSE(load("election_timeout_min: 1\n"));  // would elect on every tick
 }
 
+TEST(ConfigTest, PeerPortMustBeValidAndNotTruncated) {
+  EXPECT_FALSE(load("peer: node-2@127.0.0.1:70000\n"));
+  EXPECT_FALSE(load("peer: node-2@127.0.0.1:7101abc\n"));
+  EXPECT_FALSE(load("peer: node-2@127.0.0.1:-1\n"));
+  EXPECT_FALSE(load("peer: node-2@127.0.0.1:0\n"));
+  EXPECT_FALSE(load("peer: node-2@127.0.0.1:\n"));
+  EXPECT_FALSE(load("peer: @127.0.0.1:7102\n"));
+  EXPECT_FALSE(load("peer: node-2@:7102\n"));
+
+  auto config = load("peer: node-2@127.0.0.1:65535\n");
+  ASSERT_TRUE(config) << config.error().to_string();
+  ASSERT_EQ(config.value().peers.size(), 1u);
+  EXPECT_EQ(config.value().peers[0].port, 65535u);
+}
+
 TEST(ConfigTest, ElectionWindowMustNotBeInverted) {
   EXPECT_FALSE(load("election_timeout_min: 10\nelection_timeout_max: 4\n"));
   EXPECT_TRUE(load("election_timeout_min: 4\nelection_timeout_max: 4\n"));
