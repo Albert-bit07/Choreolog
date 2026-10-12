@@ -301,6 +301,59 @@ TEST(ElectionTest, MinorityCannotCommit) {
             state_hash(c.value().store().engine().state()));
 }
 
+TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
+  for (int isolated = 0; isolated < 3; ++isolated) {
+    SCOPED_TRACE(isolated);
+    SimulatedNetwork net{static_cast<std::uint64_t>(101 + isolated)};
+    auto a = Replica::open(electing("node-1", fresh(("choreoos-part-a-" +
+        std::to_string(isolated)).c_str()), {"node-2", "node-3"}, 11));
+    auto b = Replica::open(electing("node-2", fresh(("choreoos-part-b-" +
+        std::to_string(isolated)).c_str()), {"node-1", "node-3"}, 22));
+    auto c = Replica::open(electing("node-3", fresh(("choreoos-part-c-" +
+        std::to_string(isolated)).c_str()), {"node-1", "node-2"}, 33));
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+    ASSERT_TRUE(c);
+    net.attach(a.value());
+    net.attach(b.value());
+    net.attach(c.value());
+    Replica* nodes[] = {&a.value(), &b.value(), &c.value()};
+
+    campaign(net, a.value(), b.value(), c.value(), 80);
+    auto* original = current_leader(a.value(), b.value(), c.value());
+    ASSERT_NE(original, nullptr);
+    ASSERT_TRUE(original->enqueue(create_command()));
+    campaign(net, a.value(), b.value(), c.value(), 40);
+    for (Replica* node : nodes) {
+      ASSERT_GE(node->store().commit_index().value(), 1u);
+    }
+
+    net.partition({nodes[isolated]->id()});
+    campaign(net, a.value(), b.value(), c.value(), 100);
+    Replica* majority_leader = nullptr;
+    for (int i = 0; i < 3; ++i) {
+      if (i != isolated && nodes[i]->is_leader()) {
+        majority_leader = nodes[i];
+      }
+    }
+    ASSERT_NE(majority_leader, nullptr);
+    ASSERT_TRUE(majority_leader->enqueue(add_command("partition-dancer", 1000)));
+    campaign(net, a.value(), b.value(), c.value(), 40);
+    EXPECT_EQ(nodes[isolated]->store().commit_index().value(), 1u);
+    EXPECT_GE(majority_leader->store().commit_index().value(), 2u);
+
+    net.heal();
+    campaign(net, a.value(), b.value(), c.value(), 120);
+    const auto hash = state_hash(a.value().store().engine().state());
+    EXPECT_EQ(hash, state_hash(b.value().store().engine().state()));
+    EXPECT_EQ(hash, state_hash(c.value().store().engine().state()));
+    EXPECT_EQ(a.value().store().commit_index().value(),
+              b.value().store().commit_index().value());
+    EXPECT_EQ(a.value().store().commit_index().value(),
+              c.value().store().commit_index().value());
+  }
+}
+
 TEST(ElectionTest, SplitVoteRetriesWithNewTimeouts) {
   SimulatedNetwork net{1};
   auto a = Replica::open(electing("node-1", fresh("choreoos-split-1"), {"node-2", "node-3"}, 1));
