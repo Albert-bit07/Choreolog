@@ -31,11 +31,18 @@ Result<PeerEndpoint> parse_peer(const std::string& text) {
   PeerEndpoint peer;
   peer.id = text.substr(0, at);
   peer.host = text.substr(at + 1, colon - at - 1);
-  try {
-    peer.port = static_cast<std::uint16_t>(std::stoi(text.substr(colon + 1)));
-  } catch (...) {
-    return Error{ErrorCode::StoreError, "peer port is invalid"};
+  if (peer.id.empty() || peer.host.empty()) {
+    return Error{ErrorCode::StoreError, "peer id and host must not be empty"};
   }
+  const std::string port_text = text.substr(colon + 1);
+  std::uint32_t port = 0;
+  const auto [end, error] =
+      std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+  if (port_text.empty() || error != std::errc{} ||
+      end != port_text.data() + port_text.size() || port == 0 || port > 65535) {
+    return Error{ErrorCode::StoreError, "peer port must be a whole number from 1 to 65535"};
+  }
+  peer.port = static_cast<std::uint16_t>(port);
   return peer;
 }
 
