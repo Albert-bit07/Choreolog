@@ -305,12 +305,9 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
   for (int isolated = 0; isolated < 3; ++isolated) {
     SCOPED_TRACE(isolated);
     SimulatedNetwork net{static_cast<std::uint64_t>(101 + isolated)};
-    auto a = Replica::open(
-        electing("node-1", fresh("choreoos-part-a"), {"node-2", "node-3"}, 11));
-    auto b = Replica::open(
-        electing("node-2", fresh("choreoos-part-b"), {"node-1", "node-3"}, 22));
-    auto c = Replica::open(
-        electing("node-3", fresh("choreoos-part-c"), {"node-1", "node-2"}, 33));
+    auto a = Replica::open(electing("node-1", fresh("choreoos-part-a"), {"node-2", "node-3"}, 11));
+    auto b = Replica::open(electing("node-2", fresh("choreoos-part-b"), {"node-1", "node-3"}, 22));
+    auto c = Replica::open(electing("node-3", fresh("choreoos-part-c"), {"node-1", "node-2"}, 33));
     ASSERT_TRUE(a);
     ASSERT_TRUE(b);
     ASSERT_TRUE(c);
