@@ -706,7 +706,7 @@ Result<ManagementQuery> decode_management_query(std::string_view bytes) {
       } else {
         message.peer_id = value.value();
       }
-    } else if ((field == 2 || field == 3) && wire == kVarint) {
+    } else if ((field == 2 || field == 3 || field == 5) && wire == kVarint) {
       auto value = reader.varint();
       if (!value) {
         return value.error();
