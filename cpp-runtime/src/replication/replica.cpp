@@ -761,7 +761,28 @@ void Replica::rebuild_command_index() {
 
 const choreoos::state::Event* Replica::find_command(const std::string& command_id) const {
   const auto found = command_index_.find(command_id);
-  return found == command_index_.end() ? nullptr : find_index(found->second);
+  if (found != command_index_.end()) {
+    if (const auto* event = find_index(found->second)) {
+      return event;
+    }
+  }
+  // A compacted WAL prefix loses its event bytes. Snapshot v2 retains
+  // canonical outcome receipts so committed retries remain idempotent.
+  const auto& state = store_.engine().state();
+  const auto command = state.applied_commands.find(command_id);
+  if (command == state.applied_commands.end()) {
+    return nullptr;
+  }
+  const auto receipt = state.applied_events.find(command->second);
+  if (receipt == state.applied_events.end()) {
+    return nullptr;
+  }
+  auto parsed = choreoos::state::parse_event(receipt->second);
+  if (!parsed) {
+    return nullptr;
+  }
+  cached_receipt_ = std::move(parsed.value());
+  return &*cached_receipt_;
 }
 
 void Replica::start_election() {
