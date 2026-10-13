@@ -203,6 +203,26 @@ TEST(SnapshotStateTest, LegacyReceiptFormatsRemainReadable) {
   EXPECT_EQ(missing.error().code(), ErrorCode::OutcomeUnavailable);
 }
 
+TEST(SnapshotStateTest, CompactedCommittedEventCannotBeReappliedAtNewIndex) {
+  Engine engine;
+  ASSERT_TRUE(engine.submit(create_command()));
+  ASSERT_TRUE(engine.submit(add_w(0)));
+  auto restored = restore_state(snapshot_payload(engine.state()));
+  ASSERT_TRUE(restored);
+  auto copy = restored.value();
+  const std::string original_hash = state_hash(copy);
+  Event replayed = engine.events().front();
+  replayed.index = copy.last_applied.next();
+  auto rejected = apply(copy, replayed);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), ErrorCode::ConflictingEvent);
+  EXPECT_EQ(state_hash(copy), original_hash);
+
+  // The exact old event is still recognized as an idempotent replay.
+  EXPECT_TRUE(apply(copy, engine.events().front()));
+  EXPECT_EQ(state_hash(copy), original_hash);
+}
+
 TEST(SnapshotStateTest, CompactReceiptPayloadRejectsMalformedFields) {
   Engine engine;
   ASSERT_TRUE(engine.submit(create_command()));
