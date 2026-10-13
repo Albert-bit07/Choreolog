@@ -432,8 +432,13 @@ TEST(SnapshotTransferTest, CompactedClusterRestartReturnsSameOutcomeWithoutNewEv
     ASSERT_TRUE(leader->enqueue(add_w(i)));
     drive(cluster.net, *leader, 1);
   }
+  std::optional<Event> original_event;
   for (int i = 0; i < 60; ++i) {
-    ASSERT_TRUE(leader->enqueue(move_command(i)));
+    auto proposed = leader->enqueue(move_command(i));
+    ASSERT_TRUE(proposed);
+    if (i == 0) {
+      original_event = proposed.value().event;
+    }
     drive(cluster.net, *leader, 1);
   }
   drive(cluster.net, *leader, 10);
@@ -469,6 +474,10 @@ TEST(SnapshotTransferTest, CompactedClusterRestartReturnsSameOutcomeWithoutNewEv
   ASSERT_TRUE(duplicate);
   EXPECT_TRUE(duplicate.value().duplicate);
   EXPECT_TRUE(duplicate.value().committed);
+  ASSERT_TRUE(original_event);
+  EXPECT_EQ(duplicate.value().event.index, original_event->index);
+  EXPECT_EQ(duplicate.value().event.term, original_event->term);
+  EXPECT_EQ(canonical_event(duplicate.value().event), canonical_event(*original_event));
   EXPECT_LT(duplicate.value().event.index.value(), leader2->store().log_first_index());
   EXPECT_EQ(leader2->status().state_hash, before_retry.state_hash);
   EXPECT_EQ(leader2->status().commit_index, before_retry.commit_index);
