@@ -407,7 +407,7 @@ CoreNext ==
        UpdateTerm(i, m) \/ HandleRVReq(i, m) \/ HandleRVResp(i, m)
        \/ HandleAEReq(i, m) \/ HandleAEResp(i, m)
 
-CoreSpec == Init /\ [][CoreNext]_vars
+CoreSpec == Init /\ [][CoreNext /\ UNCHANGED alive]_vars
 
 Next ==
   \/ /\ UNCHANGED alive /\ ActiveNext
