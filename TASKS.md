@@ -335,7 +335,7 @@ Verified: `ReplicationTest.OneFollowerLossStillCommitsThenCatchesUp` and `Cluste
 - [x] Commit through the new leader.
 - [x] Restart the old leader.
 - [x] Verify all state hashes converge.
-- [ ] Test each two-versus-one partition arrangement.
+- [x] Test each two-versus-one partition arrangement (simulator and TCP integration).
 - [x] Measure detection, election, and resumed-commit time.
 
 Exit criterion: documented election and log-safety properties pass simulator and process tests. Describe the system as “Raft-like” until a compliance review justifies stronger wording.
@@ -424,15 +424,18 @@ Candidates only after profiling:
 
 ### Step 34: Define the management API
 
-- [ ] Submit command.
-- [ ] Accept stable operation/command IDs and return prior committed results for retries.
-- [ ] Query authoritative choreography state.
-- [ ] Query node role, term, indexes, and health.
-- [ ] Stream or page recent events.
-- [ ] Query runtime metrics.
-- [ ] Query snapshot and recovery status.
-- [ ] Apply explicit test-mode failure controls.
-- [ ] Generate C++ server and C# client types.
+Implemented as a separate loopback-only C++ gRPC gateway with a generated C# client. Local leader reads are not quorum-linearizable; full remote authentication and production hardening remain out of scope.
+
+
+- [x] Submit command.
+- [x] Accept stable operation/command IDs and return prior committed results for retries.
+- [x] Query authoritative choreography state.
+- [x] Query node role, term, indexes, and health.
+- [x] Stream or page recent events.
+- [x] Query runtime metrics.
+- [x] Query snapshot and recovery status.
+- [x] Apply explicit test-mode failure controls.
+- [x] Generate C++ server and C# client types.
 
 ### Step 35: Scaffold Avalonia application
 
