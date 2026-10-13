@@ -431,7 +431,7 @@ TEST(ClusterTest, ManagementReadsCommittedEventsAndRejectsProductionFaults) {
   EXPECT_TRUE(conflicted);
   if (conflicted) {
     auto decoded = choreoos::protocol::decode_client_response(conflicted.value().payload);
-    EXPECT_TRUE(decoded && !decoded.value().ok && decoded.value().error_code == "DuplicateCommand");
+    EXPECT_TRUE(decoded && !decoded.value().ok && decoded.value().error_code == "CommandConflict");
   }
   node.value()->stop();
   runner.join();
