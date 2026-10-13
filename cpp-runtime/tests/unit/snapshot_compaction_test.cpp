@@ -163,6 +163,65 @@ TEST(SnapshotStateTest, SizeFollowsStateNotHistory) {
   EXPECT_EQ(state_hash(restored.value()), state_hash(engine.state()));
 }
 
+TEST(SnapshotStateTest, LegacyReceiptFormatsRemainReadable) {
+  Engine engine;
+  auto original = engine.submit(create_command());
+  ASSERT_TRUE(original);
+  const std::string modern = snapshot_payload(engine.state());
+  const auto receipt_start = modern.find("\nr ");
+  ASSERT_NE(receipt_start, std::string::npos);
+  const auto receipt_end = modern.find('\n', receipt_start + 1);
+  ASSERT_NE(receipt_end, std::string::npos);
+
+  // The old v2 payload stored the complete canonical event per command.
+  std::string old_v2 = modern;
+  old_v2.replace(receipt_start + 1, receipt_end - receipt_start - 1,
+                 "receipt " + original.value().event.id.value() + " " +
+                     canonical_event(original.value().event));
+  old_v2.replace(0, std::string("snapshot-state 3").size(), "snapshot-state 2");
+  auto recovered = restore_state(old_v2);
+  ASSERT_TRUE(recovered);
+  Engine replica;
+  replica.restore(recovered.value());
+  auto duplicate = replica.submit(create_command());
+  ASSERT_TRUE(duplicate);
+  EXPECT_TRUE(duplicate.value().duplicate);
+  EXPECT_EQ(canonical_event(duplicate.value().event),
+            canonical_event(original.value().event));
+
+  // A legacy v1 payload has dedup IDs but no event outcome after compaction.
+  std::string old_v1 = modern;
+  old_v1.replace(receipt_start + 1, receipt_end - receipt_start - 1,
+                 "applied " + original.value().event.command_id.value());
+  old_v1.replace(0, std::string("snapshot-state 3").size(), "snapshot-state 1");
+  auto legacy = restore_state(old_v1);
+  ASSERT_TRUE(legacy);
+  Engine legacy_engine;
+  legacy_engine.restore(legacy.value());
+  auto missing = legacy_engine.submit(create_command());
+  ASSERT_FALSE(missing);
+  EXPECT_EQ(missing.error().code(), ErrorCode::OutcomeUnavailable);
+}
+
+TEST(SnapshotStateTest, CompactReceiptPayloadRejectsMalformedFields) {
+  Engine engine;
+  ASSERT_TRUE(engine.submit(create_command()));
+  const std::string valid = snapshot_payload(engine.state());
+  const auto start = valid.find("\nr ");
+  ASSERT_NE(start, std::string::npos);
+  const auto end = valid.find('\n', start + 1);
+  ASSERT_NE(end, std::string::npos);
+  std::string bad = valid;
+  bad.replace(start + 1, end - start - 1, "r c-create invalid");
+  EXPECT_FALSE(restore_state(bad));
+  bad = valid;
+  bad.replace(start + 1, end - start - 1, "r c-create zAAAAAAAAAA");
+  EXPECT_FALSE(restore_state(bad));
+  bad = valid;
+  bad.insert(end + 1, "at 999999\n");
+  EXPECT_FALSE(restore_state(bad));
+}
+
 TEST(SnapshotStateTest, LoadsNewestValidAndFallsBackWhenNewestIsDamaged) {
   const auto dir = fresh("choreoos-snapfile");
   StoreOptions options;
