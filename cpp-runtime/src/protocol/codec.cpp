@@ -243,7 +243,7 @@ Result<Handshake> decode_handshake(std::string_view bytes) {
         return value.error();
       }
       message.node_id = value.value();
-    } else if ((field == 2 || field == 3) && wire == kVarint) {
+    } else if ((field == 2 || field == 3 || field == 5) && wire == kVarint) {
       auto value = reader.varint();
       if (!value) {
         return value.error();
@@ -659,6 +659,7 @@ Result<std::string> encode(const ManagementQuery& message) {
   write_uint(out, 2, message.after_index);
   write_uint(out, 3, message.page_size);
   write_bytes(out, 4, message.peer_id);
+  write_uint(out, 5, message.delay_ms);
   return out;
 }
 
@@ -713,6 +714,11 @@ Result<ManagementQuery> decode_management_query(std::string_view bytes) {
       }
       if (field == 2) {
         message.after_index = value.value();
+      } else if (field == 5) {
+        if (value.value() > 5000) {
+          return Error{ErrorCode::ProtocolError, "management delay exceeds 5000 ms"};
+        }
+        message.delay_ms = static_cast<std::uint32_t>(value.value());
       } else {
         if (value.value() > 128) {
           return Error{ErrorCode::ProtocolError, "management page size exceeds 128"};
