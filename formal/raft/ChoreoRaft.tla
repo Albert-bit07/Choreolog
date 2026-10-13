@@ -409,6 +409,14 @@ CoreNext ==
 
 CoreSpec == Init /\ [][CoreNext /\ UNCHANGED alive]_vars
 
+\* Durability-focused extension of the core profile. Permits offline crashes,
+\* torn-write failures and restarts while retaining real voting/replication.
+\* Still omits packet loss, duplication and redundant AE heartbeats.
+RecoveryNext ==
+  \/ /\ UNCHANGED alive /\ CoreNext
+  \/ \E i \in Servers : Crash(i) \/ PersistFailed(i) \/ Restart(i)
+RecoverySpec == Init /\ [][RecoveryNext]_vars
+
 Next ==
   \/ /\ UNCHANGED alive /\ ActiveNext
   \/ \E i \in Servers : Crash(i) \/ PersistFailed(i) \/ Restart(i)
@@ -484,6 +492,8 @@ SafetyInvariant ==
 \* predicate and intentionally expect a concrete invariant counterexample.
 \* A successful reachability test means TLC FOUND the witness, not that the
 \* negated predicate holds universally.
+SomeOffline == \E i \in Servers : ~alive[i]
+NoOfflineWitness == ~SomeOffline
 SomeLeader == \E i \in Servers : role[i] = Leader
 SomeReplicatedEntry ==
   \E i, j \in Servers :
