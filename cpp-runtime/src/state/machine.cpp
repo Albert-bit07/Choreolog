@@ -476,7 +476,7 @@ std::string state_hash(const ChoreographyState& state) {
 
 std::string snapshot_payload(const ChoreographyState& state) {
   std::ostringstream out;
-  out << "snapshot-state 1\n";
+  out << "snapshot-state 2\n";
   out << "schema " << kCurrentSchemaVersion << '\n';
   out << "created " << (state.created ? 1 : 0) << '\n';
   out << "choreography " << (state.id ? state.id->value() : "-") << '\n';
@@ -508,6 +508,9 @@ std::string snapshot_payload(const ChoreographyState& state) {
     out << "light " << id << ' ' << cue.tick.ticks() << ' '
         << (cue.depends_on ? cue.depends_on->value() : "-") << '\n';
   }
+  for (const auto& [event_id, canonical] : state.applied_events) {
+    out << "receipt " << event_id << ' ' << canonical << '\n';
+  }
   for (const auto& [command, event] : state.applied_commands) {
     // Event id equals command id by construction; only record it when not.
     out << "applied " << command;
@@ -537,7 +540,7 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
     if (!header) {
       std::string version;
       fields >> version;
-      if (key != "snapshot-state" || version != "1") {
+      if (key != "snapshot-state" || (version != "1" && version != "2")) {
         return bad("missing or unsupported header");
       }
       header = true;
@@ -641,6 +644,14 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
         cue.depends_on = parsed.value();
       }
       (key == "music" ? state.music_cues : state.lighting_cues).insert_or_assign(id, cue);
+    } else if (key == "receipt") {
+      std::string event_id;
+      std::string canonical;
+      fields >> event_id >> canonical;
+      if (event_id.empty() || canonical.empty()) {
+        return bad("receipt is missing an event id or payload");
+      }
+      state.applied_events[event_id] = canonical;
     } else if (key == "applied") {
       std::string command;
       std::string event;
