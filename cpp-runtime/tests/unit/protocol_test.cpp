@@ -154,5 +154,51 @@ TEST(ProtocolTest, CommandTextRoundTrip) {
   EXPECT_EQ(std::get<CreateChoreographyPayload>(parsed.value().payload).max_travel_mm, 5000);
 }
 
+
+TEST(ProtocolTest, ManagementQueryAndReplyRoundTrip) {
+  ManagementQuery query;
+  query.operation = "events";
+  query.after_index = 42;
+  query.page_size = 64;
+  query.peer_id = "node-2";
+  query.delay_ms = 250;
+  const auto encoded_query = encode(query);
+  ASSERT_TRUE(encoded_query);
+  const auto decoded_query = decode_management_query(encoded_query.value());
+  ASSERT_TRUE(decoded_query);
+  EXPECT_EQ(decoded_query.value().operation, "events");
+  EXPECT_EQ(decoded_query.value().after_index, 42u);
+  EXPECT_EQ(decoded_query.value().page_size, 64u);
+  EXPECT_EQ(decoded_query.value().peer_id, "node-2");
+  EXPECT_EQ(decoded_query.value().delay_ms, 250u);
+
+  ManagementReply reply;
+  reply.events = {"first-event", "second-event"};
+  reply.next_after_index = 44;
+  reply.has_more = true;
+  reply.elections_started = 3;
+  reply.snapshot_index = 40;
+  reply.snapshot_state_hash = "snapshot-hash";
+  reply.recovery_report = "restored";
+  const auto encoded_reply = encode(reply);
+  ASSERT_TRUE(encoded_reply);
+  const auto decoded_reply = decode_management_reply(encoded_reply.value());
+  ASSERT_TRUE(decoded_reply);
+  EXPECT_EQ(decoded_reply.value().events, reply.events);
+  EXPECT_EQ(decoded_reply.value().next_after_index, 44u);
+  EXPECT_TRUE(decoded_reply.value().has_more);
+  EXPECT_EQ(decoded_reply.value().elections_started, 3u);
+  EXPECT_EQ(decoded_reply.value().snapshot_index, 40u);
+  EXPECT_EQ(decoded_reply.value().snapshot_state_hash, "snapshot-hash");
+  EXPECT_EQ(decoded_reply.value().recovery_report, "restored");
+
+  ManagementQuery oversized;
+  oversized.operation = "events";
+  oversized.page_size = 129;
+  const auto oversized_bytes = encode(oversized);
+  ASSERT_TRUE(oversized_bytes);
+  EXPECT_FALSE(decode_management_query(oversized_bytes.value()));
+}
+
 }  // namespace
 }  // namespace choreoos::protocol
