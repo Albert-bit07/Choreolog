@@ -301,7 +301,7 @@ TEST(ElectionTest, MinorityCannotCommit) {
             state_hash(c.value().store().engine().state()));
 }
 
-TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
+TEST(ElectionTest, StaggeredPartitionElectionConverges) {
   for (int isolated = 0; isolated < 3; ++isolated) {
     SCOPED_TRACE(isolated);
     SimulatedNetwork net{static_cast<std::uint64_t>(101 + isolated)};
