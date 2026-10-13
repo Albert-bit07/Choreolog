@@ -279,11 +279,11 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
     const std::string suffix = std::to_string(isolated);
     SimulatedNetwork net{static_cast<std::uint64_t>(100 + isolated)};
     auto a = Replica::open(electing("node-1", fresh(("choreoos-partition-a-" + suffix).c_str()),
-                                   {"node-2", "node-3"}, 13));
+                                  {"node-2", "node-3"}, 13));
     auto b = Replica::open(electing("node-2", fresh(("choreoos-partition-b-" + suffix).c_str()),
-                                   {"node-1", "node-3"}, 17));
+                                  {"node-1", "node-3"}, 17));
     auto c = Replica::open(electing("node-3", fresh(("choreoos-partition-c-" + suffix).c_str()),
-                                   {"node-1", "node-2"}, 19));
+                                  {"node-1", "node-2"}, 19));
     ASSERT_TRUE(a);
     ASSERT_TRUE(b);
     ASSERT_TRUE(c);
@@ -312,7 +312,7 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
     campaign(net, *nodes[0], *nodes[1], *nodes[2], 50);
     EXPECT_EQ(nodes[isolated]->store().commit_index(), isolated_commit);
     EXPECT_EQ(state_hash(nodes[isolated]->store().engine().state()), committed_hash);
-    EXPECT_GT(majority_leader->store().commit_index(), isolated_commit);
+    EXPECT_GT(majority_leader->store().commit_index().value(), isolated_commit.value());
     net.heal();
     campaign(net, *nodes[0], *nodes[1], *nodes[2], 120);
     const auto final_hash = state_hash(majority_leader->store().engine().state());
