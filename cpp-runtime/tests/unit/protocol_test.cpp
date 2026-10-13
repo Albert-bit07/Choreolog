@@ -187,6 +187,30 @@ TEST(ProtocolTest, CommandTextRoundTrip) {
   EXPECT_EQ(std::get<CreateChoreographyPayload>(parsed.value().payload).max_travel_mm, 5000);
 }
 
+TEST(ProtocolTest, CanonicalCommandRejectsNumericTruncationAndSuffixes) {
+  Command command{CommandId::parse("c-create").value(),
+                  ChoreographyId::parse("opening").value(),
+                  CommandType::CreateChoreography,
+                  kCurrentSchemaVersion,
+                  MusicalTick::from_count(0).value(),
+                  CreateChoreographyPayload{ChoreographyId::parse("opening").value(),
+                                            StageBounds::from_mm(20000, 12000).value(),
+                                            OverlapPolicy::Forbidden, 5000}};
+  const std::string valid = canonical_command(command);
+  auto corrupted = [&](const std::string& before, const std::string& after) {
+    std::string text = valid;
+    const auto position = text.find(before);
+    EXPECT_NE(position, std::string::npos);
+    if (position != std::string::npos) {
+      text.replace(position, before.size(), after);
+    }
+    return text;
+  };
+  EXPECT_FALSE(parse_command(corrupted("tick=0", "tick=0junk")));
+  EXPECT_FALSE(parse_command(corrupted("width=20000", "width=2147483648")));
+  EXPECT_FALSE(parse_command(corrupted("schema=1", "schema=65537")));
+}
+
 TEST(ProtocolTest, ManagementQueryAndReplyRoundTrip) {
   ManagementQuery query;
   query.operation = "events";
