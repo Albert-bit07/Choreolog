@@ -35,7 +35,6 @@ struct CueState {
   std::optional<CueId> depends_on;  // earlier cue, if any
 };
 
-// Derived from the committed event log. Maps stay ordered so hashing is stable.
 // Compact, replay-stable idempotency receipt. Fingerprints are deterministic
 // 64-bit FNV-1a values, not authentication or collision-proof identity.
 struct EventReceipt {
@@ -44,6 +43,7 @@ struct EventReceipt {
   std::uint64_t fingerprint = 0;
 };
 
+// Derived from the committed event log. Maps stay ordered so hashing is stable.
 struct ChoreographyState {
   bool created = false;                                 // false until first create event
   std::optional<ChoreographyId> id;                     // empty before create
@@ -58,7 +58,7 @@ struct ChoreographyState {
   std::map<std::string, CueState> lighting_cues;        // key = cue id
   std::map<std::string, std::string> applied_events;    // event id -> canonical text
   std::map<std::string, std::string> applied_commands;  // command id -> event id
-  std::map<std::string, EventReceipt> receipts;           // compact durable retry outcomes
+  std::map<std::string, EventReceipt> receipts;         // compact durable retry outcomes
 };
 
 struct SubmitResult {
@@ -85,14 +85,12 @@ enum class IndexRule { Contiguous, Monotonic };
 [[nodiscard]] std::string canonical_state(const ChoreographyState& state);
 [[nodiscard]] std::string state_hash(const ChoreographyState& state);
 
-// Snapshot payload: the domain state, applied-command table, and durable receipts, as
-// space-delimited lines. IDs never contain spaces, so unlike canonical_state()
-// this text parses unambiguously. Its size is the state plus one short line
-// per accepted command; version 2 retains original events for retry-safe receipts.
+// Snapshot-state v3 serializes domain state and compact command receipts.
+// Older v1/v2 payloads remain readable; compact receipts are not cryptographic
+// authentication and require canonical schema stability for reconstruction.
 [[nodiscard]] std::string snapshot_payload(const ChoreographyState& state);
 // Inverse of snapshot_payload(). The caller checks state_hash() against the
-// hash recorded with the snapshot. applied_events is left empty because event
-// text is history, not state.
+// snapshot. V3 restores compact receipts; event bodies remain in the WAL.
 [[nodiscard]] Result<ChoreographyState> restore_state(std::string_view payload);
 
 // In-memory single-node engine: submit assigns the next index and applies.
