@@ -615,16 +615,32 @@ std::string snapshot_payload(const ChoreographyState& state) {
     out << "light " << id << ' ' << cue.tick.ticks() << ' '
         << (cue.depends_on ? cue.depends_on->value() : "-") << '\n';
   }
-  for (const auto& [event_id, canonical] : state.applied_events) {
-    out << "receipt " << event_id << ' ' << canonical << '\n';
-  }
-  for (const auto& [command, event] : state.applied_commands) {
-    // Event id equals command id by construction; only record it when not.
-    out << "applied " << command;
-    if (event != command) {
-      out << ' ' << event;
+  // Store only compact receipts, sorted by committed log index. The index
+  // advances implicitly; gaps (e.g. election no-ops) use a cursor marker.
+  std::vector<std::pair<std::string, EventReceipt>> ordered(state.receipts.begin(),
+                                                            state.receipts.end());
+  std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+    return a.second.index < b.second.index;
+  });
+  std::uint64_t cursor = 0;
+  std::uint64_t active_term = 1;
+  for (const auto& [id, receipt] : ordered) {
+    if (receipt.index != cursor + 1) {
+      out << "at " << receipt.index - 1 << '\n';
     }
-    out << '\n';
+    if (receipt.term != active_term) {
+      out << "receipt-term " << receipt.term << '\n';
+      active_term = receipt.term;
+    }
+    out << "r " << id << ' ' << encode_fingerprint(receipt.fingerprint) << '\n';
+    cursor = receipt.index;
+  }
+  // Only legacy records without fingerprints need an explicit tombstone.
+  for (const auto& [id, event_id] : state.applied_commands) {
+    if (state.receipts.find(id) == state.receipts.end() &&
+        event_id.rfind("noop-", 0) != 0) {
+      out << "legacy " << id << '\n';
+    }
   }
   return out.str();
 }
@@ -637,6 +653,9 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
   std::istringstream lines{std::string{payload}};
   std::string line;
   bool header = false;
+  std::string format_version;
+  std::uint64_t receipt_index = 0;
+  std::uint64_t receipt_term = 1;
   while (std::getline(lines, line)) {
     if (line.empty()) {
       continue;
@@ -647,9 +666,11 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
     if (!header) {
       std::string version;
       fields >> version;
-      if (key != "snapshot-state" || (version != "1" && version != "2")) {
+      if (key != "snapshot-state" ||
+          (version != "1" && version != "2" && version != "3")) {
         return bad("missing or unsupported header");
       }
+      format_version = version;
       header = true;
       continue;
     }
@@ -751,14 +772,53 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
         cue.depends_on = parsed.value();
       }
       (key == "music" ? state.music_cues : state.lighting_cues).insert_or_assign(id, cue);
-    } else if (key == "receipt") {
+    } else if (key == "at" && format_version == "3") {
+      std::uint64_t cursor = 0;
+      fields >> cursor;
+      if (fields.fail() || cursor <= receipt_index || cursor >= state.last_applied.value()) {
+        return bad("receipt cursor is invalid");
+      }
+      receipt_index = cursor;
+    } else if (key == "receipt-term" && format_version == "3") {
+      fields >> receipt_term;
+      if (fields.fail() || receipt_term == 0) {
+        return bad("receipt term is invalid");
+      }
+    } else if (key == "r" && format_version == "3") {
+      std::string id;
+      std::string fingerprint;
+      fields >> id >> fingerprint;
+      auto parsed_id = CommandId::parse(id);
+      auto decoded = decode_fingerprint(fingerprint);
+      if (!parsed_id || !decoded || receipt_index >= state.last_applied.value() ||
+          state.receipts.count(id) != 0) {
+        return bad("compact receipt is invalid or repeated");
+      }
+      const auto index = ++receipt_index;
+      state.receipts.emplace(id, EventReceipt{index, receipt_term, decoded.value()});
+      state.applied_commands[id] = id;
+    } else if (key == "legacy" && format_version == "3") {
+      std::string id;
+      fields >> id;
+      if (!CommandId::parse(id) || state.applied_commands.count(id) != 0) {
+        return bad("legacy command id is invalid or repeated");
+      }
+      state.applied_commands[id] = id;
+    } else if (key == "receipt" && format_version == "2") {
       std::string event_id;
       std::string canonical;
       fields >> event_id >> canonical;
       if (event_id.empty() || canonical.empty()) {
         return bad("receipt is missing an event id or payload");
       }
+      auto event = parse_event(canonical);
+      if (!event || event.value().id.value() != event_id) {
+        return bad("legacy full receipt is malformed");
+      }
       state.applied_events[event_id] = canonical;
+      if (event.value().type != EventType::NoOp) {
+        state.receipts[event.value().command_id.value()] = receipt_from_event(event.value());
+      }
     } else if (key == "applied") {
       std::string command;
       std::string event;
