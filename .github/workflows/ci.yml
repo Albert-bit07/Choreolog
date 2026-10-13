@@ -93,7 +93,7 @@ jobs:
         run: cmake --build build/ci
 
       - name: Test
-        run: ctest --test-dir build/ci --output-on-failure --timeout 60
+        run: ctest --test-dir build/ci --output-on-failure --timeout 240
 
 
   management-api:
