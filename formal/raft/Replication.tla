@@ -81,6 +81,10 @@ Replicate(n, k) ==
     /\ alive[leader] /\ alive[n]
     /\ k \in 0..Len(log[leader])
     /\ k >= commitIndex[n]
+    \* An AppendEntries heartbeat or short prefix does not truncate a
+    \* follower's matching suffix. Truncation requires a genuine conflict.
+    /\ (k >= Len(log[n])
+        \/ ~HasPrefix(log[n], Prefix(log[leader], k)))
     /\ Prefix(log[leader], k) # log[n]
     /\ log' = [log EXCEPT ![n] = Prefix(log[leader], k)]
     /\ UNCHANGED <<term, leader, commitIndex, committed, alive>>
