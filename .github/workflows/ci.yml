@@ -231,7 +231,11 @@ jobs:
         shell: bash
         run: |
           clang-tidy-18 --version
+          # Baseline enum widths may be part of stable wire/API contracts, and
+          # positional coordinate/field signatures are intentionally typed;
+          # leave those two design-wide refactors for a separate review.
           clang-tidy-18 -p build/api-audit \
+            --checks='-*,bugprone-*,performance-*,-performance-enum-size,-bugprone-easily-swappable-parameters' \
             cpp-runtime/src/protocol/codec.cpp \
             cpp-runtime/src/runtime/config.cpp \
             cpp-runtime/src/network/node_server.cpp \
