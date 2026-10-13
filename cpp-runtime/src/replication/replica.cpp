@@ -136,12 +136,10 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
     // Formation members are canonically sorted/deduplicated at proposal
     // time. Normalize retries the same way before comparing their identity.
     auto normalized = command;
-    if (auto* formation =
-            std::get_if<choreoos::state::FormationPayload>(&normalized.payload)) {
+    if (auto* formation = std::get_if<choreoos::state::FormationPayload>(&normalized.payload)) {
       std::sort(formation->members.begin(), formation->members.end());
-      formation->members.erase(
-          std::unique(formation->members.begin(), formation->members.end()),
-          formation->members.end());
+      formation->members.erase(std::unique(formation->members.begin(), formation->members.end()),
+                               formation->members.end());
     }
     if (choreoos::protocol::canonical_command(original) !=
         choreoos::protocol::canonical_command(normalized)) {
