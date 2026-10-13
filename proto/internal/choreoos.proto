@@ -96,3 +96,31 @@ message StatusResponse {
   string state_hash = 7;
   string canonical_state = 8;
 }
+
+message ManagementQuery {
+  string operation = 1;
+  uint64 after_index = 2;
+  uint32 page_size = 3;
+  string peer_id = 4;
+  uint32 delay_ms = 5;
+}
+
+message ManagementReply {
+  string error_code = 1;
+  string error_message = 2;
+  repeated string events = 3;
+  uint64 next_after_index = 4;
+  bool has_more = 5;
+  uint64 role_changes = 6;
+  uint64 elections_started = 7;
+  uint64 votes_granted = 8;
+  uint64 step_downs = 9;
+  uint64 messages_dropped_oversize = 10;
+  uint64 snapshot_chunks_sent = 11;
+  uint64 transport_frames_sent = 12;
+  uint64 transport_frames_received = 13;
+  uint64 transport_dropped = 14;
+  uint64 snapshot_index = 15;
+  string snapshot_state_hash = 16;
+  string recovery_report = 17;
+}
