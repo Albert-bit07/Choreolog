@@ -62,16 +62,20 @@ struct Reader {
 
   Result<std::uint64_t> varint() {
     std::uint64_t value = 0;
-    int shift = 0;
-    while (offset < bytes.size() && shift < 70) {
+    for (int shift = 0; shift <= 63; shift += 7) {
+      if (offset == bytes.size()) {
+        return Error{ErrorCode::ProtocolError, "protobuf varint is truncated"};
+      }
       const auto byte = static_cast<std::uint8_t>(bytes[offset++]);
+      if (shift == 63 && byte > 1) {
+        return Error{ErrorCode::ProtocolError, "protobuf varint overflows uint64"};
+      }
       value |= static_cast<std::uint64_t>(byte & 0x7f) << shift;
       if ((byte & 0x80) == 0) {
         return value;
       }
-      shift += 7;
     }
-    return Error{ErrorCode::ProtocolError, "protobuf varint is truncated"};
+    return Error{ErrorCode::ProtocolError, "protobuf varint exceeds ten bytes"};
   }
 
   Result<std::string> skip_or_read(int wire, bool read) {
@@ -87,7 +91,7 @@ struct Reader {
       if (!length) {
         return length.error();
       }
-      if (offset + length.value() > bytes.size()) {
+      if (length.value() > bytes.size() - offset) {
         return Error{ErrorCode::ProtocolError, "protobuf length exceeds payload"};
       }
       std::string slice(bytes.substr(offset, static_cast<std::size_t>(length.value())));
@@ -247,6 +251,9 @@ Result<Handshake> decode_handshake(std::string_view bytes) {
       auto value = reader.varint();
       if (!value) {
         return value.error();
+      }
+      if (value.value() > UINT32_MAX) {
+        return Error{ErrorCode::ProtocolError, "handshake version exceeds uint32"};
       }
       if (field == 2) {
         message.major = static_cast<std::uint32_t>(value.value());
