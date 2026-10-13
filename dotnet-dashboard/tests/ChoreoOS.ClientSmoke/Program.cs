@@ -45,7 +45,7 @@ try
         }, deadline: deadline);
     throw new Exception("conflicting operation ID was accepted");
 }
-catch (RpcException error) when (error.StatusCode == StatusCode.InvalidArgument)
+catch (RpcException error) when (error.StatusCode == StatusCode.AlreadyExists)
 {
     // Conflicting idempotency keys are rejected.
 }
