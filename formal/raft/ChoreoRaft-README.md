@@ -96,8 +96,10 @@ unrestricted message drops, duplication, retransmissions, multi-term
 replication and crash/restart is still too large for the previous CI limit.
 Therefore **leader completeness across an actual committed log and later
 leader is not yet exhaustively checked in this unified model**. The
-`NegativeNonDurableVote.cfg` mutation is intended to demonstrate vote
-persistence safety and must be confirmed separately by CI.
+`NegativeNonDurableVote.cfg` mutation has been confirmed in CI to produce an
+`ElectionSafety` counterexample; its expected-failure test passes. This
+establishes detection of this seeded durability bug within the scoped
+multi-term election profile, not coverage of every persistence fault.
 
 In all these configurations, `CHECK_DEADLOCK FALSE` is appropriate because
 liveness is explicitly out of scope and a bounded election can end without a
