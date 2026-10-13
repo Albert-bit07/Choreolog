@@ -417,6 +417,18 @@ RecoveryNext ==
   \/ \E i \in Servers : Crash(i) \/ PersistFailed(i) \/ Restart(i)
 RecoverySpec == Init /\ [][RecoveryNext]_vars
 
+\* Two-term election profile retaining durable grants, competing candidates,
+\* delayed/dropped RV messages and crash/restart. It excludes log writes
+\* and AppendEntries, which are checked by the core and recovery profiles.
+ElectionNext ==
+  \/ \E i \in Servers :
+       Timeout(i) \/ BecomeLeader(i) \/ PersistCompleted(i)
+       \/ Crash(i) \/ PersistFailed(i) \/ Restart(i)
+  \/ \E i \in Servers, m \in DOMAIN net :
+       UpdateTerm(i, m) \/ HandleRVReq(i, m) \/ HandleRVResp(i, m)
+  \/ \E m \in DOMAIN net : DropMsg(m)
+ElectionSpec == Init /\ [][ElectionNext]_vars
+
 Next ==
   \/ /\ UNCHANGED alive /\ ActiveNext
   \/ \E i \in Servers : Crash(i) \/ PersistFailed(i) \/ Restart(i)
@@ -492,6 +504,10 @@ SafetyInvariant ==
 \* predicate and intentionally expect a concrete invariant counterexample.
 \* A successful reachability test means TLC FOUND the witness, not that the
 \* negated predicate holds universally.
+SomeDifferentTermLeaders ==
+  \E t1, t2 \in 1..MaxTerm :
+    t1 # t2 /\ ghostLeaders[t1] # {} /\ ghostLeaders[t2] # {}
+NoDifferentTermLeadersWitness == ~SomeDifferentTermLeaders
 SomeOffline == \E i \in Servers : ~alive[i]
 NoOfflineWitness == ~SomeOffline
 SomeLeader == \E i \in Servers : role[i] = Leader
