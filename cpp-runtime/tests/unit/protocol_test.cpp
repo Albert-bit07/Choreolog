@@ -84,6 +84,23 @@ TEST(ProtocolTest, HandshakeIgnoresUnknownVarintFields) {
   EXPECT_EQ(decoded.value().major, 1u);
 }
 
+TEST(ProtocolTest, RejectsOverflowedAndOverlongVarints) {
+  std::string overflow(9, static_cast<char>(0x80));
+  overflow.push_back(static_cast<char>(0x02));
+  EXPECT_FALSE(decode_handshake(overflow));
+  std::string unterminated(11, static_cast<char>(0x80));
+  EXPECT_FALSE(decode_management_query(unterminated));
+
+  // Field 2 (major), uint64 value 2^32: refuse narrowing to uint32.
+  std::string oversized_version;
+  oversized_version.push_back(static_cast<char>(0x10));
+  for (int i = 0; i < 4; ++i) {
+    oversized_version.push_back(static_cast<char>(0x80));
+  }
+  oversized_version.push_back(static_cast<char>(0x10));
+  EXPECT_FALSE(decode_handshake(oversized_version));
+}
+
 TEST(ProtocolTest, MessagesRoundTrip) {
   AppendEntries append;
   append.term = 1;
