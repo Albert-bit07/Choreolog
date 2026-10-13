@@ -59,7 +59,8 @@ static void Require(bool condition, string message)
     }
 }
 
-static async Task ExpectRpcAsync(Func<Task> call, StatusCode expected)
+static async Task ExpectRpcAsync(Func<Task> call, StatusCode expected,
+                                string? runtimeCode = null)
 {
     try
     {
@@ -67,6 +68,12 @@ static async Task ExpectRpcAsync(Func<Task> call, StatusCode expected)
     }
     catch (RpcException error) when (error.StatusCode == expected)
     {
+        if (runtimeCode is not null && !error.Trailers.Any(
+                entry => entry.Key == "choreoos-error-code" &&
+                         entry.Value == runtimeCode))
+        {
+            throw new Exception("missing typed ChoreoOS error trailer " + runtimeCode);
+        }
         return;
     }
     throw new Exception("expected gRPC status " + expected);
@@ -159,6 +166,11 @@ try
             new GetStateRequest { RequireLeader = true },
             deadline: DateTime.UtcNow.AddSeconds(5));
     }, StatusCode.FailedPrecondition);
+    await ExpectRpcAsync(async () =>
+    {
+        await connections[follower].Client.SubmitCommandAsync(
+            create, deadline: DateTime.UtcNow.AddSeconds(5));
+    }, StatusCode.FailedPrecondition, "NotLeader");
     var observed = await connections[follower].Client.GetStateAsync(
         new GetStateRequest { RequireLeader = false },
         deadline: DateTime.UtcNow.AddSeconds(5));
@@ -210,7 +222,7 @@ try
             OperationId = create.OperationId,
             CanonicalCommand = create.CanonicalCommand.Replace("tick=0", "tick=1")
         }, TimeSpan.FromSeconds(12));
-    }, StatusCode.AlreadyExists);
+    }, StatusCode.AlreadyExists, "CommandConflict");
 
     const string dancerCanonical =
         "schema=1;type=ADD_DANCER;cmd=hardening-dancer;choreo=opening;tick=1" +
