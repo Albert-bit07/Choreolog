@@ -154,7 +154,6 @@ TEST(ProtocolTest, CommandTextRoundTrip) {
   EXPECT_EQ(std::get<CreateChoreographyPayload>(parsed.value().payload).max_travel_mm, 5000);
 }
 
-
 TEST(ProtocolTest, ManagementQueryAndReplyRoundTrip) {
   ManagementQuery query;
   query.operation = "events";

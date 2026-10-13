@@ -5,8 +5,8 @@
 #include <boost/asio.hpp>
 #include <chrono>
 #include <deque>
-#include <memory>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -487,9 +487,8 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
   pending.push_back(std::move(waiter));
 }
 
-
 void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
-                                    const choreoos::protocol::Frame& frame) {
+                                     const choreoos::protocol::Frame& frame) {
   choreoos::protocol::ManagementReply reply;
   auto request = choreoos::protocol::decode_management_query(frame.payload);
   if (!request) {
@@ -544,10 +543,8 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
                 << " commit_index=" << replica.store().commit_index().value();
     reply.recovery_report = description.str();
   } else if (request.value().operation == "drop_peer" ||
-             request.value().operation == "delay_peer" ||
-             request.value().operation == "heal" ||
-             request.value().operation == "pause" ||
-             request.value().operation == "resume") {
+             request.value().operation == "delay_peer" || request.value().operation == "heal" ||
+             request.value().operation == "pause" || request.value().operation == "resume") {
     boost::system::error_code endpoint_error;
     const auto address = session->socket.remote_endpoint(endpoint_error);
     if (!config.test_mode || endpoint_error || !address.address().is_loopback()) {

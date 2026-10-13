@@ -652,7 +652,6 @@ Result<StatusResponse> decode_status_response(std::string_view bytes) {
   return message;
 }
 
-
 Result<std::string> encode(const ManagementQuery& message) {
   std::string out;
   write_bytes(out, 1, message.operation);
@@ -742,19 +741,29 @@ Result<ManagementReply> decode_management_reply(std::string_view bytes) {
     }
     const auto field = key.value() >> 3;
     const int wire = static_cast<int>(key.value() & 7);
-    if ((field == 1 || field == 2 || field == 3 || field == 16 || field == 17) &&
-        wire == kLength) {
+    if ((field == 1 || field == 2 || field == 3 || field == 16 || field == 17) && wire == kLength) {
       auto value = reader.skip_or_read(wire, true);
       if (!value) {
         return value.error();
       }
       switch (field) {
-        case 1: message.error_code = value.value(); break;
-        case 2: message.error_message = value.value(); break;
-        case 3: message.events.push_back(value.value()); break;
-        case 16: message.snapshot_state_hash = value.value(); break;
-        case 17: message.recovery_report = value.value(); break;
-        default: break;
+        case 1:
+          message.error_code = value.value();
+          break;
+        case 2:
+          message.error_message = value.value();
+          break;
+        case 3:
+          message.events.push_back(value.value());
+          break;
+        case 16:
+          message.snapshot_state_hash = value.value();
+          break;
+        case 17:
+          message.recovery_report = value.value();
+          break;
+        default:
+          break;
       }
     } else if (field >= 4 && field <= 15 && wire == kVarint) {
       auto value = reader.varint();
@@ -762,19 +771,44 @@ Result<ManagementReply> decode_management_reply(std::string_view bytes) {
         return value.error();
       }
       switch (field) {
-        case 4: message.next_after_index = value.value(); break;
-        case 5: message.has_more = value.value() != 0; break;
-        case 6: message.role_changes = value.value(); break;
-        case 7: message.elections_started = value.value(); break;
-        case 8: message.votes_granted = value.value(); break;
-        case 9: message.step_downs = value.value(); break;
-        case 10: message.messages_dropped_oversize = value.value(); break;
-        case 11: message.snapshot_chunks_sent = value.value(); break;
-        case 12: message.transport_frames_sent = value.value(); break;
-        case 13: message.transport_frames_received = value.value(); break;
-        case 14: message.transport_dropped = value.value(); break;
-        case 15: message.snapshot_index = value.value(); break;
-        default: break;
+        case 4:
+          message.next_after_index = value.value();
+          break;
+        case 5:
+          message.has_more = value.value() != 0;
+          break;
+        case 6:
+          message.role_changes = value.value();
+          break;
+        case 7:
+          message.elections_started = value.value();
+          break;
+        case 8:
+          message.votes_granted = value.value();
+          break;
+        case 9:
+          message.step_downs = value.value();
+          break;
+        case 10:
+          message.messages_dropped_oversize = value.value();
+          break;
+        case 11:
+          message.snapshot_chunks_sent = value.value();
+          break;
+        case 12:
+          message.transport_frames_sent = value.value();
+          break;
+        case 13:
+          message.transport_frames_received = value.value();
+          break;
+        case 14:
+          message.transport_dropped = value.value();
+          break;
+        case 15:
+          message.snapshot_index = value.value();
+          break;
+        default:
+          break;
       }
     } else if (auto skipped = reader.skip_or_read(wire, false); !skipped) {
       return skipped.error();

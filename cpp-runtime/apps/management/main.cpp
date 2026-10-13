@@ -59,8 +59,8 @@ class ManagementService final : public ChoreoManagement::Service {
       if (body.value().error_code == "Unavailable") {
         return {StatusCode::UNAVAILABLE, body.value().error_message};
       }
-      return {StatusCode::INVALID_ARGUMENT, body.value().error_code + ": " +
-                                                body.value().error_message};
+      return {StatusCode::INVALID_ARGUMENT,
+              body.value().error_code + ": " + body.value().error_message};
     }
     response->set_committed(true);
     response->set_duplicate(body.value().duplicate);
@@ -124,7 +124,7 @@ class ManagementService final : public ChoreoManagement::Service {
     }
     if (!body.value().error_code.empty()) {
       const auto code = body.value().error_code == "Compacted" ? StatusCode::OUT_OF_RANGE
-                                                                : StatusCode::FAILED_PRECONDITION;
+                                                               : StatusCode::FAILED_PRECONDITION;
       return {code, body.value().error_message};
     }
     for (const auto& canonical : body.value().events) {
@@ -222,8 +222,7 @@ class ManagementService final : public ChoreoManagement::Service {
 
  private:
   choreoos::state::Result<Frame> transact(const Frame& frame) const {
-    return choreoos::protocol::transact("127.0.0.1", port_, frame,
-                                       std::chrono::milliseconds(2500));
+    return choreoos::protocol::transact("127.0.0.1", port_, frame, std::chrono::milliseconds(2500));
   }
 
   choreoos::state::Result<choreoos::protocol::StatusResponse> fetch_status() const {
@@ -278,8 +277,8 @@ int main(int argc, char** argv) {
   try {
     const auto node_port = std::stoul(argv[1]);
     const auto management_port = std::stoul(argv[2]);
-    if (node_port == 0 || node_port > 65535 || management_port == 0 ||
-        management_port > 65535 || node_port == management_port) {
+    if (node_port == 0 || node_port > 65535 || management_port == 0 || management_port > 65535 ||
+        node_port == management_port) {
       std::cerr << "ports must be distinct values between 1 and 65535\n";
       return 2;
     }

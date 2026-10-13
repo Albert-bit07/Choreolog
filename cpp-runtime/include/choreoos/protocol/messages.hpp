@@ -101,7 +101,6 @@ struct StatusResponse {
   std::string canonical_state;
 };
 
-
 // Management queries reuse the existing authenticated-by-config peer TCP
 // framing. They are intentionally read-only unless explicitly test-enabled.
 struct ManagementQuery {

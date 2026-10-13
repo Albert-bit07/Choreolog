@@ -130,9 +130,9 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
     if (known->type != choreoos::state::event_type_for(command.type)) {
       return Error{ErrorCode::DuplicateCommand, "command ID reused with a different request"};
     }
-    const choreoos::state::Command original{
-        known->command_id, known->choreography_id, command.type, known->schema_version,
-        known->tick, known->payload};
+    const choreoos::state::Command original{known->command_id, known->choreography_id,
+                                            command.type,      known->schema_version,
+                                            known->tick,       known->payload};
     if (choreoos::protocol::canonical_command(original) !=
         choreoos::protocol::canonical_command(command)) {
       return Error{ErrorCode::DuplicateCommand, "command ID reused with a different request"};

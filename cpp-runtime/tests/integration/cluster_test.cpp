@@ -370,11 +370,9 @@ TEST(ClusterTest, LeaderFailoverElectsAndConverges) {
   revived_thread.join();
 }
 
-
-
 TEST(ClusterTest, ManagementReadsCommittedEventsAndRejectsProductionFaults) {
-  auto node = NodeServer::open(node_config("node-1", "node-1",
-                                           fresh("choreoos-management-wire"), 19301, {}));
+  auto node = NodeServer::open(
+      node_config("node-1", "node-1", fresh("choreoos-management-wire"), 19301, {}));
   ASSERT_TRUE(node);
   std::thread runner([&] { node.value()->run(); });
 
@@ -386,8 +384,8 @@ TEST(ClusterTest, ManagementReadsCommittedEventsAndRejectsProductionFaults) {
                  CreateChoreographyPayload{ChoreographyId::parse("opening").value(),
                                            StageBounds::from_mm(20000, 12000).value(),
                                            OverlapPolicy::Forbidden, 5000}};
-  auto submitted = choreoos::protocol::transact(
-      "127.0.0.1", 19301, command_frame(create), std::chrono::milliseconds(1000));
+  auto submitted = choreoos::protocol::transact("127.0.0.1", 19301, command_frame(create),
+                                                std::chrono::milliseconds(1000));
   EXPECT_TRUE(submitted);
   if (submitted) {
     auto decoded = choreoos::protocol::decode_client_response(submitted.value().payload);
@@ -399,8 +397,8 @@ TEST(ClusterTest, ManagementReadsCommittedEventsAndRejectsProductionFaults) {
     choreoos::protocol::Frame frame;
     frame.type = choreoos::protocol::MessageType::ManagementQuery;
     frame.payload = choreoos::protocol::encode(request).value();
-    auto reply = choreoos::protocol::transact("127.0.0.1", 19301, frame,
-                                              std::chrono::milliseconds(1000));
+    auto reply =
+        choreoos::protocol::transact("127.0.0.1", 19301, frame, std::chrono::milliseconds(1000));
     if (!reply) {
       return choreoos::state::Result<choreoos::protocol::ManagementReply>(reply.error());
     }
@@ -428,13 +426,12 @@ TEST(ClusterTest, ManagementReadsCommittedEventsAndRejectsProductionFaults) {
   EXPECT_EQ(forbidden.value().error_code, "PermissionDenied");
 
   create.tick = MusicalTick::from_count(1).value();
-  auto conflicted = choreoos::protocol::transact(
-      "127.0.0.1", 19301, command_frame(create), std::chrono::milliseconds(1000));
+  auto conflicted = choreoos::protocol::transact("127.0.0.1", 19301, command_frame(create),
+                                                 std::chrono::milliseconds(1000));
   EXPECT_TRUE(conflicted);
   if (conflicted) {
     auto decoded = choreoos::protocol::decode_client_response(conflicted.value().payload);
-    EXPECT_TRUE(decoded && !decoded.value().ok &&
-                decoded.value().error_code == "DuplicateCommand");
+    EXPECT_TRUE(decoded && !decoded.value().ok && decoded.value().error_code == "DuplicateCommand");
   }
   node.value()->stop();
   runner.join();
@@ -511,9 +508,9 @@ TEST(ClusterTest, AllTwoVersusOneTcpPartitionsRecover) {
                                              StageBounds::from_mm(20000, 12000).value(),
                                              OverlapPolicy::Forbidden, 5000}};
     if (initial_leader >= 0) {
-      auto created = choreoos::protocol::transact(
-          "127.0.0.1", ports[initial_leader], command_frame(create),
-          std::chrono::milliseconds(2500));
+      auto created =
+          choreoos::protocol::transact("127.0.0.1", ports[initial_leader], command_frame(create),
+                                       std::chrono::milliseconds(2500));
       EXPECT_TRUE(created);
     }
     for (int attempt = 0; attempt < 100; ++attempt) {
@@ -539,16 +536,15 @@ TEST(ClusterTest, AllTwoVersusOneTcpPartitionsRecover) {
     const int next_leader = find_leader(true);
     EXPECT_GE(next_leader, 0);
     if (next_leader >= 0) {
-      Command add{CommandId::parse("partition-add").value(),
-                  ChoreographyId::parse("opening").value(),
-                  CommandType::AddDancer,
-                  kCurrentSchemaVersion,
-                  MusicalTick::from_count(1).value(),
-                  DancerPayload{DancerId::parse("alice").value(),
-                                Position::from_mm(1000, 1000).value()}};
-      auto added = choreoos::protocol::transact(
-          "127.0.0.1", ports[next_leader], command_frame(add),
-          std::chrono::milliseconds(2500));
+      Command add{
+          CommandId::parse("partition-add").value(),
+          ChoreographyId::parse("opening").value(),
+          CommandType::AddDancer,
+          kCurrentSchemaVersion,
+          MusicalTick::from_count(1).value(),
+          DancerPayload{DancerId::parse("alice").value(), Position::from_mm(1000, 1000).value()}};
+      auto added = choreoos::protocol::transact("127.0.0.1", ports[next_leader], command_frame(add),
+                                                std::chrono::milliseconds(2500));
       EXPECT_TRUE(added);
       if (added) {
         auto decoded = choreoos::protocol::decode_client_response(added.value().payload);
