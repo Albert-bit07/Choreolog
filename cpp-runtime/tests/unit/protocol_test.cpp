@@ -68,6 +68,22 @@ TEST(ProtocolTest, HandshakeBytesStayCompatible) {
   EXPECT_EQ(decoded.value().node_id, "node-1");
 }
 
+TEST(ProtocolTest, HandshakeIgnoresUnknownVarintFields) {
+  Handshake hello;
+  hello.node_id = "node-1";
+  hello.major = 1;
+  hello.minor = 7;
+  auto bytes = encode(hello);
+  ASSERT_TRUE(bytes);
+  // Field 5, varint value 42, must not replace the negotiated minor version.
+  bytes.value().push_back(static_cast<char>(0x28));
+  bytes.value().push_back(static_cast<char>(0x2a));
+  auto decoded = decode_handshake(bytes.value());
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ(decoded.value().minor, 7u);
+  EXPECT_EQ(decoded.value().major, 1u);
+}
+
 TEST(ProtocolTest, MessagesRoundTrip) {
   AppendEntries append;
   append.term = 1;
