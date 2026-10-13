@@ -472,6 +472,42 @@ TEST(ElectionTest, RestartComesBackAsFollower) {
   EXPECT_EQ(state_hash(restarted.value().store().engine().state()), hash);
 }
 
+
+TEST(ReplicationTest, CompactedCommittedCommandReturnsOriginalReceiptAfterRestart) {
+  auto dir = fresh("choreoos-durable-command-receipt");
+  const ReplicaConfig config{"node-1", "node-1", {}, dir, false, 1, 3, 6, 1};
+  {
+    auto leader = Replica::open(config);
+    ASSERT_TRUE(leader);
+    auto created = leader.value().enqueue(create_command());
+    ASSERT_TRUE(created);
+    EXPECT_TRUE(created.value().committed);
+    auto added = leader.value().enqueue(add_command("alice", 1000));
+    ASSERT_TRUE(added);
+    EXPECT_TRUE(added.value().committed);
+    ASSERT_TRUE(leader.value().store().latest_snapshot());
+    ASSERT_TRUE(leader.value().store().discard_compacted_prefix());
+    EXPECT_EQ(leader.value().store().log_first_index(), 2u);
+    auto replay = leader.value().enqueue(create_command());
+    ASSERT_TRUE(replay);
+    EXPECT_TRUE(replay.value().duplicate);
+    EXPECT_EQ(replay.value().event.index.value(), 1u);
+    auto conflict = create_command();
+    conflict.tick = MusicalTick::from_count(1).value();
+    auto rejected = leader.value().enqueue(conflict);
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::DuplicateCommand);
+  }
+  auto recovered = Replica::open(config);
+  ASSERT_TRUE(recovered);
+  auto receipt = recovered.value().enqueue(create_command());
+  ASSERT_TRUE(receipt);
+  EXPECT_TRUE(receipt.value().duplicate);
+  EXPECT_TRUE(receipt.value().committed);
+  EXPECT_EQ(receipt.value().event.index.value(), 1u);
+  EXPECT_EQ(recovered.value().store().commit_index().value(), 2u);
+}
+
 TEST(ReplicationTest, SnapshotInstallCatchesUpCompactedFollower) {
   SimulatedNetwork net{2};
   // node-3 is a peer so the leader tracks it, but it is not attached yet.
