@@ -41,6 +41,8 @@ enum class MessageType : std::uint16_t {
   ClientResponse = 10,
   StatusQuery = 11,
   StatusResponse = 12,
+  ManagementQuery = 13,
+  ManagementReply = 14,
 };
 
 struct Frame {
