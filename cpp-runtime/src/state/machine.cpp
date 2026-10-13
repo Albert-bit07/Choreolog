@@ -583,7 +583,7 @@ std::string state_hash(const ChoreographyState& state) {
 
 std::string snapshot_payload(const ChoreographyState& state) {
   std::ostringstream out;
-  out << "snapshot-state 2\n";
+  out << "snapshot-state 3\n";
   out << "schema " << kCurrentSchemaVersion << '\n';
   out << "created " << (state.created ? 1 : 0) << '\n';
   out << "choreography " << (state.id ? state.id->value() : "-") << '\n';
