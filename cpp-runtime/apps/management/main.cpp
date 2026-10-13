@@ -28,7 +28,7 @@ class ManagementService final : public ChoreoManagement::Service {
  public:
   explicit ManagementService(std::uint16_t port) : port_(port) {}
 
-  Status SubmitCommand(grpc::ServerContext*, const SubmitCommandRequest* request,
+  Status SubmitCommand(grpc::ServerContext* context, const SubmitCommandRequest* request,
                        SubmitCommandResponse* response) override {
     auto command = choreoos::protocol::parse_command(request->canonical_command());
     if (!command || request->operation_id().empty() ||
@@ -46,6 +46,8 @@ class ManagementService final : public ChoreoManagement::Service {
     frame.payload = encoded.value();
     auto reply = transact(frame);
     if (!reply) {
+      // Lost transports and timeouts do not prove that the command failed.
+      context->AddTrailingMetadata("choreoos-outcome", "unknown");
       return {StatusCode::UNAVAILABLE, reply.error().message()};
     }
     if (reply.value().type != MessageType::ClientResponse) {
@@ -56,10 +58,14 @@ class ManagementService final : public ChoreoManagement::Service {
       return {StatusCode::INTERNAL, body.error().message()};
     }
     if (!body.value().ok) {
+      // Typed error identity is stable across changes to human-readable
+      // messages; clients must not parse response text to find a new leader.
+      context->AddTrailingMetadata("choreoos-error-code", body.value().error_code);
       if (body.value().error_code == "NotLeader") {
         return {StatusCode::FAILED_PRECONDITION, body.value().error_message};
       }
       if (body.value().error_code == "Unavailable") {
+        context->AddTrailingMetadata("choreoos-outcome", "unknown");
         return {StatusCode::UNAVAILABLE, body.value().error_message};
       }
       if (body.value().error_code == "CommandConflict") {

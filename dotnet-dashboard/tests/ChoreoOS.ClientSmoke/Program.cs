@@ -47,7 +47,11 @@ try
 }
 catch (RpcException error) when (error.StatusCode == StatusCode.AlreadyExists)
 {
-    // Conflicting idempotency keys are rejected.
+    if (!error.Trailers.Any(entry => entry.Key == "choreoos-error-code" &&
+                                     entry.Value == "CommandConflict"))
+    {
+        throw new Exception("missing typed conflict error in gRPC trailers");
+    }
 }
 
 var state = await api.GetStateAsync(new GetStateRequest { RequireLeader = true },

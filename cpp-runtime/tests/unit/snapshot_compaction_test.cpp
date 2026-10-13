@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -468,6 +469,112 @@ TEST(SnapshotTransferTest, FreshFollowerCatchesUpFromACompactedLeaderInChunks) {
   EXPECT_GT(leader.metrics().snapshot_chunks_sent, 1u);  // really was chunked
   EXPECT_TRUE(fresh_node.store().recovery().used_snapshot);
   EXPECT_EQ(cluster.net.oversize_frames(), 0u);
+}
+
+TEST(SnapshotTransferTest, SnapshotInstalledFollowerCanLeadAndReplayCompactedReceipt) {
+  Cluster installed{61};
+  auto original_config = node_config("node-1", "choreoos-promotion-l", {"node-2", "node-3"});
+  original_config.max_snapshot_chunk_bytes = 200;
+  Replica& original = installed.open(std::move(original_config));
+  Replica& helper =
+      installed.open(node_config("node-2", "choreoos-promotion-a", {"node-1", "node-3"}));
+  ASSERT_TRUE(original.enqueue(create_command()));
+  for (int i = 0; i < kDancers; ++i) {
+    ASSERT_TRUE(original.enqueue(add_w(i)));
+    drive(installed.net, original, 1);
+  }
+
+  std::optional<Event> old_event;
+  for (int i = 0; i < 100; ++i) {
+    auto result = original.enqueue(move_command(i));
+    ASSERT_TRUE(result);
+    if (i == 0) {
+      old_event = result.value().event;
+    }
+    drive(installed.net, original, 1);
+  }
+  drive(installed.net, original, 15);
+  ASSERT_TRUE(old_event);
+  ASSERT_GT(original.store().log_first_index(), old_event->index.value());
+  ASSERT_TRUE(converged(original, helper));
+
+  Replica& snapshot_follower =
+      installed.open(node_config("node-3", "choreoos-promotion-b", {"node-1", "node-2"}));
+  drive(installed.net, original, 420);
+  ASSERT_TRUE(converged(original, snapshot_follower));
+  ASSERT_TRUE(snapshot_follower.store().recovery().used_snapshot);
+  ASSERT_EQ(snapshot_follower.store().log_entry(old_event->index.value()), nullptr);
+  ASSERT_GT(original.metrics().snapshot_chunks_sent, 1u);
+
+  // Shut down the fixed-leader test cluster. Reload the exact same durable
+  // directories with elections enabled: snapshot-installed data must be
+  // sufficient both to win an election and to answer an old idempotent retry.
+  installed.holders.clear();
+  Cluster elected{67};
+  auto existing = [](const std::string& id, const std::string& directory,
+                     std::vector<std::string> peers, std::uint64_t seed) {
+    ReplicaConfig config{id, "node-1", std::move(peers),
+                         std::filesystem::temp_directory_path() / directory};
+    config.elections = true;
+    config.rng_seed = seed;
+    config.election_timeout_min = 3;
+    config.election_timeout_max = 6;
+    config.snapshot_every = 10;
+    return config;
+  };
+  Replica& old_leader =
+      elected.open(existing("node-1", "choreoos-promotion-l", {"node-2", "node-3"}, 11));
+  Replica& voter =
+      elected.open(existing("node-2", "choreoos-promotion-a", {"node-1", "node-3"}, 17));
+  Replica& promoted =
+      elected.open(existing("node-3", "choreoos-promotion-b", {"node-1", "node-2"}, 23));
+  ASSERT_EQ(promoted.store().log_entry(old_event->index.value()), nullptr);
+  elected.net.isolate("node-1");
+  for (int step = 0; step < 100 && !promoted.is_leader(); ++step) {
+    promoted.tick();
+    elected.net.advance();
+    elected.net.advance();
+  }
+  ASSERT_TRUE(promoted.is_leader());
+  for (int step = 0; step < 60; ++step) {
+    promoted.heartbeat();
+    elected.net.advance();
+    elected.net.advance();
+  }
+
+  const auto index_before = promoted.store().last_log_index();
+  const auto commit_before = promoted.store().commit_index();
+  const auto hash_before = promoted.status().state_hash;
+  auto duplicate = promoted.enqueue(move_command(0));
+  ASSERT_TRUE(duplicate);
+  EXPECT_TRUE(duplicate.value().duplicate);
+  EXPECT_TRUE(duplicate.value().committed);
+  EXPECT_EQ(canonical_event(duplicate.value().event), canonical_event(*old_event));
+  EXPECT_EQ(promoted.store().last_log_index(), index_before);
+  EXPECT_EQ(promoted.store().commit_index(), commit_before);
+  EXPECT_EQ(promoted.status().state_hash, hash_before);
+
+  auto conflicting = move_command(0);
+  conflicting.tick = MusicalTick::from_count(2).value();
+  auto rejected = promoted.enqueue(conflicting);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), ErrorCode::CommandConflict);
+  EXPECT_EQ(promoted.store().last_log_index(), index_before);
+
+  ASSERT_TRUE(promoted.enqueue(move_command(1001)));
+  for (int step = 0; step < 50; ++step) {
+    promoted.heartbeat();
+    elected.net.advance();
+    elected.net.advance();
+  }
+  EXPECT_TRUE(converged(promoted, voter));
+  elected.net.heal();
+  for (int step = 0; step < 100; ++step) {
+    promoted.heartbeat();
+    elected.net.advance();
+    elected.net.advance();
+  }
+  EXPECT_TRUE(converged(promoted, old_leader));
 }
 
 TEST(SnapshotTransferTest, ChunkedTransferSurvivesLossAndDuplication) {

@@ -41,9 +41,9 @@ struct ReplicaConfig {
   // A catch-up batch is bounded so one AppendEntries always fits in a frame
   // (protocol::kMaxFramePayload is 1 MiB). At least one entry is always sent.
   std::size_t max_append_entries = 512;
-  std::size_t max_append_bytes = 256 * 1024;
+  std::size_t max_append_bytes = std::size_t{256} * 1024;
   // A snapshot longer than this is sent as several InstallSnapshot chunks.
-  std::size_t max_snapshot_chunk_bytes = 256 * 1024;
+  std::size_t max_snapshot_chunk_bytes = std::size_t{256} * 1024;
 };
 
 struct EnqueueResult {

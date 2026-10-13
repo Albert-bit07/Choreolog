@@ -169,3 +169,74 @@ jobs:
           test "$ready" = true
           dotnet run --project dotnet-dashboard/tests/ChoreoOS.ClientSmoke/ChoreoOS.ClientSmoke.csproj             --configuration Release -- 19402
 
+      - name: Verify three-node gRPC leader failover and safe retries
+        shell: bash
+        run: |
+          dotnet run --project dotnet-dashboard/tests/ChoreoOS.ClusterSmoke/ChoreoOS.ClusterSmoke.csproj \
+            --configuration Release -- \
+            "$PWD/build/management/cpp-runtime/choreoos-node" \
+            "$PWD/build/management/cpp-runtime/choreoos-management"
+
+
+  
+  api-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install static analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy-18 ninja-build
+
+      - name: Bootstrap pinned vcpkg
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" init
+          git -C "$RUNNER_TEMP/vcpkg" remote add origin https://github.com/microsoft/vcpkg.git
+          git -C "$RUNNER_TEMP/vcpkg" fetch --depth 1 origin "$VCPKG_COMMIT"
+          git -C "$RUNNER_TEMP/vcpkg" checkout FETCH_HEAD
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure ASan and UBSan
+        shell: bash
+        run: |
+          cmake -S . -B build/api-audit -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DCHOREOOS_ENABLE_SANITIZERS=ON \
+            -DCHOREOOS_BUILD_TESTS=ON \
+            -DCHOREOOS_BUILD_BENCHMARKS=OFF \
+            -DCHOREOOS_WARNINGS_AS_ERRORS=ON
+
+      - name: Build with sanitizers and strict warnings
+        run: cmake --build build/api-audit --parallel 2
+
+      - name: Run sanitized correctness tests
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          # CatchUpTest's multi-megabyte stress workload remains covered
+          # by the normal Linux/Windows jobs; run all other correctness
+          # cases under the instrumented binary.
+          ctest --test-dir build/api-audit --output-on-failure --timeout 240 \
+            -E '^CatchUpTest'
+
+      - name: Static-analyze protocol and cluster runtime
+        shell: bash
+        run: |
+          clang-tidy-18 --version
+          # Baseline enum widths may be part of stable wire/API contracts, and
+          # positional coordinate/field signatures are intentionally typed;
+          # leave those two design-wide refactors for a separate review.
+          clang-tidy-18 -p build/api-audit \
+            --checks='-*,bugprone-*,performance-*,-performance-enum-size,-bugprone-easily-swappable-parameters' \
+            cpp-runtime/src/protocol/codec.cpp \
+            cpp-runtime/src/runtime/config.cpp \
+            cpp-runtime/src/network/node_server.cpp \
+            --warnings-as-errors='bugprone-*,performance-*'
