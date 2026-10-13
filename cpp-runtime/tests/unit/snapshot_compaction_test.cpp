@@ -179,6 +179,7 @@ TEST(SnapshotStateTest, LegacyReceiptFormatsRemainReadable) {
                  "receipt " + original.value().event.id.value() + " " +
                      canonical_event(original.value().event));
   old_v2.replace(0, std::string("snapshot-state 3").size(), "snapshot-state 2");
+  old_v2 += "applied " + original.value().event.command_id.value() + "\n";
   auto recovered = restore_state(old_v2);
   ASSERT_TRUE(recovered);
   Engine replica;
