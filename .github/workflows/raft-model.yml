@@ -69,6 +69,14 @@ jobs:
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config ChoreoRaftCore.cfg -workers 2 ChoreoRaft.tla
 
+      - name: Check crash-restart and torn-write safety (scoped)
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 180s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftRecovery.cfg -workers 2 ChoreoRaft.tla
+
       - name: Verify protocol milestone reachability
         shell: bash
         working-directory: formal/raft
@@ -88,3 +96,20 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Verify node-offline reachability
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 45s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ReachOffline.cfg -workers 2 ChoreoRaft.tla \
+            > "$RUNNER_TEMP/reach-offline.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/reach-offline.txt"
+          if [[ $result -ne 12 ]] || ! grep -Fq 'Invariant NoOfflineWitness is violated' "$RUNNER_TEMP/reach-offline.txt"; then
+            echo "::error::No offline crash state reached; TLC exit code $result"
+            exit 1
+          fi
