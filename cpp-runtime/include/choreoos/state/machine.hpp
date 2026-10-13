@@ -74,8 +74,7 @@ enum class IndexRule { Contiguous, Monotonic };
 [[nodiscard]] Result<Event> propose(const ChoreographyState& state, const Command& command);
 // Verify a committed retry and reconstruct its original event without replaying
 // it. For legacy snapshots without receipt metadata, return OutcomeUnavailable.
-[[nodiscard]] Result<Event> resolve_receipt(const ChoreographyState& state,
-                                            const Command& command);
+[[nodiscard]] Result<Event> resolve_receipt(const ChoreographyState& state, const Command& command);
 // Apply one committed event. On failure the input state is unchanged.
 [[nodiscard]] Result<void> apply(ChoreographyState& state, const Event& event,
                                  IndexRule index_rule = IndexRule::Contiguous);

@@ -187,8 +187,7 @@ TEST(SnapshotStateTest, LegacyReceiptFormatsRemainReadable) {
   auto duplicate = replica.submit(create_command());
   ASSERT_TRUE(duplicate);
   EXPECT_TRUE(duplicate.value().duplicate);
-  EXPECT_EQ(canonical_event(duplicate.value().event),
-            canonical_event(original.value().event));
+  EXPECT_EQ(canonical_event(duplicate.value().event), canonical_event(original.value().event));
 
   // A legacy v1 payload has dedup IDs but no event outcome after compaction.
   std::string old_v1 = modern;

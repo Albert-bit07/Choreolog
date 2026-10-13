@@ -3,12 +3,12 @@
 
 #include "choreoos/state/machine.hpp"
 
-#include "choreoos/protocol/command_codec.hpp"
-#include "choreoos/state/store.hpp"
-
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
+
+#include "choreoos/protocol/command_codec.hpp"
+#include "choreoos/state/store.hpp"
 
 namespace choreoos::state {
 namespace {
@@ -17,8 +17,7 @@ namespace {
 constexpr std::uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
 
-constexpr char kBase64[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+constexpr char kBase64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 std::string encode_fingerprint(std::uint64_t value) {
   std::string text(11, 'A');
@@ -51,9 +50,8 @@ Result<std::uint64_t> decode_fingerprint(std::string_view text) {
 Command normalize_command(Command command) {
   if (auto* formation = std::get_if<FormationPayload>(&command.payload)) {
     std::sort(formation->members.begin(), formation->members.end());
-    formation->members.erase(
-        std::unique(formation->members.begin(), formation->members.end()),
-        formation->members.end());
+    formation->members.erase(std::unique(formation->members.begin(), formation->members.end()),
+                             formation->members.end());
   }
   return command;
 }
@@ -77,18 +75,35 @@ std::optional<Command> command_from_event(const Event& event) {
   }
   CommandType type = CommandType::CreateChoreography;
   switch (event.type) {
-    case EventType::ChoreographyCreated: type = CommandType::CreateChoreography; break;
-    case EventType::DancerAdded: type = CommandType::AddDancer; break;
-    case EventType::DancerRemoved: type = CommandType::RemoveDancer; break;
-    case EventType::DancerMoved: type = CommandType::MoveDancer; break;
-    case EventType::FormationDefined: type = CommandType::DefineFormation; break;
-    case EventType::FormationChanged: type = CommandType::ChangeFormation; break;
-    case EventType::MusicCueTriggered: type = CommandType::TriggerMusicCue; break;
-    case EventType::LightingCueTriggered: type = CommandType::TriggerLightingCue; break;
-    case EventType::NoOp: return std::nullopt;
+    case EventType::ChoreographyCreated:
+      type = CommandType::CreateChoreography;
+      break;
+    case EventType::DancerAdded:
+      type = CommandType::AddDancer;
+      break;
+    case EventType::DancerRemoved:
+      type = CommandType::RemoveDancer;
+      break;
+    case EventType::DancerMoved:
+      type = CommandType::MoveDancer;
+      break;
+    case EventType::FormationDefined:
+      type = CommandType::DefineFormation;
+      break;
+    case EventType::FormationChanged:
+      type = CommandType::ChangeFormation;
+      break;
+    case EventType::MusicCueTriggered:
+      type = CommandType::TriggerMusicCue;
+      break;
+    case EventType::LightingCueTriggered:
+      type = CommandType::TriggerLightingCue;
+      break;
+    case EventType::NoOp:
+      return std::nullopt;
   }
   return Command{event.command_id, event.choreography_id, type, event.schema_version,
-                 event.tick, event.payload};
+                 event.tick,       event.payload};
 }
 
 EventReceipt receipt_from_event(const Event& event) {
@@ -525,9 +540,10 @@ Result<Event> resolve_receipt(const ChoreographyState& state, const Command& com
   if (!event_id) return event_id.error();
   if (!index) return index.error();
   if (!term) return term.error();
-  return Event{event_id.value(), command.id, command.choreography_id,
-               event_type_for(command.type), command.schema_version, command.tick,
-               index.value(), term.value(), normalized.payload};
+  return Event{
+      event_id.value(),       command.id,   command.choreography_id, event_type_for(command.type),
+      command.schema_version, command.tick, index.value(),           term.value(),
+      normalized.payload};
 }
 
 std::string canonical_state(const ChoreographyState& state) {
@@ -619,9 +635,8 @@ std::string snapshot_payload(const ChoreographyState& state) {
   // advances implicitly; gaps (e.g. election no-ops) use a cursor marker.
   std::vector<std::pair<std::string, EventReceipt>> ordered(state.receipts.begin(),
                                                             state.receipts.end());
-  std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
-    return a.second.index < b.second.index;
-  });
+  std::sort(ordered.begin(), ordered.end(),
+            [](const auto& a, const auto& b) { return a.second.index < b.second.index; });
   std::uint64_t cursor = 0;
   std::uint64_t active_term = 1;
   for (const auto& [id, receipt] : ordered) {
@@ -637,8 +652,7 @@ std::string snapshot_payload(const ChoreographyState& state) {
   }
   // Only legacy records without fingerprints need an explicit tombstone.
   for (const auto& [id, event_id] : state.applied_commands) {
-    if (state.receipts.find(id) == state.receipts.end() &&
-        event_id.rfind("noop-", 0) != 0) {
+    if (state.receipts.find(id) == state.receipts.end() && event_id.rfind("noop-", 0) != 0) {
       out << "legacy " << id << '\n';
     }
   }
@@ -666,8 +680,7 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
     if (!header) {
       std::string version;
       fields >> version;
-      if (key != "snapshot-state" ||
-          (version != "1" && version != "2" && version != "3")) {
+      if (key != "snapshot-state" || (version != "1" && version != "2" && version != "3")) {
         return bad("missing or unsupported header");
       }
       format_version = version;
