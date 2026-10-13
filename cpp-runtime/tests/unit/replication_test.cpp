@@ -281,12 +281,12 @@ TEST(ElectionTest, OneLeaderPerTermThenCommit) {
 
 TEST(ElectionTest, RetryingCommittedCommandAfterLeaderChangeDoesNotAppend) {
   SimulatedNetwork net{71};
-  auto a = Replica::open(electing("node-1", fresh("choreoos-retry-election-a"),
-                                 {"node-2", "node-3"}, 13));
-  auto b = Replica::open(electing("node-2", fresh("choreoos-retry-election-b"),
-                                 {"node-1", "node-3"}, 17));
-  auto c = Replica::open(electing("node-3", fresh("choreoos-retry-election-c"),
-                                 {"node-1", "node-2"}, 19));
+  const auto dir_a = fresh("choreoos-retry-election-a");
+  const auto dir_b = fresh("choreoos-retry-election-b");
+  const auto dir_c = fresh("choreoos-retry-election-c");
+  auto a = Replica::open(electing("node-1", dir_a, {"node-2", "node-3"}, 13));
+  auto b = Replica::open(electing("node-2", dir_b, {"node-1", "node-3"}, 17));
+  auto c = Replica::open(electing("node-3", dir_c, {"node-1", "node-2"}, 19));
   ASSERT_TRUE(a);
   ASSERT_TRUE(b);
   ASSERT_TRUE(c);
