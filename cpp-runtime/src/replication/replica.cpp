@@ -124,11 +124,19 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
   if (!is_leader()) {
     return Error{ErrorCode::NotLeader, "leader is " + config_.leader_id};
   }
+  const auto& committed = store_.engine().state();
+  if (committed.applied_commands.count(command.id.value()) != 0) {
+    auto receipt = choreoos::state::resolve_receipt(committed, command);
+    if (!receipt) {
+      return receipt.error();
+    }
+    return EnqueueResult{receipt.value(), true, true, config_.leader_id};
+  }
   if (const auto* known = find_command(command.id.value())) {
     // An idempotency key identifies one logical command, not just any command
     // with the same ID. Reject conflicting retries even across restarts.
     if (known->type != choreoos::state::event_type_for(command.type)) {
-      return Error{ErrorCode::DuplicateCommand, "command ID reused with a different request"};
+      return Error{ErrorCode::CommandConflict, "command ID reused with a different request"};
     }
     const choreoos::state::Command original{known->command_id, known->choreography_id,
                                             command.type,      known->schema_version,
@@ -143,7 +151,7 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
     }
     if (choreoos::protocol::canonical_command(original) !=
         choreoos::protocol::canonical_command(normalized)) {
-      return Error{ErrorCode::DuplicateCommand, "command ID reused with a different request"};
+      return Error{ErrorCode::CommandConflict, "command ID reused with a different request"};
     }
     return EnqueueResult{*known, true, known->index <= store_.commit_index(), config_.leader_id};
   }
@@ -774,23 +782,7 @@ const choreoos::state::Event* Replica::find_command(const std::string& command_i
       return event;
     }
   }
-  // A compacted WAL prefix loses its event bytes. Snapshot v2 retains
-  // canonical outcome receipts so committed retries remain idempotent.
-  const auto& state = store_.engine().state();
-  const auto command = state.applied_commands.find(command_id);
-  if (command == state.applied_commands.end()) {
-    return nullptr;
-  }
-  const auto receipt = state.applied_events.find(command->second);
-  if (receipt == state.applied_events.end()) {
-    return nullptr;
-  }
-  auto parsed = choreoos::state::parse_event(receipt->second);
-  if (!parsed) {
-    return nullptr;
-  }
-  cached_receipt_ = std::move(parsed.value());
-  return &*cached_receipt_;
+  return nullptr;
 }
 
 void Replica::start_election() {
