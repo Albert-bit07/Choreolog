@@ -17,10 +17,12 @@ Raft model and not a mechanically checked proof of the C++ implementation.
 - Historical vote and leadership records, so a crash or leader step-down cannot
   erase evidence of **double voting** or **two leaders in the same term**.
 
-TLC checks `TypeOK`, `NoDoubleVote`, `ElectionSafety`, and
-`CandidateOwnsVote`. The checked model `Election.cfg` fixes three nodes
-and **one nonzero election term**. This is a very small, intentionally finite
-smoke model; it does *not* establish safety for unbounded terms or execution.
+TLC checks `TypeOK`, `NoDoubleVote`, `ElectionSafety`,
+`CandidateOwnsVote`, `LeaderHasQuorum`, and `GrantsWereRecorded`.
+`Election.cfg` checks three nodes and **one nonzero election term**;
+`ElectionTwoTerms.cfg` checks **two** bounded terms, including stale-term
+messages and vote persistence after restart. Both are finite-state models,
+not proofs for unbounded terms or executions.
 
 ## What this model does NOT contain
 
@@ -40,6 +42,7 @@ Requires Java 11+ and `tla2tools.jar` from the immutable
 ```bash
 cd formal/raft
 java -jar /path/to/tla2tools.jar -config Election.cfg Election.tla
+java -jar /path/to/tla2tools.jar -config ElectionTwoTerms.cfg Election.tla
 ```
 
 The CI workflow downloads the exact v1.7.4 release asset and verifies its
