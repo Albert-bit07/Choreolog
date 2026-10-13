@@ -27,6 +27,8 @@ struct NodeConfig {
   std::vector<PeerEndpoint> peers;
   // False keeps the configured leader. True runs Raft-like elections.
   bool elections = false;
+  // Explicitly permits loopback-only management fault injection.
+  bool test_mode = false;
   std::uint64_t rng_seed = 1;
   // One replica tick every heartbeat_ms. A leader heartbeats on every tick and
   // a follower starts an election after a random number of silent ticks drawn
