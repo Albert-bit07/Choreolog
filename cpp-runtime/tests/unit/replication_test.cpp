@@ -472,7 +472,6 @@ TEST(ElectionTest, RestartComesBackAsFollower) {
   EXPECT_EQ(state_hash(restarted.value().store().engine().state()), hash);
 }
 
-
 TEST(ReplicationTest, CompactedCommittedCommandReturnsOriginalReceiptAfterRestart) {
   auto dir = fresh("choreoos-durable-command-receipt");
   const ReplicaConfig config{"node-1", "node-1", {}, dir, false, 1, 3, 6, 1};
