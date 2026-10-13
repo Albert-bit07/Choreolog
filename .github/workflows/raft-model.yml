@@ -60,3 +60,11 @@ jobs:
           set -euo pipefail
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config Replication.cfg -workers 2 Replication.tla
+
+      - name: Check unified asynchronous Raft (small exhaustive bounds)
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftSmall.cfg -workers 2 ChoreoRaft.tla
