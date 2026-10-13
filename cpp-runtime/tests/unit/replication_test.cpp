@@ -350,7 +350,7 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
     const auto command_index = submitted.value().event.index;
     campaign(net, a.value(), b.value(), c.value(), 40);
     EXPECT_EQ(nodes[isolated]->store().commit_index().value(), minority_commit);
-    EXPECT_GE(majority_leader->store().commit_index(), command_index);
+    EXPECT_GE(majority_leader->store().commit_index().value(), command_index.value());
 
     net.heal();
     campaign(net, a.value(), b.value(), c.value(), 120);
@@ -361,7 +361,7 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
     EXPECT_EQ(committed, b.value().store().commit_index());
     EXPECT_EQ(committed, c.value().store().commit_index());
     for (Replica* node : nodes) {
-      EXPECT_GE(node->store().commit_index(), command_index);
+      EXPECT_GE(node->store().commit_index().value(), command_index.value());
       EXPECT_TRUE(node->store().engine().state().dancers.contains("partition-dancer"));
     }
   }
