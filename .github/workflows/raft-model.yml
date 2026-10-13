@@ -61,10 +61,30 @@ jobs:
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config Replication.cfg -workers 2 Replication.tla
 
-      - name: Check unified asynchronous Raft (small exhaustive bounds)
+      - name: Check core election-to-commit safety (exhaustive)
         shell: bash
         working-directory: formal/raft
         run: |
           set -euo pipefail
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
-            -config ChoreoRaftSmall.cfg -workers 2 ChoreoRaft.tla
+            -config ChoreoRaftCore.cfg -workers 2 ChoreoRaft.tla
+
+      - name: Verify protocol milestone reachability
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          for name in Leader Replication Commit Application; do
+            echo "Checking witness: ${name}"
+            set +e
+            timeout 90s java -Xmx3g -jar "$RUNNER_TEMP/tla2tools.jar" \
+              -config "Reach${name}.cfg" -workers 2 ChoreoRaft.tla \
+              > "$RUNNER_TEMP/witness-${name}.txt" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/witness-${name}.txt"
+            if [[ $result -ne 12 ]] || ! grep -Fq "Invariant No${name}Witness is violated" "$RUNNER_TEMP/witness-${name}.txt"; then
+              echo "::error::Missing ${name} witness; TLC exit code $result"
+              exit 1
+            fi
+          done
