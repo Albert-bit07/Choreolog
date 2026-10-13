@@ -82,6 +82,10 @@ const char* error_code_name(ErrorCode code) noexcept {
       return "Unavailable";
     case ErrorCode::ProtocolError:
       return "ProtocolError";
+    case ErrorCode::CommandConflict:
+      return "CommandConflict";
+    case ErrorCode::OutcomeUnavailable:
+      return "OutcomeUnavailable";
   }
   return "Unknown";
 }

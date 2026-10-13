@@ -165,6 +165,12 @@ TEST(ReplicationTest, FollowerRejectsClientAndDuplicateAppendIsIdempotent) {
   ASSERT_TRUE(again);
   EXPECT_TRUE(again.value().duplicate);
   EXPECT_EQ(leader.value().store().log_events().size(), 1u);
+  auto conflicting = create_command("c-create");
+  conflicting.tick = MusicalTick::from_count(1).value();
+  auto rejected = leader.value().enqueue(conflicting);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::CommandConflict);
+  EXPECT_EQ(leader.value().store().log_events().size(), 1u);
 }
 
 TEST(ReplicationTest, ConflictingUncommittedSuffixIsReplaced) {
@@ -271,6 +277,117 @@ TEST(ElectionTest, OneLeaderPerTermThenCommit) {
   EXPECT_GE(a.value().metrics().elections_started + b.value().metrics().elections_started +
                 c.value().metrics().elections_started,
             1u);
+}
+
+TEST(ElectionTest, RetryingCommittedCommandAfterLeaderChangeDoesNotAppend) {
+  SimulatedNetwork net{71};
+  const auto dir_a = fresh("choreoos-retry-election-a");
+  const auto dir_b = fresh("choreoos-retry-election-b");
+  const auto dir_c = fresh("choreoos-retry-election-c");
+  auto a = Replica::open(electing("node-1", dir_a, {"node-2", "node-3"}, 13));
+  auto b = Replica::open(electing("node-2", dir_b, {"node-1", "node-3"}, 17));
+  auto c = Replica::open(electing("node-3", dir_c, {"node-1", "node-2"}, 19));
+  ASSERT_TRUE(a);
+  ASSERT_TRUE(b);
+  ASSERT_TRUE(c);
+  net.attach(a.value());
+  net.attach(b.value());
+  net.attach(c.value());
+  campaign(net, a.value(), b.value(), c.value(), 80);
+  Replica* original = current_leader(a.value(), b.value(), c.value());
+  ASSERT_NE(original, nullptr);
+  auto created = original->enqueue(create_command());
+  ASSERT_TRUE(created);
+  const auto original_event = choreoos::state::canonical_event(created.value().event);
+  const auto original_index = created.value().event.index.value();
+  campaign(net, a.value(), b.value(), c.value(), 60);
+  for (Replica* node : {&a.value(), &b.value(), &c.value()}) {
+    ASSERT_EQ(node->store().engine().state().applied_commands.count("c-create"), 1u);
+  }
+  net.isolate(original->id());
+  campaign(net, a.value(), b.value(), c.value(), 120);
+  Replica* replacement = nullptr;
+  for (Replica* node : {&a.value(), &b.value(), &c.value()}) {
+    if (node != original && node->is_leader()) {
+      replacement = node;
+    }
+  }
+  ASSERT_NE(replacement, nullptr);
+  const auto before_hash = state_hash(replacement->store().engine().state());
+  const auto before_log = replacement->store().last_log_index();
+  const auto before_commit = replacement->store().commit_index();
+  auto retry = replacement->enqueue(create_command());
+  ASSERT_TRUE(retry);
+  EXPECT_TRUE(retry.value().duplicate);
+  EXPECT_TRUE(retry.value().committed);
+  EXPECT_EQ(retry.value().event.index.value(), original_index);
+  EXPECT_EQ(choreoos::state::canonical_event(retry.value().event), original_event);
+  EXPECT_EQ(replacement->store().last_log_index(), before_log);
+  EXPECT_EQ(replacement->store().commit_index(), before_commit);
+  EXPECT_EQ(state_hash(replacement->store().engine().state()), before_hash);
+  auto conflict = create_command();
+  conflict.tick = MusicalTick::from_count(1).value();
+  auto rejected = replacement->enqueue(conflict);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::CommandConflict);
+  EXPECT_EQ(replacement->store().last_log_index(), before_log);
+  net.heal();
+  campaign(net, a.value(), b.value(), c.value(), 120);
+  EXPECT_EQ(state_hash(a.value().store().engine().state()),
+            state_hash(b.value().store().engine().state()));
+  EXPECT_EQ(state_hash(a.value().store().engine().state()),
+            state_hash(c.value().store().engine().state()));
+}
+
+TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
+  for (int isolated = 0; isolated < 3; ++isolated) {
+    SCOPED_TRACE(isolated);
+    const std::string suffix = std::to_string(isolated);
+    SimulatedNetwork net{static_cast<std::uint64_t>(100 + isolated)};
+    const auto dir_a = fresh(("choreoos-partition-a-" + suffix).c_str());
+    auto a = Replica::open(electing("node-1", dir_a, {"node-2", "node-3"}, 13));
+    const auto dir_b = fresh(("choreoos-partition-b-" + suffix).c_str());
+    auto b = Replica::open(electing("node-2", dir_b, {"node-1", "node-3"}, 17));
+    const auto dir_c = fresh(("choreoos-partition-c-" + suffix).c_str());
+    auto c = Replica::open(electing("node-3", dir_c, {"node-1", "node-2"}, 19));
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+    ASSERT_TRUE(c);
+    Replica* nodes[] = {&a.value(), &b.value(), &c.value()};
+    net.attach(*nodes[0]);
+    net.attach(*nodes[1]);
+    net.attach(*nodes[2]);
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 80);
+    Replica* original = current_leader(*nodes[0], *nodes[1], *nodes[2]);
+    ASSERT_NE(original, nullptr);
+    ASSERT_TRUE(original->enqueue(create_command()));
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 40);
+    const auto committed_hash = state_hash(original->store().engine().state());
+    const auto isolated_commit = nodes[isolated]->store().commit_index();
+    net.isolate(nodes[isolated]->id());
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 100);
+    EXPECT_EQ(nodes[isolated]->store().commit_index(), isolated_commit);
+    Replica* majority_leader = nullptr;
+    for (int i = 0; i < 3; ++i) {
+      if (i != isolated && nodes[i]->is_leader()) {
+        majority_leader = nodes[i];
+      }
+    }
+    ASSERT_NE(majority_leader, nullptr);
+    ASSERT_TRUE(majority_leader->enqueue(add_command("partition-dancer", 1000)));
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 50);
+    EXPECT_EQ(nodes[isolated]->store().commit_index(), isolated_commit);
+    EXPECT_EQ(state_hash(nodes[isolated]->store().engine().state()), committed_hash);
+    EXPECT_GT(majority_leader->store().commit_index().value(), isolated_commit.value());
+    net.heal();
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 120);
+    const auto final_hash = state_hash(majority_leader->store().engine().state());
+    for (Replica* node : nodes) {
+      EXPECT_EQ(state_hash(node->store().engine().state()), final_hash);
+      EXPECT_EQ(node->store().commit_index(), majority_leader->store().commit_index());
+    }
+    EXPECT_EQ(leaders_now(*nodes[0], *nodes[1], *nodes[2]), 1);
+  }
 }
 
 TEST(ElectionTest, MinorityCannotCommit) {
@@ -413,6 +530,41 @@ TEST(ElectionTest, RestartComesBackAsFollower) {
   rejoined.attach(c.value());
   campaign(rejoined, restarted.value(), b.value(), c.value(), 50);
   EXPECT_EQ(state_hash(restarted.value().store().engine().state()), hash);
+}
+
+TEST(ReplicationTest, CompactedCommittedCommandReturnsOriginalReceiptAfterRestart) {
+  auto dir = fresh("choreoos-durable-command-receipt");
+  const ReplicaConfig config{"node-1", "node-1", {}, dir, false, 1, 3, 6, 1};
+  {
+    auto leader = Replica::open(config);
+    ASSERT_TRUE(leader);
+    auto created = leader.value().enqueue(create_command());
+    ASSERT_TRUE(created);
+    EXPECT_TRUE(created.value().committed);
+    auto added = leader.value().enqueue(add_command("alice", 1000));
+    ASSERT_TRUE(added);
+    EXPECT_TRUE(added.value().committed);
+    ASSERT_TRUE(leader.value().store().latest_snapshot());
+    ASSERT_TRUE(leader.value().store().discard_compacted_prefix());
+    EXPECT_EQ(leader.value().store().log_first_index(), 2u);
+    auto replay = leader.value().enqueue(create_command());
+    ASSERT_TRUE(replay);
+    EXPECT_TRUE(replay.value().duplicate);
+    EXPECT_EQ(replay.value().event.index.value(), 1u);
+    auto conflict = create_command();
+    conflict.tick = MusicalTick::from_count(1).value();
+    auto rejected = leader.value().enqueue(conflict);
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::CommandConflict);
+  }
+  auto recovered = Replica::open(config);
+  ASSERT_TRUE(recovered);
+  auto receipt = recovered.value().enqueue(create_command());
+  ASSERT_TRUE(receipt);
+  EXPECT_TRUE(receipt.value().duplicate);
+  EXPECT_TRUE(receipt.value().committed);
+  EXPECT_EQ(receipt.value().event.index.value(), 1u);
+  EXPECT_EQ(recovered.value().store().commit_index().value(), 2u);
 }
 
 TEST(ReplicationTest, SnapshotInstallCatchesUpCompactedFollower) {

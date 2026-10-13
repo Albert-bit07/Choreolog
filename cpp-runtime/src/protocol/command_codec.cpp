@@ -1,5 +1,7 @@
 #include "choreoos/protocol/command_codec.hpp"
 
+#include <charconv>
+#include <limits>
 #include <map>
 #include <sstream>
 
@@ -58,11 +60,25 @@ Result<std::int64_t> required_i64(const Fields& fields, const char* key) {
   if (!raw) {
     return raw.error();
   }
-  try {
-    return std::stoll(raw.value());
-  } catch (...) {
+  std::int64_t value = 0;
+  const auto& bytes = raw.value();
+  const auto [end, error] = std::from_chars(bytes.data(), bytes.data() + bytes.size(), value);
+  if (bytes.empty() || error != std::errc{} || end != bytes.data() + bytes.size()) {
     return Error{ErrorCode::ProtocolError, std::string{"invalid integer "} + key};
   }
+  return value;
+}
+
+Result<std::int32_t> required_i32(const Fields& fields, const char* key) {
+  auto parsed = required_i64(fields, key);
+  if (!parsed) {
+    return parsed.error();
+  }
+  if (parsed.value() < std::numeric_limits<std::int32_t>::min() ||
+      parsed.value() > std::numeric_limits<std::int32_t>::max()) {
+    return Error{ErrorCode::ProtocolError, std::string{"integer out of range "} + key};
+  }
+  return static_cast<std::int32_t>(parsed.value());
 }
 
 std::string members_of(const std::vector<choreoos::state::DancerId>& members) {
@@ -115,6 +131,9 @@ Result<Command> parse_command(std::string_view text) {
   if (!schema || !type_name || !command_id || !choreography || !tick) {
     return Error{ErrorCode::ProtocolError, "command envelope is incomplete"};
   }
+  if (schema.value() != choreoos::state::kCurrentSchemaVersion) {
+    return Error{ErrorCode::UnsupportedVersion, "command schema version is unsupported"};
+  }
   auto parsed_type = choreoos::state::parse_command_type(type_name.value());
   auto parsed_id = CommandId::parse(command_id.value());
   auto parsed_show = ChoreographyId::parse(choreography.value());
@@ -126,34 +145,32 @@ Result<Command> parse_command(std::string_view text) {
   std::optional<choreoos::state::CommandPayload> payload;
   switch (parsed_type.value()) {
     case CommandType::CreateChoreography: {
-      auto width = required_i64(fields.value(), "width");
-      auto depth = required_i64(fields.value(), "depth");
-      auto travel = required_i64(fields.value(), "travel");
+      auto width = required_i32(fields.value(), "width");
+      auto depth = required_i32(fields.value(), "depth");
+      auto travel = required_i32(fields.value(), "travel");
       auto overlap_name = required(fields.value(), "overlap");
       if (!width || !depth || !travel || !overlap_name) {
         return Error{ErrorCode::ProtocolError, "create command is incomplete"};
       }
-      auto stage = StageBounds::from_mm(static_cast<std::int32_t>(width.value()),
-                                        static_cast<std::int32_t>(depth.value()));
+      auto stage = StageBounds::from_mm(width.value(), depth.value());
       auto overlap = choreoos::state::parse_overlap_policy(overlap_name.value());
       if (!stage || !overlap) {
         return Error{ErrorCode::ProtocolError, "create command stage is invalid"};
       }
       payload = CreateChoreographyPayload{parsed_show.value(), stage.value(), overlap.value(),
-                                          static_cast<std::int32_t>(travel.value())};
+                                          travel.value()};
       break;
     }
     case CommandType::AddDancer:
     case CommandType::MoveDancer: {
       auto dancer = required(fields.value(), "dancer");
-      auto x = required_i64(fields.value(), "x");
-      auto y = required_i64(fields.value(), "y");
+      auto x = required_i32(fields.value(), "x");
+      auto y = required_i32(fields.value(), "y");
       if (!dancer || !x || !y) {
         return Error{ErrorCode::ProtocolError, "dancer command is incomplete"};
       }
       auto id = DancerId::parse(dancer.value());
-      auto position = Position::from_mm(static_cast<std::int32_t>(x.value()),
-                                        static_cast<std::int32_t>(y.value()));
+      auto position = Position::from_mm(x.value(), y.value());
       if (!id || !position) {
         return Error{ErrorCode::ProtocolError, "dancer command is invalid"};
       }

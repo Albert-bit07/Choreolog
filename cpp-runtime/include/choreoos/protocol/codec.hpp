@@ -21,6 +21,8 @@ namespace choreoos::protocol {
 [[nodiscard]] choreoos::state::Result<std::string> encode(const ClientCommand& message);
 [[nodiscard]] choreoos::state::Result<std::string> encode(const ClientResponse& message);
 [[nodiscard]] choreoos::state::Result<std::string> encode_status_query();
+[[nodiscard]] choreoos::state::Result<std::string> encode(const ManagementQuery& message);
+[[nodiscard]] choreoos::state::Result<std::string> encode(const ManagementReply& message);
 [[nodiscard]] choreoos::state::Result<std::string> encode(const StatusResponse& message);
 
 [[nodiscard]] choreoos::state::Result<Handshake> decode_handshake(std::string_view bytes);
@@ -39,6 +41,10 @@ namespace choreoos::protocol {
 [[nodiscard]] choreoos::state::Result<ClientResponse> decode_client_response(
     std::string_view bytes);
 [[nodiscard]] choreoos::state::Result<StatusResponse> decode_status_response(
+    std::string_view bytes);
+[[nodiscard]] choreoos::state::Result<ManagementQuery> decode_management_query(
+    std::string_view bytes);
+[[nodiscard]] choreoos::state::Result<ManagementReply> decode_management_reply(
     std::string_view bytes);
 
 }  // namespace choreoos::protocol

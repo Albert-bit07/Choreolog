@@ -4,7 +4,7 @@ ChoreoOS stores one directory per node. The state machine never reads these file
 
 Durability mode `sync` flushes the file and asks the operating system to commit it (`FlushFileBuffers` on Windows, `fsync` elsewhere) before a command returns success. Buffered mode skips that flush and must not be described as crash-safe.
 
-Format version `1` and state schema version `1` are the only versions this runtime reads. A different version, magic, or checksum is a hard error. There is no silent migration. A checked-in fixture at `cpp-runtime/tests/fixtures/golden-v1` is the compatibility sample: opening it must recover hash `dd22fb677cc125bf`.
+WAL/metadata format version `1` and state schema version `1` are the versions used here. A different version, magic, or checksum is a hard error. There is no silent migration. A checked-in fixture at `cpp-runtime/tests/fixtures/golden-v1` is the compatibility sample: opening it must recover hash `dd22fb677cc125bf`.
 
 ## Write-ahead log (`wal.bin`)
 
@@ -56,7 +56,7 @@ On a single node every checksum-valid log record is committed. If the metadata c
 
 `<index>` is the 16-digit last included log index. The file is written under a `.tmp` name, flushed, renamed, and the directory is fsynced. A `.tmp` file is ignored. Two snapshots are kept: the newest and one fallback.
 
-A snapshot is state, not history. Format 2 (written today) holds the serialized state at one index: dancers, formations, cues, and one short line per accepted command id (the dedup table). Its size follows the state plus the number of accepted commands, not the length of the event log. Format 1 (every event that produced the state) is still read, so existing stores and the golden fixtures keep working.
+A snapshot is state plus compact deduplication metadata, not full event history. The outer snapshot file remains format 2, but its text payload is now `snapshot-state 3`: dancers, formations, cues, and small operation-ID/fingerprint receipt rows with implicit indexes and run-length encoded terms. Earlier `snapshot-state 1` and `snapshot-state 2` payloads remain readable. Outer file format 1 (full event history) remains readable for compatibility. Receipt count still grows with command history; the goal is a much smaller constant factor than full event bodies.
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -72,7 +72,7 @@ A snapshot is state, not history. Format 2 (written today) holds the serialized 
 
 Recovery tries snapshots newest first and stops at the first whose checksum, schema, and state hash all verify. It restores that state directly, then applies only log records with a higher index. If no snapshot is valid, recovery replays the whole log; if the log was compacted, that is an error (see below), never a silent partial state.
 
-A command accepted before a snapshot is still recognised after it, because the dedup table is part of the snapshot. A retry of a command whose event was compacted away gets `DuplicateCommand` rather than the original event, since the event text is history.
+A command accepted before a snapshot is still recognised after it, because the dedup table is part of the snapshot. For snapshot-state 3, a matching retry reconstructs the original event from the caller's command and the persisted compact receipt without appending another event. Conflicting content reusing an operation ID returns `CommandConflict`. Legacy commands without reconstructible receipts return `OutcomeUnavailable`. The 64-bit FNV-1a fingerprint is deterministic but not collision-proof and should not be used as authentication.
 
 ## Compaction
 

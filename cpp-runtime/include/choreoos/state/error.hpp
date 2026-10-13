@@ -45,6 +45,8 @@ enum class ErrorCode : std::uint16_t {
   NotLeader,             // command arrived at a follower
   Unavailable,           // majority did not acknowledge in time
   ProtocolError,         // malformed or incompatible network frame
+  CommandConflict,       // operation id reused with different command
+  OutcomeUnavailable,    // legacy snapshot cannot reconstruct original result
 };
 
 class Error {

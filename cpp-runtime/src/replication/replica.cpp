@@ -124,7 +124,35 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
   if (!is_leader()) {
     return Error{ErrorCode::NotLeader, "leader is " + config_.leader_id};
   }
+  const auto& committed = store_.engine().state();
+  if (committed.applied_commands.count(command.id.value()) != 0) {
+    auto receipt = choreoos::state::resolve_receipt(committed, command);
+    if (!receipt) {
+      return receipt.error();
+    }
+    return EnqueueResult{receipt.value(), true, true, config_.leader_id};
+  }
   if (const auto* known = find_command(command.id.value())) {
+    // An idempotency key identifies one logical command, not just any command
+    // with the same ID. Reject conflicting retries even across restarts.
+    if (known->type != choreoos::state::event_type_for(command.type)) {
+      return Error{ErrorCode::CommandConflict, "command ID reused with a different request"};
+    }
+    const choreoos::state::Command original{known->command_id, known->choreography_id,
+                                            command.type,      known->schema_version,
+                                            known->tick,       known->payload};
+    // Formation members are canonically sorted/deduplicated at proposal
+    // time. Normalize retries the same way before comparing their identity.
+    auto normalized = command;
+    if (auto* formation = std::get_if<choreoos::state::FormationPayload>(&normalized.payload)) {
+      std::sort(formation->members.begin(), formation->members.end());
+      formation->members.erase(std::unique(formation->members.begin(), formation->members.end()),
+                               formation->members.end());
+    }
+    if (choreoos::protocol::canonical_command(original) !=
+        choreoos::protocol::canonical_command(normalized)) {
+      return Error{ErrorCode::CommandConflict, "command ID reused with a different request"};
+    }
     return EnqueueResult{*known, true, known->index <= store_.commit_index(), config_.leader_id};
   }
   ensure_speculative();
@@ -749,7 +777,12 @@ void Replica::rebuild_command_index() {
 
 const choreoos::state::Event* Replica::find_command(const std::string& command_id) const {
   const auto found = command_index_.find(command_id);
-  return found == command_index_.end() ? nullptr : find_index(found->second);
+  if (found != command_index_.end()) {
+    if (const auto* event = find_index(found->second)) {
+      return event->command_id.value() == command_id ? event : nullptr;
+    }
+  }
+  return nullptr;
 }
 
 void Replica::start_election() {

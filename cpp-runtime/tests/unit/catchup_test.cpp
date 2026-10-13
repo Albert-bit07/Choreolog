@@ -61,7 +61,9 @@ Command add_command(int i) {
 
 Command move_command(int i) {
   const std::string id = "w" + std::to_string(i % kDancers);
-  return Command{CommandId::parse("mv-" + std::to_string(i)).value(),
+  std::string operation_id = "mv-" + std::to_string(i);
+  operation_id.resize(64, 'x');
+  return Command{CommandId::parse(operation_id).value(),
                  ChoreographyId::parse("opening").value(),
                  CommandType::MoveDancer,
                  kCurrentSchemaVersion,
@@ -103,11 +105,11 @@ bool converge(SimulatedNetwork& net, Replica& leader, Replica& a, Replica& b, in
 }
 
 TEST(CatchUpTest, BacklogLargerThanOneFrameStillConverges) {
-  // ~12,000 events at ~117 bytes each is more than one 1 MiB frame holds. The
-  // old leader sent the whole backlog in one message and the frame was dropped
-  // forever.
+  // Use maximal legal command IDs so 6,500 events exceed a 1 MiB
+  // payload without the quadratic Debug-build cost of 12,000 short IDs.
+  // The wire-limit invariant is asserted below, not assumed from the count.
   const auto leader_dir = fresh("choreoos-catchup-leader");
-  prebuild_leader_log(leader_dir, 12000);
+  prebuild_leader_log(leader_dir, 6500);
 
   SimulatedNetwork net{11};
   auto leader = Replica::open(ReplicaConfig{"node-1", "node-1", {"node-2", "node-3"}, leader_dir});
@@ -122,7 +124,12 @@ TEST(CatchUpTest, BacklogLargerThanOneFrameStillConverges) {
   net.attach(a.value());
   net.attach(b.value());
 
-  ASSERT_GT(leader.value().status().commit_index, 12000u);
+  ASSERT_GT(leader.value().status().commit_index, 6500u);
+  std::size_t backlog_bytes = 0;
+  for (const auto& event : leader.value().store().log_events()) {
+    backlog_bytes += choreoos::state::canonical_event(event).size();
+  }
+  ASSERT_GT(backlog_bytes, choreoos::protocol::kMaxFramePayload);
   ASSERT_TRUE(converge(net, leader.value(), a.value(), b.value(), 400));
 
   EXPECT_EQ(net.oversize_frames(), 0u);

@@ -153,9 +153,93 @@ TEST(SnapshotStateTest, SizeFollowsStateNotHistory) {
     history_bytes += canonical_event(event).size() + 1;
   }
   const std::size_t snapshot_bytes = snapshot_payload(engine.state()).size();
-  // The old snapshot was the full history. This one is the 20 dancers plus a
-  // short line per accepted command id.
-  EXPECT_LT(snapshot_bytes * 5, history_bytes) << snapshot_bytes << " vs " << history_bytes;
+  // Receipts must remain materially smaller than the event history, even
+  // though one compact fingerprint is retained for each accepted command.
+  EXPECT_GT(snapshot_bytes, 0u);
+  EXPECT_LT(snapshot_bytes * 5, history_bytes);
+  auto restored = restore_state(snapshot_payload(engine.state()));
+  ASSERT_TRUE(restored);
+  EXPECT_EQ(restored.value().receipts.size(), engine.state().receipts.size());
+  EXPECT_EQ(state_hash(restored.value()), state_hash(engine.state()));
+}
+
+TEST(SnapshotStateTest, LegacyReceiptFormatsRemainReadable) {
+  Engine engine;
+  auto original = engine.submit(create_command());
+  ASSERT_TRUE(original);
+  const std::string modern = snapshot_payload(engine.state());
+  const auto receipt_start = modern.find("\nr ");
+  ASSERT_NE(receipt_start, std::string::npos);
+  const auto receipt_end = modern.find('\n', receipt_start + 1);
+  ASSERT_NE(receipt_end, std::string::npos);
+
+  // The old v2 payload stored the complete canonical event per command.
+  std::string old_v2 = modern;
+  old_v2.replace(receipt_start + 1, receipt_end - receipt_start - 1,
+                 "receipt " + original.value().event.id.value() + " " +
+                     canonical_event(original.value().event));
+  old_v2.replace(0, std::string("snapshot-state 3").size(), "snapshot-state 2");
+  old_v2 += "applied " + original.value().event.command_id.value() + "\n";
+  auto recovered = restore_state(old_v2);
+  ASSERT_TRUE(recovered);
+  Engine replica;
+  replica.restore(recovered.value());
+  auto duplicate = replica.submit(create_command());
+  ASSERT_TRUE(duplicate);
+  EXPECT_TRUE(duplicate.value().duplicate);
+  EXPECT_EQ(canonical_event(duplicate.value().event), canonical_event(original.value().event));
+
+  // A legacy v1 payload has dedup IDs but no event outcome after compaction.
+  std::string old_v1 = modern;
+  old_v1.replace(receipt_start + 1, receipt_end - receipt_start - 1,
+                 "applied " + original.value().event.command_id.value());
+  old_v1.replace(0, std::string("snapshot-state 3").size(), "snapshot-state 1");
+  auto legacy = restore_state(old_v1);
+  ASSERT_TRUE(legacy);
+  Engine legacy_engine;
+  legacy_engine.restore(legacy.value());
+  auto missing = legacy_engine.submit(create_command());
+  ASSERT_FALSE(missing);
+  EXPECT_EQ(missing.error().code(), ErrorCode::OutcomeUnavailable);
+}
+
+TEST(SnapshotStateTest, CompactedCommittedEventCannotBeReappliedAtNewIndex) {
+  Engine engine;
+  ASSERT_TRUE(engine.submit(create_command()));
+  ASSERT_TRUE(engine.submit(add_w(0)));
+  auto restored = restore_state(snapshot_payload(engine.state()));
+  ASSERT_TRUE(restored);
+  auto copy = restored.value();
+  const std::string original_hash = state_hash(copy);
+  Event replayed = engine.events().front();
+  replayed.index = copy.last_applied.next();
+  auto rejected = apply(copy, replayed);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), ErrorCode::ConflictingEvent);
+  EXPECT_EQ(state_hash(copy), original_hash);
+
+  // The exact old event is still recognized as an idempotent replay.
+  EXPECT_TRUE(apply(copy, engine.events().front()));
+  EXPECT_EQ(state_hash(copy), original_hash);
+}
+
+TEST(SnapshotStateTest, CompactReceiptPayloadRejectsMalformedFields) {
+  Engine engine;
+  ASSERT_TRUE(engine.submit(create_command()));
+  const std::string valid = snapshot_payload(engine.state());
+  const auto start = valid.find("\nr ");
+  ASSERT_NE(start, std::string::npos);
+  const auto end = valid.find('\n', start + 1);
+  ASSERT_NE(end, std::string::npos);
+  std::string bad = valid;
+  bad.replace(start + 1, end - start - 1, "r c-create invalid");
+  EXPECT_FALSE(restore_state(bad));
+  bad = valid;
+  bad.replace(start + 1, end - start - 1, "r c-create zAAAAAAAAAA");
+  EXPECT_FALSE(restore_state(bad));
+  bad = valid;
+  bad.insert(end + 1, "at 999999\n");
+  EXPECT_FALSE(restore_state(bad));
 }
 
 TEST(SnapshotStateTest, LoadsNewestValidAndFallsBackWhenNewestIsDamaged) {
@@ -417,7 +501,7 @@ TEST(SnapshotTransferTest, ChunkedTransferSurvivesLossAndDuplication) {
   EXPECT_TRUE(converged(leader, helper));
 }
 
-TEST(SnapshotTransferTest, CompactedClusterRestartsAndStillRejectsOldCommands) {
+TEST(SnapshotTransferTest, CompactedClusterRestartReturnsSameOutcomeWithoutNewEvents) {
   Cluster cluster{6};
   Replica* leader = &cluster.open(node_config("node-1", "choreoos-xfer-l4", {"node-2", "node-3"}));
   Replica* a = &cluster.open(node_config("node-2", "choreoos-xfer-a4", {"node-1", "node-3"}));
@@ -427,8 +511,13 @@ TEST(SnapshotTransferTest, CompactedClusterRestartsAndStillRejectsOldCommands) {
     ASSERT_TRUE(leader->enqueue(add_w(i)));
     drive(cluster.net, *leader, 1);
   }
+  std::optional<Event> original_event;
   for (int i = 0; i < 60; ++i) {
-    ASSERT_TRUE(leader->enqueue(move_command(i)));
+    auto proposed = leader->enqueue(move_command(i));
+    ASSERT_TRUE(proposed);
+    if (i == 0) {
+      original_event = proposed.value().event;
+    }
     drive(cluster.net, *leader, 1);
   }
   drive(cluster.net, *leader, 10);
@@ -458,9 +547,20 @@ TEST(SnapshotTransferTest, CompactedClusterRestartsAndStillRejectsOldCommands) {
   EXPECT_EQ(leader2->status().commit_index, commit);
   EXPECT_TRUE(converged(*leader2, *a2));
 
-  // A command that was accepted before the compaction is still recognised.
+  // A compacted retry returns the exact original outcome without mutation.
+  const auto before_retry = leader2->status();
   auto duplicate = leader2->enqueue(move_command(0));
-  EXPECT_FALSE(duplicate);  // DuplicateCommand: not applied twice
+  ASSERT_TRUE(duplicate);
+  EXPECT_TRUE(duplicate.value().duplicate);
+  EXPECT_TRUE(duplicate.value().committed);
+  ASSERT_TRUE(original_event);
+  EXPECT_EQ(duplicate.value().event.index, original_event->index);
+  EXPECT_EQ(duplicate.value().event.term, original_event->term);
+  EXPECT_EQ(canonical_event(duplicate.value().event), canonical_event(*original_event));
+  EXPECT_LT(duplicate.value().event.index.value(), leader2->store().log_first_index());
+  EXPECT_EQ(leader2->status().state_hash, before_retry.state_hash);
+  EXPECT_EQ(leader2->status().commit_index, before_retry.commit_index);
+  EXPECT_EQ(leader2->status().last_log_index, before_retry.last_log_index);
   // New work still commits everywhere.
   ASSERT_TRUE(leader2->enqueue(move_command(1000)));
   drive(restarted.net, *leader2, 20);

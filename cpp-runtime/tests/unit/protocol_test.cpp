@@ -68,6 +68,39 @@ TEST(ProtocolTest, HandshakeBytesStayCompatible) {
   EXPECT_EQ(decoded.value().node_id, "node-1");
 }
 
+TEST(ProtocolTest, HandshakeIgnoresUnknownVarintFields) {
+  Handshake hello;
+  hello.node_id = "node-1";
+  hello.major = 1;
+  hello.minor = 7;
+  auto bytes = encode(hello);
+  ASSERT_TRUE(bytes);
+  // Field 5, varint value 42, must not replace the negotiated minor version.
+  bytes.value().push_back(static_cast<char>(0x28));
+  bytes.value().push_back(static_cast<char>(0x2a));
+  auto decoded = decode_handshake(bytes.value());
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ(decoded.value().minor, 7u);
+  EXPECT_EQ(decoded.value().major, 1u);
+}
+
+TEST(ProtocolTest, RejectsOverflowedAndOverlongVarints) {
+  std::string overflow(9, static_cast<char>(0x80));
+  overflow.push_back(static_cast<char>(0x02));
+  EXPECT_FALSE(decode_handshake(overflow));
+  std::string unterminated(11, static_cast<char>(0x80));
+  EXPECT_FALSE(decode_management_query(unterminated));
+
+  // Field 2 (major), uint64 value 2^32: refuse narrowing to uint32.
+  std::string oversized_version;
+  oversized_version.push_back(static_cast<char>(0x10));
+  for (int i = 0; i < 4; ++i) {
+    oversized_version.push_back(static_cast<char>(0x80));
+  }
+  oversized_version.push_back(static_cast<char>(0x10));
+  EXPECT_FALSE(decode_handshake(oversized_version));
+}
+
 TEST(ProtocolTest, MessagesRoundTrip) {
   AppendEntries append;
   append.term = 1;
@@ -152,6 +185,75 @@ TEST(ProtocolTest, CommandTextRoundTrip) {
   ASSERT_TRUE(parsed);
   EXPECT_EQ(parsed.value().id.value(), "c-create");
   EXPECT_EQ(std::get<CreateChoreographyPayload>(parsed.value().payload).max_travel_mm, 5000);
+}
+
+TEST(ProtocolTest, CanonicalCommandRejectsNumericTruncationAndSuffixes) {
+  Command command{CommandId::parse("c-create").value(),
+                  ChoreographyId::parse("opening").value(),
+                  CommandType::CreateChoreography,
+                  kCurrentSchemaVersion,
+                  MusicalTick::from_count(0).value(),
+                  CreateChoreographyPayload{ChoreographyId::parse("opening").value(),
+                                            StageBounds::from_mm(20000, 12000).value(),
+                                            OverlapPolicy::Forbidden, 5000}};
+  const std::string valid = canonical_command(command);
+  auto corrupted = [&](const std::string& before, const std::string& after) {
+    std::string text = valid;
+    const auto position = text.find(before);
+    EXPECT_NE(position, std::string::npos);
+    if (position != std::string::npos) {
+      text.replace(position, before.size(), after);
+    }
+    return text;
+  };
+  EXPECT_FALSE(parse_command(corrupted("tick=0", "tick=0junk")));
+  EXPECT_FALSE(parse_command(corrupted("width=20000", "width=2147483648")));
+  EXPECT_FALSE(parse_command(corrupted("schema=1", "schema=65537")));
+}
+
+TEST(ProtocolTest, ManagementQueryAndReplyRoundTrip) {
+  ManagementQuery query;
+  query.operation = "events";
+  query.after_index = 42;
+  query.page_size = 64;
+  query.peer_id = "node-2";
+  query.delay_ms = 250;
+  const auto encoded_query = encode(query);
+  ASSERT_TRUE(encoded_query);
+  const auto decoded_query = decode_management_query(encoded_query.value());
+  ASSERT_TRUE(decoded_query);
+  EXPECT_EQ(decoded_query.value().operation, "events");
+  EXPECT_EQ(decoded_query.value().after_index, 42u);
+  EXPECT_EQ(decoded_query.value().page_size, 64u);
+  EXPECT_EQ(decoded_query.value().peer_id, "node-2");
+  EXPECT_EQ(decoded_query.value().delay_ms, 250u);
+
+  ManagementReply reply;
+  reply.events = {"first-event", "second-event"};
+  reply.next_after_index = 44;
+  reply.has_more = true;
+  reply.elections_started = 3;
+  reply.snapshot_index = 40;
+  reply.snapshot_state_hash = "snapshot-hash";
+  reply.recovery_report = "restored";
+  const auto encoded_reply = encode(reply);
+  ASSERT_TRUE(encoded_reply);
+  const auto decoded_reply = decode_management_reply(encoded_reply.value());
+  ASSERT_TRUE(decoded_reply);
+  EXPECT_EQ(decoded_reply.value().events, reply.events);
+  EXPECT_EQ(decoded_reply.value().next_after_index, 44u);
+  EXPECT_TRUE(decoded_reply.value().has_more);
+  EXPECT_EQ(decoded_reply.value().elections_started, 3u);
+  EXPECT_EQ(decoded_reply.value().snapshot_index, 40u);
+  EXPECT_EQ(decoded_reply.value().snapshot_state_hash, "snapshot-hash");
+  EXPECT_EQ(decoded_reply.value().recovery_report, "restored");
+
+  ManagementQuery oversized;
+  oversized.operation = "events";
+  oversized.page_size = 129;
+  const auto oversized_bytes = encode(oversized);
+  ASSERT_TRUE(oversized_bytes);
+  EXPECT_FALSE(decode_management_query(oversized_bytes.value()));
 }
 
 }  // namespace

@@ -7,12 +7,110 @@
 #include <iomanip>
 #include <sstream>
 
+#include "choreoos/protocol/command_codec.hpp"
+#include "choreoos/state/store.hpp"
+
 namespace choreoos::state {
 namespace {
 
 // FNV-1a 64-bit over canonical_state(). Same bytes => same hash on every node.
 constexpr std::uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
+
+constexpr char kBase64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+std::string encode_fingerprint(std::uint64_t value) {
+  std::string text(11, 'A');
+  for (int i = 10; i >= 0; --i) {
+    text[static_cast<std::size_t>(i)] = kBase64[value & 63u];
+    value >>= 6;
+  }
+  return text;
+}
+
+Result<std::uint64_t> decode_fingerprint(std::string_view text) {
+  if (text.size() != 11) {
+    return Error{ErrorCode::StoreError, "receipt fingerprint length is invalid"};
+  }
+  std::uint64_t value = 0;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const auto* found = std::find(std::begin(kBase64), std::end(kBase64) - 1, text[i]);
+    if (found == std::end(kBase64) - 1) {
+      return Error{ErrorCode::StoreError, "receipt fingerprint alphabet is invalid"};
+    }
+    const auto digit = static_cast<std::uint64_t>(found - std::begin(kBase64));
+    if (i == 0 && digit > 15) {
+      return Error{ErrorCode::StoreError, "receipt fingerprint overflows 64 bits"};
+    }
+    value = (value << 6) | digit;
+  }
+  return value;
+}
+
+Command normalize_command(Command command) {
+  if (auto* formation = std::get_if<FormationPayload>(&command.payload)) {
+    std::sort(formation->members.begin(), formation->members.end());
+    formation->members.erase(std::unique(formation->members.begin(), formation->members.end()),
+                             formation->members.end());
+  }
+  return command;
+}
+
+// FNV-1a is deterministic across platforms. This short fingerprint is not a
+// security primitive: an attacker must not be allowed to choose untrusted IDs
+// without authentication and stronger collision-resistant identities.
+std::uint64_t command_fingerprint(const Command& command) {
+  const auto bytes = choreoos::protocol::canonical_command(normalize_command(command));
+  std::uint64_t hash = kFnvOffset;
+  for (unsigned char byte : bytes) {
+    hash ^= byte;
+    hash *= kFnvPrime;
+  }
+  return hash;
+}
+
+std::optional<Command> command_from_event(const Event& event) {
+  if (event.type == EventType::NoOp) {
+    return std::nullopt;
+  }
+  CommandType type = CommandType::CreateChoreography;
+  switch (event.type) {
+    case EventType::ChoreographyCreated:
+      type = CommandType::CreateChoreography;
+      break;
+    case EventType::DancerAdded:
+      type = CommandType::AddDancer;
+      break;
+    case EventType::DancerRemoved:
+      type = CommandType::RemoveDancer;
+      break;
+    case EventType::DancerMoved:
+      type = CommandType::MoveDancer;
+      break;
+    case EventType::FormationDefined:
+      type = CommandType::DefineFormation;
+      break;
+    case EventType::FormationChanged:
+      type = CommandType::ChangeFormation;
+      break;
+    case EventType::MusicCueTriggered:
+      type = CommandType::TriggerMusicCue;
+      break;
+    case EventType::LightingCueTriggered:
+      type = CommandType::TriggerLightingCue;
+      break;
+    case EventType::NoOp:
+      return std::nullopt;
+  }
+  return Command{event.command_id, event.choreography_id, type, event.schema_version,
+                 event.tick,       event.payload};
+}
+
+EventReceipt receipt_from_event(const Event& event) {
+  const auto command = command_from_event(event);
+  return EventReceipt{event.index.value(), event.term.value(),
+                      command ? command_fingerprint(*command) : 0};
+}
 
 Error unsupported_schema(std::uint16_t version) {
   return Error{ErrorCode::UnsupportedVersion,
@@ -313,6 +411,25 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
     return Error{ErrorCode::ConflictingEvent, "event id was reused with different content"};
   }
 
+  // Full event history is not retained in v3 snapshots. Check compact
+  // receipts too, or a replay after restart could reapply an old command
+  // under a new index even though its event body was compacted.
+  const auto receipt = state.receipts.find(event.command_id.value());
+  if (receipt != state.receipts.end()) {
+    const auto original = command_from_event(event);
+    if (original && receipt->second.index == event.index.value() &&
+        receipt->second.term == event.term.value() &&
+        receipt->second.fingerprint == command_fingerprint(*original)) {
+      return {};
+    }
+    return Error{ErrorCode::ConflictingEvent,
+                 "committed command id was reused with different event content"};
+  }
+  if (state.applied_commands.count(event.command_id.value()) != 0) {
+    return Error{ErrorCode::ConflictingEvent,
+                 "legacy committed command id was replayed without an outcome receipt"};
+  }
+
   if (index_rule == IndexRule::Contiguous && event.index != state.last_applied.next()) {
     return Error{ErrorCode::IndexGap, "event index is not contiguous"};
   }
@@ -398,6 +515,9 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
   state.term = event.term;
   state.applied_events.insert({event.id.value(), canonical_event(event)});
   state.applied_commands.insert({event.command_id.value(), event.id.value()});
+  if (event.type != EventType::NoOp) {
+    state.receipts[event.command_id.value()] = receipt_from_event(event);
+  }
   return {};
 }
 
@@ -423,6 +543,28 @@ Result<ChoreographyState> replay(const std::vector<Event>& events,
 }
 
 // Sorted, line-oriented snapshot of authoritative fields. Used by state_hash().
+Result<Event> resolve_receipt(const ChoreographyState& state, const Command& command) {
+  const auto it = state.receipts.find(command.id.value());
+  if (it == state.receipts.end()) {
+    return Error{ErrorCode::OutcomeUnavailable,
+                 "committed legacy command has no recoverable receipt"};
+  }
+  if (command_fingerprint(command) != it->second.fingerprint) {
+    return Error{ErrorCode::CommandConflict, "operation id reused with different command"};
+  }
+  const auto normalized = normalize_command(command);
+  auto event_id = EventId::parse(command.id.value());
+  auto index = LogIndex::parse(it->second.index);
+  auto term = Term::parse(it->second.term);
+  if (!event_id) return event_id.error();
+  if (!index) return index.error();
+  if (!term) return term.error();
+  return Event{
+      event_id.value(),       command.id,   command.choreography_id, event_type_for(command.type),
+      command.schema_version, command.tick, index.value(),           term.value(),
+      normalized.payload};
+}
+
 std::string canonical_state(const ChoreographyState& state) {
   std::ostringstream out;
   out << "schema=" << kCurrentSchemaVersion << '\n';
@@ -476,7 +618,7 @@ std::string state_hash(const ChoreographyState& state) {
 
 std::string snapshot_payload(const ChoreographyState& state) {
   std::ostringstream out;
-  out << "snapshot-state 1\n";
+  out << "snapshot-state 3\n";
   out << "schema " << kCurrentSchemaVersion << '\n';
   out << "created " << (state.created ? 1 : 0) << '\n';
   out << "choreography " << (state.id ? state.id->value() : "-") << '\n';
@@ -508,13 +650,30 @@ std::string snapshot_payload(const ChoreographyState& state) {
     out << "light " << id << ' ' << cue.tick.ticks() << ' '
         << (cue.depends_on ? cue.depends_on->value() : "-") << '\n';
   }
-  for (const auto& [command, event] : state.applied_commands) {
-    // Event id equals command id by construction; only record it when not.
-    out << "applied " << command;
-    if (event != command) {
-      out << ' ' << event;
+  // Store only compact receipts, sorted by committed log index. The index
+  // advances implicitly; gaps (e.g. election no-ops) use a cursor marker.
+  std::vector<std::pair<std::string, EventReceipt>> ordered(state.receipts.begin(),
+                                                            state.receipts.end());
+  std::sort(ordered.begin(), ordered.end(),
+            [](const auto& a, const auto& b) { return a.second.index < b.second.index; });
+  std::uint64_t cursor = 0;
+  std::uint64_t active_term = 1;
+  for (const auto& [id, receipt] : ordered) {
+    if (receipt.index != cursor + 1) {
+      out << "at " << receipt.index - 1 << '\n';
     }
-    out << '\n';
+    if (receipt.term != active_term) {
+      out << "receipt-term " << receipt.term << '\n';
+      active_term = receipt.term;
+    }
+    out << "r " << id << ' ' << encode_fingerprint(receipt.fingerprint) << '\n';
+    cursor = receipt.index;
+  }
+  // Only legacy records without fingerprints need an explicit tombstone.
+  for (const auto& [id, event_id] : state.applied_commands) {
+    if (state.receipts.find(id) == state.receipts.end() && event_id.rfind("noop-", 0) != 0) {
+      out << "legacy " << id << '\n';
+    }
   }
   return out.str();
 }
@@ -527,6 +686,9 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
   std::istringstream lines{std::string{payload}};
   std::string line;
   bool header = false;
+  std::string format_version;
+  std::uint64_t receipt_index = 0;
+  std::uint64_t receipt_term = 1;
   while (std::getline(lines, line)) {
     if (line.empty()) {
       continue;
@@ -537,9 +699,10 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
     if (!header) {
       std::string version;
       fields >> version;
-      if (key != "snapshot-state" || version != "1") {
+      if (key != "snapshot-state" || (version != "1" && version != "2" && version != "3")) {
         return bad("missing or unsupported header");
       }
+      format_version = version;
       header = true;
       continue;
     }
@@ -641,6 +804,53 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
         cue.depends_on = parsed.value();
       }
       (key == "music" ? state.music_cues : state.lighting_cues).insert_or_assign(id, cue);
+    } else if (key == "at" && format_version == "3") {
+      std::uint64_t cursor = 0;
+      fields >> cursor;
+      if (fields.fail() || cursor <= receipt_index || cursor >= state.last_applied.value()) {
+        return bad("receipt cursor is invalid");
+      }
+      receipt_index = cursor;
+    } else if (key == "receipt-term" && format_version == "3") {
+      fields >> receipt_term;
+      if (fields.fail() || receipt_term == 0) {
+        return bad("receipt term is invalid");
+      }
+    } else if (key == "r" && format_version == "3") {
+      std::string id;
+      std::string fingerprint;
+      fields >> id >> fingerprint;
+      auto parsed_id = CommandId::parse(id);
+      auto decoded = decode_fingerprint(fingerprint);
+      if (!parsed_id || !decoded || receipt_index >= state.last_applied.value() ||
+          state.receipts.count(id) != 0) {
+        return bad("compact receipt is invalid or repeated");
+      }
+      const auto index = ++receipt_index;
+      state.receipts.emplace(id, EventReceipt{index, receipt_term, decoded.value()});
+      state.applied_commands[id] = id;
+    } else if (key == "legacy" && format_version == "3") {
+      std::string id;
+      fields >> id;
+      if (!CommandId::parse(id) || state.applied_commands.count(id) != 0) {
+        return bad("legacy command id is invalid or repeated");
+      }
+      state.applied_commands[id] = id;
+    } else if (key == "receipt" && format_version == "2") {
+      std::string event_id;
+      std::string canonical;
+      fields >> event_id >> canonical;
+      if (event_id.empty() || canonical.empty()) {
+        return bad("receipt is missing an event id or payload");
+      }
+      auto event = parse_event(canonical);
+      if (!event || event.value().id.value() != event_id) {
+        return bad("legacy full receipt is malformed");
+      }
+      state.applied_events[event_id] = canonical;
+      if (event.value().type != EventType::NoOp) {
+        state.receipts[event.value().command_id.value()] = receipt_from_event(event.value());
+      }
     } else if (key == "applied") {
       std::string command;
       std::string event;
@@ -663,12 +873,11 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
 Result<SubmitResult> Engine::submit(Command command) {
   const auto seen = state_.applied_commands.find(command.id.value());
   if (seen != state_.applied_commands.end()) {
-    for (const auto& event : events_) {
-      if (event.id.value() == seen->second) {
-        return SubmitResult{event, true};
-      }
+    auto receipt = resolve_receipt(state_, command);
+    if (!receipt) {
+      return receipt.error();
     }
-    return Error{ErrorCode::DuplicateCommand, "command was accepted but its event is missing"};
+    return SubmitResult{receipt.value(), true};
   }
 
   auto proposed = propose(state_, command);
@@ -692,6 +901,12 @@ Result<void> Engine::apply_committed(const Event& event) {
 void Engine::restore(ChoreographyState state, std::vector<Event> history) {
   state_ = std::move(state);
   events_ = std::move(history);
+  // Legacy v1 snapshots can recover receipts for history that still exists.
+  for (const auto& event : events_) {
+    if (event.type != EventType::NoOp) {
+      state_.receipts[event.command_id.value()] = receipt_from_event(event);
+    }
+  }
 }
 
 Result<ChoreographyState> Engine::replay_through(std::optional<MusicalTick> through_tick,

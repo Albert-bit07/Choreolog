@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package choreoos.management.v1;
+
+// Management is a control plane. The C++ runtime remains authoritative.
+// All mutations must reach the elected leader and commit through a quorum.
+service ChoreoManagement {
+  rpc SubmitCommand(SubmitCommandRequest) returns (SubmitCommandResponse);
+  rpc GetState(GetStateRequest) returns (GetStateResponse);
+  rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+  rpc GetMetrics(GetMetricsRequest) returns (MetricsResponse);
+  rpc GetRecoveryStatus(GetRecoveryStatusRequest) returns (RecoveryStatus);
+  rpc InjectTestFault(InjectTestFaultRequest) returns (InjectTestFaultResponse);
+}
+
+message SubmitCommandRequest {
+  // Stable across retries; never derive a new ID from a retry attempt.
+  string operation_id = 1;
+  string canonical_command = 2;
+}
+
+message SubmitCommandResponse {
+  bool committed = 1;
+  bool duplicate = 2;
+  uint64 committed_index = 3;
+  string canonical_event = 4;
+  string state_hash = 5;
+  string leader_id = 6;
+}
+
+message GetStateRequest {
+  // Only a leader can provide authoritative state; follower reads are diagnostic.
+  bool require_leader = 1;
+}
+message GetStateResponse {
+  string canonical_state = 1;
+  string state_hash = 2;
+  uint64 applied_index = 3;
+  uint64 term = 4;
+  bool authoritative = 5;
+}
+
+message GetNodeStatusRequest {}
+message NodeStatus {
+  string node_id = 1;
+  string leader_id = 2;
+  string role = 3;
+  uint64 term = 4;
+  uint64 commit_index = 5;
+  uint64 last_log_index = 6;
+  string state_hash = 7;
+  bool ready = 8;
+}
+
+message ListEventsRequest {
+  uint64 after_index = 1;
+  uint32 page_size = 2;
+}
+message EventRecord {
+  uint64 index = 1;
+  string canonical_event = 2;
+}
+message ListEventsResponse {
+  repeated EventRecord events = 1;
+  uint64 next_after_index = 2;
+  bool has_more = 3;
+}
+
+message GetMetricsRequest {}
+message MetricsResponse {
+  uint64 role_changes = 1;
+  uint64 elections_started = 2;
+  uint64 votes_granted = 3;
+  uint64 step_downs = 4;
+  uint64 messages_dropped_oversize = 5;
+  uint64 snapshot_chunks_sent = 6;
+  uint64 transport_frames_sent = 7;
+  uint64 transport_frames_received = 8;
+  uint64 transport_dropped = 9;
+}
+
+message GetRecoveryStatusRequest {}
+message RecoveryStatus {
+  uint64 commit_index = 1;
+  uint64 snapshot_index = 2;
+  string snapshot_state_hash = 3;
+  bool recovering = 4;
+  string recovery_report = 5;
+}
+
+message InjectTestFaultRequest {
+  enum Fault {
+    FAULT_UNSPECIFIED = 0;
+    DROP_PEER = 1;
+    DELAY_PEER = 2;
+    HEAL_PEERS = 3;
+    PAUSE_NODE = 4;
+  }
+  Fault fault = 1;
+  string peer_id = 2;
+  uint32 delay_ms = 3;
+}
+message InjectTestFaultResponse {
+  bool applied = 1;
+}

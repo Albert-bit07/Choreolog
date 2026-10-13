@@ -73,7 +73,7 @@ choreoos::state::Result<choreoos::protocol::StatusResponse> status_of(std::uint1
 
 TEST(ClusterTest, ReplicationFramesFromUnidentifiedConnectionsAreRejected) {
   const auto root = fresh("choreoos-tcp-gate");
-  auto node = NodeServer::open(node_config("node-2", "node-1", root / "node-2", 19141,
+  auto node = NodeServer::open(node_config("node-2", "node-1", root / "node-2", 19144,
                                            {{"node-1", "127.0.0.1", 19140}}, true, 3));
   ASSERT_TRUE(node);
   std::thread runner([&] { node.value()->run(); });
@@ -88,15 +88,15 @@ TEST(ClusterTest, ReplicationFramesFromUnidentifiedConnectionsAreRejected) {
   frame.type = choreoos::protocol::MessageType::AppendEntries;
   frame.correlation = 7;
   frame.payload = choreoos::protocol::encode(forged).value();
-  (void)choreoos::protocol::transact("127.0.0.1", 19141, frame, std::chrono::milliseconds(300));
+  (void)choreoos::protocol::transact("127.0.0.1", 19144, frame, std::chrono::milliseconds(300));
 
   // A handshake claiming an id that is not a configured peer gains nothing.
   choreoos::protocol::Frame hello;
   hello.type = choreoos::protocol::MessageType::Handshake;
   hello.payload = choreoos::protocol::encode(choreoos::protocol::Handshake{"node-9", 1, 0}).value();
-  (void)choreoos::protocol::transact("127.0.0.1", 19141, hello, std::chrono::milliseconds(200));
+  (void)choreoos::protocol::transact("127.0.0.1", 19144, hello, std::chrono::milliseconds(200));
 
-  auto status = status_of(19141);
+  auto status = status_of(19144);
   ASSERT_TRUE(status);
   EXPECT_LT(status.value().term, 1000u);
   EXPECT_GE(node.value()->metrics().rejected, 2u);
@@ -368,6 +368,220 @@ TEST(ClusterTest, LeaderFailoverElectsAndConverges) {
     thread_c.join();
   }
   revived_thread.join();
+}
+
+TEST(ClusterTest, ManagementReadsCommittedEventsAndRejectsProductionFaults) {
+  auto node = NodeServer::open(
+      node_config("node-1", "node-1", fresh("choreoos-management-wire"), 19301, {}));
+  ASSERT_TRUE(node);
+  std::thread runner([&] { node.value()->run(); });
+
+  Command create{CommandId::parse("management-create").value(),
+                 ChoreographyId::parse("opening").value(),
+                 CommandType::CreateChoreography,
+                 kCurrentSchemaVersion,
+                 MusicalTick::from_count(0).value(),
+                 CreateChoreographyPayload{ChoreographyId::parse("opening").value(),
+                                           StageBounds::from_mm(20000, 12000).value(),
+                                           OverlapPolicy::Forbidden, 5000}};
+  auto submitted = choreoos::protocol::transact("127.0.0.1", 19301, command_frame(create),
+                                                std::chrono::milliseconds(1000));
+  EXPECT_TRUE(submitted);
+  if (submitted) {
+    auto decoded = choreoos::protocol::decode_client_response(submitted.value().payload);
+    EXPECT_TRUE(decoded && decoded.value().ok);
+  }
+  auto query = [&](const std::string& operation) {
+    choreoos::protocol::ManagementQuery request;
+    request.operation = operation;
+    choreoos::protocol::Frame frame;
+    frame.type = choreoos::protocol::MessageType::ManagementQuery;
+    frame.payload = choreoos::protocol::encode(request).value();
+    auto reply =
+        choreoos::protocol::transact("127.0.0.1", 19301, frame, std::chrono::milliseconds(1000));
+    if (!reply) {
+      return choreoos::state::Result<choreoos::protocol::ManagementReply>(reply.error());
+    }
+    return choreoos::protocol::decode_management_reply(reply.value().payload);
+  };
+  const auto events = query("events");
+  ASSERT_TRUE(events);
+  EXPECT_TRUE(events.value().error_code.empty());
+  EXPECT_EQ(events.value().events.size(), 1u);
+  EXPECT_EQ(events.value().next_after_index, 1u);
+  EXPECT_FALSE(events.value().has_more);
+
+  const auto metrics = query("metrics");
+  ASSERT_TRUE(metrics);
+  EXPECT_TRUE(metrics.value().error_code.empty());
+  EXPECT_GT(metrics.value().transport_frames_received, 0u);
+
+  const auto recovery = query("recovery");
+  ASSERT_TRUE(recovery);
+  EXPECT_TRUE(recovery.value().error_code.empty());
+  EXPECT_FALSE(recovery.value().recovery_report.empty());
+
+  const auto forbidden = query("pause");
+  ASSERT_TRUE(forbidden);
+  EXPECT_EQ(forbidden.value().error_code, "PermissionDenied");
+
+  create.tick = MusicalTick::from_count(1).value();
+  auto conflicted = choreoos::protocol::transact("127.0.0.1", 19301, command_frame(create),
+                                                 std::chrono::milliseconds(1000));
+  EXPECT_TRUE(conflicted);
+  if (conflicted) {
+    auto decoded = choreoos::protocol::decode_client_response(conflicted.value().payload);
+    EXPECT_TRUE(decoded && !decoded.value().ok && decoded.value().error_code == "CommandConflict");
+  }
+  node.value()->stop();
+  runner.join();
+}
+
+TEST(ClusterTest, AllTwoVersusOneTcpPartitionsRecover) {
+  for (int isolated = 0; isolated < 3; ++isolated) {
+    SCOPED_TRACE(isolated);
+    const auto root = fresh(("choreoos-tcp-partition-" + std::to_string(isolated)).c_str());
+    const std::uint16_t base = static_cast<std::uint16_t>(19200 + 10 * isolated);
+    const std::uint16_t ports[3] = {base, static_cast<std::uint16_t>(base + 1),
+                                    static_cast<std::uint16_t>(base + 2)};
+    const char* ids[3] = {"node-1", "node-2", "node-3"};
+    std::vector<std::unique_ptr<NodeServer>> nodes;
+    nodes.reserve(3);
+    for (int i = 0; i < 3; ++i) {
+      std::vector<choreoos::runtime::PeerEndpoint> peers;
+      for (int j = 0; j < 3; ++j) {
+        if (i != j) {
+          peers.push_back({ids[j], "127.0.0.1", ports[j]});
+        }
+      }
+      auto config = node_config(ids[i], "node-1", root / ids[i], ports[i], peers, true,
+                                static_cast<std::uint64_t>(13 + i));
+      config.test_mode = true;
+      auto node = NodeServer::open(config);
+      ASSERT_TRUE(node);
+      nodes.push_back(std::move(node.value()));
+    }
+    std::vector<std::thread> threads;
+    threads.reserve(3);
+    for (auto& node : nodes) {
+      threads.emplace_back([&node] { node->run(); });
+    }
+
+    auto control = [&](int target, const std::string& action, const std::string& peer) {
+      choreoos::protocol::ManagementQuery query;
+      query.operation = action;
+      query.peer_id = peer;
+      choreoos::protocol::Frame request;
+      request.type = choreoos::protocol::MessageType::ManagementQuery;
+      request.payload = choreoos::protocol::encode(query).value();
+      auto reply = choreoos::protocol::transact("127.0.0.1", ports[target], request,
+                                                std::chrono::milliseconds(1000));
+      if (!reply || reply.value().type != choreoos::protocol::MessageType::ManagementReply) {
+        return false;
+      }
+      auto decoded = choreoos::protocol::decode_management_reply(reply.value().payload);
+      return decoded && decoded.value().error_code.empty();
+    };
+    auto find_leader = [&](bool majority_only) {
+      for (int attempt = 0; attempt < 120; ++attempt) {
+        for (int i = 0; i < 3; ++i) {
+          if (majority_only && i == isolated) {
+            continue;
+          }
+          auto status = status_of(ports[i]);
+          if (status && status.value().role == "leader") {
+            return i;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+      return -1;
+    };
+    const int initial_leader = find_leader(false);
+    EXPECT_GE(initial_leader, 0);
+    Command create{CommandId::parse("partition-create").value(),
+                   ChoreographyId::parse("opening").value(),
+                   CommandType::CreateChoreography,
+                   kCurrentSchemaVersion,
+                   MusicalTick::from_count(0).value(),
+                   CreateChoreographyPayload{ChoreographyId::parse("opening").value(),
+                                             StageBounds::from_mm(20000, 12000).value(),
+                                             OverlapPolicy::Forbidden, 5000}};
+    if (initial_leader >= 0) {
+      auto created =
+          choreoos::protocol::transact("127.0.0.1", ports[initial_leader], command_frame(create),
+                                       std::chrono::milliseconds(2500));
+      EXPECT_TRUE(created);
+    }
+    for (int attempt = 0; attempt < 100; ++attempt) {
+      auto first = status_of(ports[0]);
+      auto second = status_of(ports[1]);
+      auto third = status_of(ports[2]);
+      if (first && second && third && first.value().commit_index >= 1 &&
+          second.value().state_hash == first.value().state_hash &&
+          third.value().state_hash == first.value().state_hash) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    const auto before = status_of(ports[isolated]);
+    EXPECT_TRUE(before);
+
+    for (int i = 0; i < 3; ++i) {
+      if (i != isolated) {
+        EXPECT_TRUE(control(isolated, "drop_peer", ids[i]));
+        EXPECT_TRUE(control(i, "drop_peer", ids[isolated]));
+      }
+    }
+    const int next_leader = find_leader(true);
+    EXPECT_GE(next_leader, 0);
+    if (next_leader >= 0) {
+      Command add{
+          CommandId::parse("partition-add").value(),
+          ChoreographyId::parse("opening").value(),
+          CommandType::AddDancer,
+          kCurrentSchemaVersion,
+          MusicalTick::from_count(1).value(),
+          DancerPayload{DancerId::parse("alice").value(), Position::from_mm(1000, 1000).value()}};
+      auto added = choreoos::protocol::transact("127.0.0.1", ports[next_leader], command_frame(add),
+                                                std::chrono::milliseconds(2500));
+      EXPECT_TRUE(added);
+      if (added) {
+        auto decoded = choreoos::protocol::decode_client_response(added.value().payload);
+        EXPECT_TRUE(decoded && decoded.value().ok);
+      }
+    }
+    const auto minority = status_of(ports[isolated]);
+    EXPECT_TRUE(minority);
+    if (before && minority) {
+      EXPECT_EQ(minority.value().commit_index, before.value().commit_index);
+      EXPECT_EQ(minority.value().state_hash, before.value().state_hash);
+    }
+    for (int i = 0; i < 3; ++i) {
+      EXPECT_TRUE(control(i, "heal", ""));
+    }
+    bool converged = false;
+    for (int attempt = 0; attempt < 160 && !converged; ++attempt) {
+      auto first = status_of(ports[0]);
+      auto second = status_of(ports[1]);
+      auto third = status_of(ports[2]);
+      converged = first && second && third && first.value().commit_index >= 2 &&
+                  first.value().commit_index == second.value().commit_index &&
+                  first.value().commit_index == third.value().commit_index &&
+                  first.value().state_hash == second.value().state_hash &&
+                  first.value().state_hash == third.value().state_hash;
+      if (!converged) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+    }
+    EXPECT_TRUE(converged);
+    for (auto& node : nodes) {
+      node->stop();
+    }
+    for (auto& thread : threads) {
+      thread.join();
+    }
+  }
 }
 
 }  // namespace

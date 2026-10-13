@@ -7,5 +7,14 @@
     "boost-asio",
     "gtest",
     "benchmark"
-  ]
+  ],
+  "features": {
+    "management-grpc": {
+      "description": "Compile the optional management gRPC gateway",
+      "dependencies": [
+        "grpc",
+        "protobuf"
+      ]
+    }
+  }
 }

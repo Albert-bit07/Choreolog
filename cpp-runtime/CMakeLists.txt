@@ -58,6 +58,44 @@ target_link_libraries(choreoos-replay PRIVATE ChoreoOS::Core)
 choreoos_set_project_warnings(choreoos-replay)
 choreoos_enable_sanitizers(choreoos-replay)
 
+
+# The management gateway is a separate loopback-only gRPC process. It uses
+# the node's existing framed TCP endpoint and does not own authoritative state.
+# Enable with -DCHOREOOS_BUILD_MANAGEMENT_API=ON and the vcpkg feature
+# -DVCPKG_MANIFEST_FEATURES=management-grpc.
+option(CHOREOOS_BUILD_MANAGEMENT_API "Build the gRPC management gateway" OFF)
+if(CHOREOOS_BUILD_MANAGEMENT_API)
+  find_package(Protobuf MODULE REQUIRED)
+  find_package(gRPC CONFIG REQUIRED)
+  set(management_proto "${PROJECT_SOURCE_DIR}/proto/management/choreoos_management.proto")
+  set(management_generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  file(MAKE_DIRECTORY "${management_generated}")
+  set(management_sources
+      "${management_generated}/choreoos_management.pb.cc"
+      "${management_generated}/choreoos_management.grpc.pb.cc")
+  set(management_headers
+      "${management_generated}/choreoos_management.pb.h"
+      "${management_generated}/choreoos_management.grpc.pb.h")
+  add_custom_command(
+    OUTPUT ${management_sources} ${management_headers}
+    COMMAND protobuf::protoc
+    ARGS "--proto_path=${PROJECT_SOURCE_DIR}/proto/management"
+         "--cpp_out=${management_generated}"
+         "--grpc_out=${management_generated}"
+         "--plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>"
+         "${management_proto}"
+    DEPENDS "${management_proto}"
+    VERBATIM
+  )
+  add_executable(choreoos-management apps/management/main.cpp ${management_sources}
+                                     ${management_headers})
+  target_include_directories(choreoos-management PRIVATE "${management_generated}")
+  target_link_libraries(choreoos-management PRIVATE ChoreoOS::Core gRPC::grpc++
+                                                    protobuf::libprotobuf)
+  target_compile_features(choreoos-management PRIVATE cxx_std_20)
+  choreoos_set_project_warnings(choreoos-management)
+endif()
+
 if(CHOREOOS_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
