@@ -500,6 +500,9 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
     const auto after = request.value().after_index;
     const auto first = replica.store().log_first_index();
     const auto limit = request.value().page_size == 0 ? 64u : request.value().page_size;
+    reply.next_after_index = after;
+    std::size_t page_bytes = 0;
+    constexpr std::size_t kMaxEventPageBytes = choreoos::protocol::kMaxFramePayload - 4096;
     if (first > 1 && after < first - 1) {
       reply.error_code = "Compacted";
       reply.error_message = "requested event range has been compacted; bootstrap from snapshot";
@@ -509,11 +512,20 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
         if (index <= after || index > committed) {
           continue;
         }
-        if (reply.events.size() == limit) {
+        const auto canonical = choreoos::state::canonical_event(event);
+        if (canonical.size() > kMaxEventPageBytes) {
+          reply.error_code = "EventTooLarge";
+          reply.error_message = "committed event exceeds the management page limit";
+          reply.events.clear();
+          break;
+        }
+        if (reply.events.size() == limit ||
+            canonical.size() > kMaxEventPageBytes - page_bytes) {
           reply.has_more = true;
           break;
         }
-        reply.events.push_back(choreoos::state::canonical_event(event));
+        page_bytes += canonical.size();
+        reply.events.push_back(canonical);
         reply.next_after_index = index;
       }
     }
