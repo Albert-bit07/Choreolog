@@ -1,40 +1,65 @@
-# ChoreoOS management API (proposed v1)
+# ChoreoOS management API v1
 
-`choreoos_management.proto` defines the future C++ management server / C# dashboard
-client boundary. **This is a contract only, not a running gRPC service.**
-The existing C++ TCP protocol already supports command submission and node status
-(including canonical state), and its committed-command deduplication is the basis
-for the future `SubmitCommand` implementation.
+The management service in `choreoos_management.proto` is implemented by a separate
+C++ gRPC gateway at `cpp-runtime/apps/management/main.cpp`. It proxies the
+C++ node's existing framed TCP protocol. **The gateway never owns consensus,
+state, event ordering, or durable storage.** The C# client stub is generated
+from the same schema by `dotnet-dashboard/src/ChoreoOS.Client`.
 
-## Safety and retry rules
+## Build and run
 
-- `operation_id` must equal the canonical command's ID. The server must reject
-  mismatches and any ID reused with different command content; it must not
-  silently reinterpret a conflicting retry.
-- Successful submission means the event was durably majority-committed and
-  applied by the leader. A timeout is **ambiguous**, not proof of failure;
-  retry with the same operation ID and exact command.
-- A duplicate committed command returns its original event and index, not a
-  second event. Clients should not rely on the current state hash being the
-  historical hash at the time of the first response.
-- A follower cannot accept mutations. The client should discover and retry
-  the current leader without changing the operation ID.
-- `GetState(require_leader=true)` must reject a nonleader. Even a leader's
-  state read is not automatically linearizable without a quorum/read barrier;
-  document the consistency level before exposing this as a production API.
-- `ListEvents` must bound `page_size` and never return uncommitted entries.
-  A compacted range may require a snapshot/bootstrap response instead.
-- `InjectTestFault` must be disabled by default and require explicit test
-  mode plus access control. Never expose it unauthenticated on a public port.
+Build the C++ node normally. For the gateway, enable
+`-DCHOREOOS_BUILD_MANAGEMENT_API=ON` (and if using vcpkg, enable manifest
+feature `management-grpc` or install equivalent gRPC/protobuf development
+packages). Run a node, then start:
 
-## Implementation gates
+```text
+choreoos-management <node-tcp-port> <management-grpc-port>
+```
 
-1. Complete all three partition tests and verify CI on Linux and Windows.
-2. Choose the gRPC/protobuf build toolchain and generate C++ server and C#
-   client stubs reproducibly. The existing internal protobuf C++ generation
-   prerequisite is still incomplete.
-3. Adapt the C++ runtime's existing command/status operations to the service,
-   then implement bounded event pagination, metrics, and recovery status.
-4. Add authenticated transport, explicit test-only fault authorization,
-   idempotency conflict tests, and end-to-end gRPC tests before calling Step 34
-   complete.
+The gateway connects only to `127.0.0.1:<node-tcp-port>` and binds to
+`127.0.0.1:<management-grpc-port>` using insecure, local-only gRPC.
+**Do not expose either endpoint to an untrusted network.** Production
+remote access needs mutual TLS, authorization, and request-size/rate policies.
+
+Build the C# client with:
+
+```text
+dotnet build dotnet-dashboard/src/ChoreoOS.Client/ChoreoOS.Client.csproj
+```
+
+## API guarantees and limitations
+
+- `SubmitCommand` requires an operation ID equal to the canonical command ID.
+  Only a leader can accept writes. Success means committed and locally applied.
+  Timeouts may hide a successful commit; repeat with the identical operation ID.
+  Conflicting reuses are rejected as `DuplicateCommand`.
+- The compacted WAL may discard an original event. New version-2 snapshot
+  payloads retain canonical event receipts to return the original committed
+  result after compaction and restart. Existing version-1 snapshots can be
+  read, but **cannot recreate outcomes that their old format never stored**.
+  Retaining receipts increases snapshot size with committed history.
+- `GetState` and `GetNodeStatus` query the C++ node. A leader's state is
+  authoritative for its locally applied log, but **is not a linearizable
+  quorum-confirmed read**. A follower's state is diagnostic only.
+- `ListEvents` pages committed log events only, with a 128-event maximum.
+  Requests for compacted history return an out-of-range error; clients must
+  bootstrap from a snapshot instead. A page is a local observation and may
+  be superseded by later commits.
+- `GetMetrics` returns counters, not a full telemetry subsystem;
+  `GetRecoveryStatus` reflects the node's completed startup recovery and
+  latest snapshot, not an ongoing stream of recovery progress.
+- `InjectTestFault` is denied unless the node configuration explicitly sets
+  `test_mode: true` and the caller connects to that node from loopback.
+  `DROP_PEER`, `DELAY_PEER`, `HEAL_PEERS`, and `PAUSE_NODE` are test-only.
+  `HEAL_PEERS` also resumes a paused node. Do not enable test mode in
+  production.
+
+## Verification
+
+Normal CI runs C++ unit and TCP integration tests on Linux and Windows,
+including all three two-versus-one partition arrangements. The separate
+`management-api` job builds the generated native gRPC server and generated
+C# client. Successful compilation is **not** a complete interoperability
+test: a C#-to-gRPC-to-live-C++ end-to-end test and production-grade
+authentication remain important follow-ups.
