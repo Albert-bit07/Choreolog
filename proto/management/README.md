@@ -66,6 +66,7 @@ dotnet build dotnet-dashboard/src/ChoreoOS.Client/ChoreoOS.Client.csproj
 Normal CI runs C++ unit and TCP integration tests on Linux and Windows,
 including all three two-versus-one partition arrangements. The separate
 `management-api` job builds the generated native gRPC server and generated
-C# client. Successful compilation is **not** a complete interoperability
-test: a C#-to-gRPC-to-live-C++ end-to-end test and production-grade
-authentication remain important follow-ups.
+C# client. The `management-api` CI job also runs the generated C# client against a
+live C++ node through the gRPC gateway. Production-grade remote authentication,
+quorum-linearizable reads, richer metrics, and broader multi-node gRPC
+integration coverage remain follow-ups.
