@@ -165,6 +165,14 @@ std::size_t SimulatedNetwork::advance() {
   }
   packets_ = std::move(waiting);
   for (const auto& packet : due) {
+    if (isolated(packet.from) || isolated(packet.to) || blocked(packet.from, packet.to)) {
+      schedule_ += std::to_string(now_) + " drop ";
+      schedule_ += packet.from;
+      schedule_ += " ";
+      schedule_ += packet.to;
+      schedule_ += " partitioned\n";
+      continue;
+    }
     if (paused(packet.to)) {
       Packet held = packet;
       held.deliver_at = now_ + 1;

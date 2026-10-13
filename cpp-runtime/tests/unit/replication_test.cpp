@@ -418,6 +418,72 @@ TEST(ElectionTest, MinorityCannotCommit) {
             state_hash(c.value().store().engine().state()));
 }
 
+TEST(ElectionTest, StaggeredPartitionElectionConverges) {
+  for (int isolated = 0; isolated < 3; ++isolated) {
+    SCOPED_TRACE(isolated);
+    SimulatedNetwork net{static_cast<std::uint64_t>(101 + isolated)};
+    net.enable_faults();
+    auto a = Replica::open(electing("node-1", fresh("choreoos-part-a"), {"node-2", "node-3"}, 11));
+    auto b = Replica::open(electing("node-2", fresh("choreoos-part-b"), {"node-1", "node-3"}, 22));
+    auto c = Replica::open(electing("node-3", fresh("choreoos-part-c"), {"node-1", "node-2"}, 33));
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+    ASSERT_TRUE(c);
+    net.attach(a.value());
+    net.attach(b.value());
+    net.attach(c.value());
+    Replica* nodes[] = {&a.value(), &b.value(), &c.value()};
+    // Stagger elections to avoid a deterministic split-vote lockstep.
+    a.value().set_election_bounds(4, 4);
+    b.value().set_election_bounds(7, 7);
+    c.value().set_election_bounds(10, 10);
+
+    campaign(net, a.value(), b.value(), c.value(), 80);
+    auto* original = current_leader(a.value(), b.value(), c.value());
+    ASSERT_NE(original, nullptr);
+    ASSERT_TRUE(original->enqueue(create_command()));
+    campaign(net, a.value(), b.value(), c.value(), 40);
+    for (Replica* node : nodes) {
+      ASSERT_GE(node->store().commit_index().value(), 1u);
+    }
+
+    // Drain already-sent commit acknowledgements before cutting the network.
+    // Otherwise a pre-partition message may advance the isolated node's index.
+    for (int i = 0; i < 4; ++i) {
+      net.advance();
+    }
+    const auto minority_commit = nodes[isolated]->store().commit_index().value();
+    net.partition({nodes[isolated]->id()});
+    campaign(net, a.value(), b.value(), c.value(), 100);
+    Replica* majority_leader = nullptr;
+    for (int i = 0; i < 3; ++i) {
+      if (i != isolated && nodes[i]->is_leader()) {
+        majority_leader = nodes[i];
+      }
+    }
+    ASSERT_NE(majority_leader, nullptr);
+    auto submitted = majority_leader->enqueue(add_command("partition-dancer", 1000));
+    ASSERT_TRUE(submitted);
+    const auto command_index = submitted.value().event.index;
+    campaign(net, a.value(), b.value(), c.value(), 40);
+    EXPECT_EQ(nodes[isolated]->store().commit_index().value(), minority_commit);
+    EXPECT_GE(majority_leader->store().commit_index().value(), command_index.value());
+
+    net.heal();
+    campaign(net, a.value(), b.value(), c.value(), 120);
+    const auto hash = state_hash(a.value().store().engine().state());
+    EXPECT_EQ(hash, state_hash(b.value().store().engine().state()));
+    EXPECT_EQ(hash, state_hash(c.value().store().engine().state()));
+    const auto committed = a.value().store().commit_index();
+    EXPECT_EQ(committed, b.value().store().commit_index());
+    EXPECT_EQ(committed, c.value().store().commit_index());
+    for (Replica* node : nodes) {
+      EXPECT_GE(node->store().commit_index().value(), command_index.value());
+      EXPECT_TRUE(node->store().engine().state().dancers.contains("partition-dancer"));
+    }
+  }
+}
+
 TEST(ElectionTest, SplitVoteRetriesWithNewTimeouts) {
   SimulatedNetwork net{1};
   auto a = Replica::open(electing("node-1", fresh("choreoos-split-1"), {"node-2", "node-3"}, 1));
