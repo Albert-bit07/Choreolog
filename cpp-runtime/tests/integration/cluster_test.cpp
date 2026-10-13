@@ -371,6 +371,75 @@ TEST(ClusterTest, LeaderFailoverElectsAndConverges) {
 }
 
 
+
+TEST(ClusterTest, ManagementReadsCommittedEventsAndRejectsProductionFaults) {
+  auto node = NodeServer::open(node_config("node-1", "node-1",
+                                           fresh("choreoos-management-wire"), 19301, {}));
+  ASSERT_TRUE(node);
+  std::thread runner([&] { node.value()->run(); });
+
+  Command create{CommandId::parse("management-create").value(),
+                 ChoreographyId::parse("opening").value(),
+                 CommandType::CreateChoreography,
+                 kCurrentSchemaVersion,
+                 MusicalTick::from_count(0).value(),
+                 CreateChoreographyPayload{ChoreographyId::parse("opening").value(),
+                                           StageBounds::from_mm(20000, 12000).value(),
+                                           OverlapPolicy::Forbidden, 5000}};
+  auto submitted = choreoos::protocol::transact(
+      "127.0.0.1", 19301, command_frame(create), std::chrono::milliseconds(1000));
+  EXPECT_TRUE(submitted);
+  if (submitted) {
+    auto decoded = choreoos::protocol::decode_client_response(submitted.value().payload);
+    EXPECT_TRUE(decoded && decoded.value().ok);
+  }
+  auto query = [&](const std::string& operation) {
+    choreoos::protocol::ManagementQuery request;
+    request.operation = operation;
+    choreoos::protocol::Frame frame;
+    frame.type = choreoos::protocol::MessageType::ManagementQuery;
+    frame.payload = choreoos::protocol::encode(request).value();
+    auto reply = choreoos::protocol::transact("127.0.0.1", 19301, frame,
+                                              std::chrono::milliseconds(1000));
+    if (!reply) {
+      return choreoos::state::Result<choreoos::protocol::ManagementReply>(reply.error());
+    }
+    return choreoos::protocol::decode_management_reply(reply.value().payload);
+  };
+  const auto events = query("events");
+  ASSERT_TRUE(events);
+  EXPECT_TRUE(events.value().error_code.empty());
+  EXPECT_EQ(events.value().events.size(), 1u);
+  EXPECT_EQ(events.value().next_after_index, 1u);
+  EXPECT_FALSE(events.value().has_more);
+
+  const auto metrics = query("metrics");
+  ASSERT_TRUE(metrics);
+  EXPECT_TRUE(metrics.value().error_code.empty());
+  EXPECT_GT(metrics.value().transport_frames_received, 0u);
+
+  const auto recovery = query("recovery");
+  ASSERT_TRUE(recovery);
+  EXPECT_TRUE(recovery.value().error_code.empty());
+  EXPECT_FALSE(recovery.value().recovery_report.empty());
+
+  const auto forbidden = query("pause");
+  ASSERT_TRUE(forbidden);
+  EXPECT_EQ(forbidden.value().error_code, "PermissionDenied");
+
+  create.tick = MusicalTick::from_count(1).value();
+  auto conflicted = choreoos::protocol::transact(
+      "127.0.0.1", 19301, command_frame(create), std::chrono::milliseconds(1000));
+  EXPECT_TRUE(conflicted);
+  if (conflicted) {
+    auto decoded = choreoos::protocol::decode_client_response(conflicted.value().payload);
+    EXPECT_TRUE(decoded && !decoded.value().ok &&
+                decoded.value().error_code == "DuplicateCommand");
+  }
+  node.value()->stop();
+  runner.join();
+}
+
 TEST(ClusterTest, AllTwoVersusOneTcpPartitionsRecover) {
   for (int isolated = 0; isolated < 3; ++isolated) {
     SCOPED_TRACE(isolated);
