@@ -519,8 +519,7 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
           reply.events.clear();
           break;
         }
-        if (reply.events.size() == limit ||
-            canonical.size() > kMaxEventPageBytes - page_bytes) {
+        if (reply.events.size() == limit || canonical.size() > kMaxEventPageBytes - page_bytes) {
           reply.has_more = true;
           break;
         }
