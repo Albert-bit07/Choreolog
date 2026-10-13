@@ -411,6 +411,25 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
     return Error{ErrorCode::ConflictingEvent, "event id was reused with different content"};
   }
 
+  // Full event history is not retained in v3 snapshots. Check compact
+  // receipts too, or a replay after restart could reapply an old command
+  // under a new index even though its event body was compacted.
+  const auto receipt = state.receipts.find(event.command_id.value());
+  if (receipt != state.receipts.end()) {
+    const auto original = command_from_event(event);
+    if (original && receipt->second.index == event.index.value() &&
+        receipt->second.term == event.term.value() &&
+        receipt->second.fingerprint == command_fingerprint(*original)) {
+      return {};
+    }
+    return Error{ErrorCode::ConflictingEvent,
+                 "committed command id was reused with different event content"};
+  }
+  if (state.applied_commands.count(event.command_id.value()) != 0) {
+    return Error{ErrorCode::ConflictingEvent,
+                 "legacy committed command id was replayed without an outcome receipt"};
+  }
+
   if (index_rule == IndexRule::Contiguous && event.index != state.last_applied.next()) {
     return Error{ErrorCode::IndexGap, "event index is not contiguous"};
   }
