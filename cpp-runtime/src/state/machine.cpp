@@ -3,6 +3,9 @@
 
 #include "choreoos/state/machine.hpp"
 
+#include "choreoos/protocol/command_codec.hpp"
+#include "choreoos/state/store.hpp"
+
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
@@ -13,6 +16,86 @@ namespace {
 // FNV-1a 64-bit over canonical_state(). Same bytes => same hash on every node.
 constexpr std::uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr std::uint64_t kFnvPrime = 1099511628211ull;
+
+constexpr char kBase64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+std::string encode_fingerprint(std::uint64_t value) {
+  std::string text(11, 'A');
+  for (int i = 10; i >= 0; --i) {
+    text[static_cast<std::size_t>(i)] = kBase64[value & 63u];
+    value >>= 6;
+  }
+  return text;
+}
+
+Result<std::uint64_t> decode_fingerprint(std::string_view text) {
+  if (text.size() != 11) {
+    return Error{ErrorCode::StoreError, "receipt fingerprint length is invalid"};
+  }
+  std::uint64_t value = 0;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const auto* found = std::find(std::begin(kBase64), std::end(kBase64) - 1, text[i]);
+    if (found == std::end(kBase64) - 1) {
+      return Error{ErrorCode::StoreError, "receipt fingerprint alphabet is invalid"};
+    }
+    const auto digit = static_cast<std::uint64_t>(found - std::begin(kBase64));
+    if (i == 0 && digit > 15) {
+      return Error{ErrorCode::StoreError, "receipt fingerprint overflows 64 bits"};
+    }
+    value = (value << 6) | digit;
+  }
+  return value;
+}
+
+Command normalize_command(Command command) {
+  if (auto* formation = std::get_if<FormationPayload>(&command.payload)) {
+    std::sort(formation->members.begin(), formation->members.end());
+    formation->members.erase(
+        std::unique(formation->members.begin(), formation->members.end()),
+        formation->members.end());
+  }
+  return command;
+}
+
+// FNV-1a is deterministic across platforms. This short fingerprint is not a
+// security primitive: an attacker must not be allowed to choose untrusted IDs
+// without authentication and stronger collision-resistant identities.
+std::uint64_t command_fingerprint(const Command& command) {
+  const auto bytes = choreoos::protocol::canonical_command(normalize_command(command));
+  std::uint64_t hash = kFnvOffset;
+  for (unsigned char byte : bytes) {
+    hash ^= byte;
+    hash *= kFnvPrime;
+  }
+  return hash;
+}
+
+std::optional<Command> command_from_event(const Event& event) {
+  if (event.type == EventType::NoOp) {
+    return std::nullopt;
+  }
+  CommandType type = CommandType::CreateChoreography;
+  switch (event.type) {
+    case EventType::ChoreographyCreated: type = CommandType::CreateChoreography; break;
+    case EventType::DancerAdded: type = CommandType::AddDancer; break;
+    case EventType::DancerRemoved: type = CommandType::RemoveDancer; break;
+    case EventType::DancerMoved: type = CommandType::MoveDancer; break;
+    case EventType::FormationDefined: type = CommandType::DefineFormation; break;
+    case EventType::FormationChanged: type = CommandType::ChangeFormation; break;
+    case EventType::MusicCueTriggered: type = CommandType::TriggerMusicCue; break;
+    case EventType::LightingCueTriggered: type = CommandType::TriggerLightingCue; break;
+    case EventType::NoOp: return std::nullopt;
+  }
+  return Command{event.command_id, event.choreography_id, type, event.schema_version,
+                 event.tick, event.payload};
+}
+
+EventReceipt receipt_from_event(const Event& event) {
+  const auto command = command_from_event(event);
+  return EventReceipt{event.index.value(), event.term.value(),
+                      command ? command_fingerprint(*command) : 0};
+}
 
 Error unsupported_schema(std::uint16_t version) {
   return Error{ErrorCode::UnsupportedVersion,
@@ -398,6 +481,9 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
   state.term = event.term;
   state.applied_events.insert({event.id.value(), canonical_event(event)});
   state.applied_commands.insert({event.command_id.value(), event.id.value()});
+  if (event.type != EventType::NoOp) {
+    state.receipts[event.command_id.value()] = receipt_from_event(event);
+  }
   return {};
 }
 
@@ -423,6 +509,27 @@ Result<ChoreographyState> replay(const std::vector<Event>& events,
 }
 
 // Sorted, line-oriented snapshot of authoritative fields. Used by state_hash().
+Result<Event> resolve_receipt(const ChoreographyState& state, const Command& command) {
+  const auto it = state.receipts.find(command.id.value());
+  if (it == state.receipts.end()) {
+    return Error{ErrorCode::OutcomeUnavailable,
+                 "committed legacy command has no recoverable receipt"};
+  }
+  if (command_fingerprint(command) != it->second.fingerprint) {
+    return Error{ErrorCode::CommandConflict, "operation id reused with different command"};
+  }
+  const auto normalized = normalize_command(command);
+  auto event_id = EventId::parse(command.id.value());
+  auto index = LogIndex::parse(it->second.index);
+  auto term = Term::parse(it->second.term);
+  if (!event_id) return event_id.error();
+  if (!index) return index.error();
+  if (!term) return term.error();
+  return Event{event_id.value(), command.id, command.choreography_id,
+               event_type_for(command.type), command.schema_version, command.tick,
+               index.value(), term.value(), normalized.payload};
+}
+
 std::string canonical_state(const ChoreographyState& state) {
   std::ostringstream out;
   out << "schema=" << kCurrentSchemaVersion << '\n';
