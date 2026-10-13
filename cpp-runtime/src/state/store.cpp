@@ -341,12 +341,11 @@ Result<SubmitResult> FileEngine::submit(Command command) {
   std::lock_guard<std::mutex> lock(*mutex_);
   const auto seen = engine_.state().applied_commands.find(command.id.value());
   if (seen != engine_.state().applied_commands.end()) {
-    for (const auto& event : engine_.events()) {
-      if (event.id.value() == seen->second) {
-        return SubmitResult{event, true};
-      }
+    auto receipt = resolve_receipt(engine_.state(), command);
+    if (!receipt) {
+      return receipt.error();
     }
-    return Error{ErrorCode::DuplicateCommand, "command was accepted but its event is missing"};
+    return SubmitResult{receipt.value(), true};
   }
 
   auto proposed = propose(engine_.state(), command);
