@@ -131,7 +131,7 @@ jobs:
             -DCHOREOOS_WARNINGS_AS_ERRORS=ON
 
       - name: Build gRPC gateway
-        run: cmake --build build/management --target choreoos-management
+        run: cmake --build build/management --target choreoos-management choreoos-node
 
       - name: Set up .NET 8 SDK
         uses: actions/setup-dotnet@v4
@@ -140,3 +140,32 @@ jobs:
 
       - name: Build generated C# gRPC client
         run: dotnet build dotnet-dashboard/src/ChoreoOS.Client/ChoreoOS.Client.csproj --configuration Release
+      
+      - name: Smoke-test C# gRPC management calls against C++ node
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/choreoos-management-node"
+          cat > "$RUNNER_TEMP/management-node.yaml" <<EOF
+          id: node-1
+          leader: node-1
+          data: $RUNNER_TEMP/choreoos-management-node
+          listen: 127.0.0.1:19401
+          elections: false
+          EOF
+          build/management/cpp-runtime/choreoos-node "$RUNNER_TEMP/management-node.yaml"             >"$RUNNER_TEMP/choreoos-node.log" 2>&1 &
+          node_pid=$!
+          build/management/cpp-runtime/choreoos-management 19401 19402             >"$RUNNER_TEMP/choreoos-gateway.log" 2>&1 &
+          gateway_pid=$!
+          trap 'rc=$?; cat "$RUNNER_TEMP/choreoos-node.log"             "$RUNNER_TEMP/choreoos-gateway.log"; kill "$node_pid" "$gateway_pid" 2>/dev/null || true; exit "$rc"' EXIT
+          ready=false
+          for i in {1..50}; do
+            if ( : >/dev/tcp/127.0.0.1/19402 ) 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 0.2
+          done
+          test "$ready" = true
+          dotnet run --project dotnet-dashboard/tests/ChoreoOS.ClientSmoke/ChoreoOS.ClientSmoke.csproj             --configuration Release -- 19402
+
