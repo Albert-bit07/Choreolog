@@ -421,12 +421,13 @@ RecoverySpec == Init /\ [][RecoveryNext]_vars
 \* delayed/dropped RV messages and crash/restart. It excludes log writes
 \* and AppendEntries, which are checked by the core and recovery profiles.
 ElectionNext ==
-  \/ \E i \in Servers :
-       Timeout(i) \/ BecomeLeader(i) \/ PersistCompleted(i)
-       \/ Crash(i) \/ PersistFailed(i) \/ Restart(i)
-  \/ \E i \in Servers, m \in DOMAIN net :
-       UpdateTerm(i, m) \/ HandleRVReq(i, m) \/ HandleRVResp(i, m)
-  \/ \E m \in DOMAIN net : DropMsg(m)
+  \/ /\ UNCHANGED alive
+     /\ (\/ \E i \in Servers :
+              Timeout(i) \/ BecomeLeader(i) \/ PersistCompleted(i)
+         \/ \E i \in Servers, m \in DOMAIN net :
+              UpdateTerm(i, m) \/ HandleRVReq(i, m) \/ HandleRVResp(i, m)
+         \/ \E m \in DOMAIN net : DropMsg(m))
+  \/ \E i \in Servers : Crash(i) \/ PersistFailed(i) \/ Restart(i)
 ElectionSpec == Init /\ [][ElectionNext]_vars
 
 Next ==
