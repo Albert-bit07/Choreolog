@@ -139,7 +139,7 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
 
   void close() {
     boost::system::error_code ignored;
-    socket.close(ignored);
+    (void)socket.close(ignored);
   }
 
   tcp::socket socket;
@@ -320,7 +320,7 @@ void NodeServer::Impl::dial_missing() {
 }
 
 std::string NodeServer::Impl::leader_contact() const {
-  const std::string id = replica.leader_id();
+  std::string id = replica.leader_id();
   if (id.empty()) {
     return {};
   }
