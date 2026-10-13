@@ -125,6 +125,18 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
     return Error{ErrorCode::NotLeader, "leader is " + config_.leader_id};
   }
   if (const auto* known = find_command(command.id.value())) {
+    // An idempotency key identifies one logical command, not just any command
+    // with the same ID. Reject conflicting retries even across restarts.
+    if (known->type != choreoos::state::event_type_for(command.type)) {
+      return Error{ErrorCode::DuplicateCommand, "command ID reused with a different request"};
+    }
+    const choreoos::state::Command original{
+        known->command_id, known->choreography_id, command.type, known->schema_version,
+        known->tick, known->payload};
+    if (choreoos::protocol::canonical_command(original) !=
+        choreoos::protocol::canonical_command(command)) {
+      return Error{ErrorCode::DuplicateCommand, "command ID reused with a different request"};
+    }
     return EnqueueResult{*known, true, known->index <= store_.commit_index(), config_.leader_id};
   }
   ensure_speculative();
