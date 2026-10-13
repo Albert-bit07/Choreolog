@@ -345,19 +345,25 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
       }
     }
     ASSERT_NE(majority_leader, nullptr);
-    ASSERT_TRUE(majority_leader->enqueue(add_command("partition-dancer", 1000)));
+    auto submitted = majority_leader->enqueue(add_command("partition-dancer", 1000));
+    ASSERT_TRUE(submitted);
+    const auto command_index = submitted.value().event.index;
     campaign(net, a.value(), b.value(), c.value(), 40);
     EXPECT_EQ(nodes[isolated]->store().commit_index().value(), minority_commit);
-    EXPECT_GE(majority_leader->store().commit_index().value(), 2u);
+    EXPECT_GE(majority_leader->store().commit_index(), command_index);
 
     net.heal();
     campaign(net, a.value(), b.value(), c.value(), 120);
     const auto hash = state_hash(a.value().store().engine().state());
     EXPECT_EQ(hash, state_hash(b.value().store().engine().state()));
     EXPECT_EQ(hash, state_hash(c.value().store().engine().state()));
-    const auto committed = a.value().store().commit_index().value();
-    EXPECT_EQ(committed, b.value().store().commit_index().value());
-    EXPECT_EQ(committed, c.value().store().commit_index().value());
+    const auto committed = a.value().store().commit_index();
+    EXPECT_EQ(committed, b.value().store().commit_index());
+    EXPECT_EQ(committed, c.value().store().commit_index());
+    for (Replica* node : nodes) {
+      EXPECT_GE(node->store().commit_index(), command_index);
+      EXPECT_TRUE(node->store().engine().state().dancers.contains("partition-dancer"));
+    }
   }
 }
 
