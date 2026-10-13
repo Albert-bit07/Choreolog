@@ -139,8 +139,8 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
 
   void close() {
     boost::system::error_code error;
-    auto& closed = socket.close(error);
-    if (error || closed.is_open()) {
+    const auto result = socket.close(error);
+    if (error || result) {
       ++node->transport_metrics.dropped;
     }
   }
