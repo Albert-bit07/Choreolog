@@ -21,8 +21,14 @@ TLC checks `TypeOK`, `NoDoubleVote`, `ElectionSafety`,
 `CandidateOwnsVote`, `LeaderHasQuorum`, and `GrantsWereRecorded`.
 `Election.cfg` checks three nodes and **one nonzero election term**;
 `ElectionTwoTerms.cfg` checks **two** bounded terms, including stale-term
-messages and vote persistence after restart. Both are finite-state models,
-not proofs for unbounded terms or executions.
+messages and vote persistence after restart, and applies an explicit
+`MessageBudget` TLC state constraint: at most two messages in flight.
+This prunes behaviors in which message queues accumulate beyond two;
+it is a tractability bound, **not** a safety assumption of Raft. The
+unconstrained two-term model generated over 88 million successor states
+before its 240-second CI limit and was not exhaustively checked.
+Both CI configurations are finite-state checks, not proofs for unbounded
+terms, message queues, or executions.
 
 ## What this model does NOT contain
 
