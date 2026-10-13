@@ -65,7 +65,7 @@ choreoos_enable_sanitizers(choreoos-replay)
 # -DVCPKG_MANIFEST_FEATURES=management-grpc.
 option(CHOREOOS_BUILD_MANAGEMENT_API "Build the gRPC management gateway" OFF)
 if(CHOREOOS_BUILD_MANAGEMENT_API)
-  find_package(Protobuf CONFIG REQUIRED)
+  find_package(Protobuf MODULE REQUIRED)
   find_package(gRPC CONFIG REQUIRED)
   set(management_proto "${PROJECT_SOURCE_DIR}/proto/management/choreoos_management.proto")
   set(management_generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
