@@ -72,10 +72,10 @@ enum class IndexRule { Contiguous, Monotonic };
 [[nodiscard]] std::string canonical_state(const ChoreographyState& state);
 [[nodiscard]] std::string state_hash(const ChoreographyState& state);
 
-// Snapshot payload: the domain state plus the applied-command table, as
+// Snapshot payload: the domain state, applied-command table, and durable receipts, as
 // space-delimited lines. IDs never contain spaces, so unlike canonical_state()
 // this text parses unambiguously. Its size is the state plus one short line
-// per accepted command; it does not contain event history.
+// per accepted command; version 2 retains original events for retry-safe receipts.
 [[nodiscard]] std::string snapshot_payload(const ChoreographyState& state);
 // Inverse of snapshot_payload(). The caller checks state_hash() against the
 // hash recorded with the snapshot. applied_events is left empty because event
