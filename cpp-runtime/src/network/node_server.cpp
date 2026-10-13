@@ -7,6 +7,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -108,6 +109,7 @@ struct NodeServer::Impl {
 
   struct Pending {
     std::string command_id;
+    std::optional<choreoos::state::Event> event;
     bool duplicate = false;
     std::shared_ptr<Session> session;
     std::uint64_t correlation = 0;
@@ -362,11 +364,15 @@ void NodeServer::Impl::schedule_reconnect() {
 void NodeServer::Impl::complete_waiters() {
   std::vector<Pending> still;
   for (auto& waiter : pending) {
-    const choreoos::state::Event* event = replica.find_command(waiter.command_id);
-    if (event == nullptr || replica.store().commit_index() < event->index) {
+    const auto& receipts = replica.store().engine().state().receipts;
+    const auto receipt = receipts.find(waiter.command_id);
+    if (!waiter.event || receipt == receipts.end() ||
+        receipt->second.index != waiter.event->index.value() ||
+        receipt->second.term != waiter.event->term.value()) {
       still.push_back(std::move(waiter));
       continue;
     }
+    const auto* event = &*waiter.event;
     choreoos::replication::EnqueueResult result{*event, waiter.duplicate, true,
                                                 replica.leader_id()};
     auto response = response_from(result, replica.committed_state_hash());
@@ -450,6 +456,7 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
   }
   Pending waiter;
   waiter.command_id = command.value().id.value();
+  waiter.event = queued.value().event;
   waiter.duplicate = queued.value().duplicate;
   waiter.session = session;
   waiter.correlation = frame.correlation;
