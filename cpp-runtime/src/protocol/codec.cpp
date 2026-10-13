@@ -652,4 +652,129 @@ Result<StatusResponse> decode_status_response(std::string_view bytes) {
   return message;
 }
 
+
+Result<std::string> encode(const ManagementQuery& message) {
+  std::string out;
+  write_bytes(out, 1, message.operation);
+  write_uint(out, 2, message.after_index);
+  write_uint(out, 3, message.page_size);
+  write_bytes(out, 4, message.peer_id);
+  return out;
+}
+
+Result<std::string> encode(const ManagementReply& message) {
+  std::string out;
+  write_bytes(out, 1, message.error_code);
+  write_bytes(out, 2, message.error_message);
+  for (const auto& event : message.events) {
+    write_bytes(out, 3, event);
+  }
+  write_uint(out, 4, message.next_after_index);
+  write_bool(out, 5, message.has_more);
+  write_uint(out, 6, message.role_changes);
+  write_uint(out, 7, message.elections_started);
+  write_uint(out, 8, message.votes_granted);
+  write_uint(out, 9, message.step_downs);
+  write_uint(out, 10, message.messages_dropped_oversize);
+  write_uint(out, 11, message.snapshot_chunks_sent);
+  write_uint(out, 12, message.transport_frames_sent);
+  write_uint(out, 13, message.transport_frames_received);
+  write_uint(out, 14, message.transport_dropped);
+  write_uint(out, 15, message.snapshot_index);
+  write_bytes(out, 16, message.snapshot_state_hash);
+  write_bytes(out, 17, message.recovery_report);
+  return out;
+}
+
+Result<ManagementQuery> decode_management_query(std::string_view bytes) {
+  Reader reader{bytes, 0};
+  ManagementQuery message;
+  while (!reader.done()) {
+    auto key = reader.varint();
+    if (!key) {
+      return key.error();
+    }
+    const auto field = key.value() >> 3;
+    const int wire = static_cast<int>(key.value() & 7);
+    if ((field == 1 || field == 4) && wire == kLength) {
+      auto value = reader.skip_or_read(wire, true);
+      if (!value) {
+        return value.error();
+      }
+      if (field == 1) {
+        message.operation = value.value();
+      } else {
+        message.peer_id = value.value();
+      }
+    } else if ((field == 2 || field == 3) && wire == kVarint) {
+      auto value = reader.varint();
+      if (!value) {
+        return value.error();
+      }
+      if (field == 2) {
+        message.after_index = value.value();
+      } else {
+        if (value.value() > 128) {
+          return Error{ErrorCode::ProtocolError, "management page size exceeds 128"};
+        }
+        message.page_size = static_cast<std::uint32_t>(value.value());
+      }
+    } else if (auto skipped = reader.skip_or_read(wire, false); !skipped) {
+      return skipped.error();
+    }
+  }
+  return message;
+}
+
+Result<ManagementReply> decode_management_reply(std::string_view bytes) {
+  Reader reader{bytes, 0};
+  ManagementReply message;
+  while (!reader.done()) {
+    auto key = reader.varint();
+    if (!key) {
+      return key.error();
+    }
+    const auto field = key.value() >> 3;
+    const int wire = static_cast<int>(key.value() & 7);
+    if ((field == 1 || field == 2 || field == 3 || field == 16 || field == 17) &&
+        wire == kLength) {
+      auto value = reader.skip_or_read(wire, true);
+      if (!value) {
+        return value.error();
+      }
+      switch (field) {
+        case 1: message.error_code = value.value(); break;
+        case 2: message.error_message = value.value(); break;
+        case 3: message.events.push_back(value.value()); break;
+        case 16: message.snapshot_state_hash = value.value(); break;
+        case 17: message.recovery_report = value.value(); break;
+        default: break;
+      }
+    } else if (field >= 4 && field <= 15 && wire == kVarint) {
+      auto value = reader.varint();
+      if (!value) {
+        return value.error();
+      }
+      switch (field) {
+        case 4: message.next_after_index = value.value(); break;
+        case 5: message.has_more = value.value() != 0; break;
+        case 6: message.role_changes = value.value(); break;
+        case 7: message.elections_started = value.value(); break;
+        case 8: message.votes_granted = value.value(); break;
+        case 9: message.step_downs = value.value(); break;
+        case 10: message.messages_dropped_oversize = value.value(); break;
+        case 11: message.snapshot_chunks_sent = value.value(); break;
+        case 12: message.transport_frames_sent = value.value(); break;
+        case 13: message.transport_frames_received = value.value(); break;
+        case 14: message.transport_dropped = value.value(); break;
+        case 15: message.snapshot_index = value.value(); break;
+        default: break;
+      }
+    } else if (auto skipped = reader.skip_or_read(wire, false); !skipped) {
+      return skipped.error();
+    }
+  }
+  return message;
+}
+
 }  // namespace choreoos::protocol
