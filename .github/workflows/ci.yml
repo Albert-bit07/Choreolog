@@ -225,7 +225,7 @@ jobs:
           # by the normal Linux/Windows jobs; run all other correctness
           # cases under the instrumented binary.
           ctest --test-dir build/api-audit --output-on-failure --timeout 240 \
-            -E '^CatchUpTest\\.'
+            -E '^CatchUpTest'
 
       - name: Static-analyze protocol and cluster runtime
         shell: bash
