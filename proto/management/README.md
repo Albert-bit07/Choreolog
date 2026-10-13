@@ -70,3 +70,32 @@ C# client. The `management-api` CI job also runs the generated C# client against
 live C++ node through the gRPC gateway. Production-grade remote authentication,
 quorum-linearizable reads, richer metrics, and broader multi-node gRPC
 integration coverage remain follow-ups.
+
+## Cluster-aware local client and error metadata
+
+For operations that may outlive a leader, use `ChoreoOS.Client.ChoreoClusterClient`
+with the local management ports of every configured node. Its
+`SubmitCommittedAsync(request, timeout, cancellationToken)` method discovers
+the current leader and retries only the **identical** canonical command and
+operation ID. It stops on permanent errors and honors cancellation.
+
+A timeout from this method means **outcome unknown**, not failure: the
+command may already be committed. Persist the original operation ID and exact
+canonical command before submitting and reuse them on a later retry. The client
+does not generate IDs or automatically change the request between attempts.
+
+The gateway returns `choreoos-error-code` in gRPC trailing metadata for
+runtime errors such as `NotLeader`, `CommandConflict`, and
+`OutcomeUnavailable`. Transport failures and runtime `Unavailable` errors
+during command submission include `choreoos-outcome: unknown`. Routing uses
+these machine-readable codes rather than parsing the English error message.
+A follower's diagnostic state remains non-linearizable regardless of what
+the client observes.
+
+The `ChoreoOS.ClusterSmoke` project starts three real C++ node processes
+and three local gateways using ephemeral ports. It exercises leader
+replacement, reconnects, safe retries after an uncertain outcome, quorum
+loss and recovery, malformed requests, and fault-control denial. CI also
+runs the core under ASan/UBSan and analyzes selected protocol/network files
+with clang-tidy. These checks do not establish full Raft compliance or
+production security.
