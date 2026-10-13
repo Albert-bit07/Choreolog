@@ -102,6 +102,23 @@ jobs:
             exit 1
           fi
 
+      - name: Verify non-durable vote mutation is rejected
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config NegativeNonDurableVote.cfg -workers 2 ChoreoRaft.tla \
+            > "$RUNNER_TEMP/negative-vote.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/negative-vote.txt"
+          if [[ $result -ne 12 ]] || ! grep -Fq 'Invariant ElectionSafety is violated' "$RUNNER_TEMP/negative-vote.txt"; then
+            echo "::error::Non-durable vote mutation was not detected; TLC exit code $result"
+            exit 1
+          fi
+
       - name: Verify protocol milestone reachability
         shell: bash
         working-directory: formal/raft
