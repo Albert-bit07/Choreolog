@@ -6,7 +6,9 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <map>
 #include <set>
+#include <sstream>
 #include <utility>
 
 #include "choreoos/protocol/codec.hpp"
@@ -81,6 +83,8 @@ struct NodeServer::Impl {
   void schedule_reconnect();
   void complete_waiters();
   void on_client(const std::shared_ptr<Session>& session, const choreoos::protocol::Frame& frame);
+  void on_management(const std::shared_ptr<Session>& session,
+                     const choreoos::protocol::Frame& frame);
   void dispatch(const std::shared_ptr<Session>& session, const choreoos::protocol::Frame& frame);
   [[nodiscard]] bool is_configured_peer(const std::string& id) const {
     return std::any_of(config.peers.begin(), config.peers.end(),
@@ -98,6 +102,9 @@ struct NodeServer::Impl {
   TransportMetrics transport_metrics;
   std::vector<std::shared_ptr<Session>> sessions;
   std::set<std::string> dialing;  // peers with a connect attempt in flight
+  std::set<std::string> blocked_peers;
+  std::map<std::string, std::uint32_t> delayed_peers;
+  bool paused = false;
 
   struct Pending {
     std::string command_id;
@@ -215,18 +222,41 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
 };
 
 void NodeServer::Impl::send_to(const std::string& peer, const choreoos::protocol::Frame& frame) {
+  if (paused || blocked_peers.count(peer) != 0) {
+    ++transport_metrics.dropped;
+    return;
+  }
   auto encoded = choreoos::protocol::encode_frame(frame);
   if (!encoded) {
     ++transport_metrics.dropped;
     return;
   }
-  for (const auto& session : sessions) {
-    if (session->peer_id == peer) {
-      session->send(encoded.value());
+  auto send_encoded = [this, peer, bytes = encoded.value()] {
+    if (paused || blocked_peers.count(peer) != 0) {
+      ++transport_metrics.dropped;
       return;
     }
+    for (const auto& session : sessions) {
+      if (session->peer_id == peer) {
+        session->send(bytes);
+        return;
+      }
+    }
+    ++transport_metrics.dropped;
+  };
+  const auto delay = delayed_peers.find(peer);
+  if (delay != delayed_peers.end() && delay->second != 0) {
+    auto timer = std::make_shared<boost::asio::steady_timer>(io);
+    timer->expires_after(std::chrono::milliseconds(delay->second));
+    timer->async_wait(boost::asio::bind_executor(
+        strand, [timer, send_encoded](const boost::system::error_code& error) {
+          if (!error) {
+            send_encoded();
+          }
+        }));
+    return;
   }
-  ++transport_metrics.dropped;
+  send_encoded();
 }
 
 void NodeServer::Impl::accept_next() {
@@ -254,7 +284,7 @@ void NodeServer::Impl::dial_missing() {
     // One attempt per peer at a time. async_connect has no timeout of its own,
     // so without this an unreachable host collected a new pending socket every
     // reconnect tick until the OS gave up on each.
-    if (connected || dialing.count(peer.id) != 0) {
+    if (connected || dialing.count(peer.id) != 0 || blocked_peers.count(peer.id) != 0) {
       continue;
     }
     dialing.insert(peer.id);
@@ -310,7 +340,9 @@ void NodeServer::Impl::schedule_heartbeat() {
         if (error) {
           return;
         }
-        replica.heartbeat();
+        if (!paused) {
+          replica.heartbeat();
+        }
         schedule_heartbeat();
       }));
 }
@@ -455,6 +487,112 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
   pending.push_back(std::move(waiter));
 }
 
+
+void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
+                                    const choreoos::protocol::Frame& frame) {
+  choreoos::protocol::ManagementReply reply;
+  auto request = choreoos::protocol::decode_management_query(frame.payload);
+  if (!request) {
+    reply.error_code = "ProtocolError";
+    reply.error_message = request.error().message();
+  } else if (request.value().operation == "events") {
+    const auto& log = replica.store().log_events();
+    const auto committed = replica.store().commit_index().value();
+    const auto after = request.value().after_index;
+    const auto first = replica.store().log_first_index();
+    const auto limit = request.value().page_size == 0 ? 64u : request.value().page_size;
+    if (first > 1 && after < first - 1) {
+      reply.error_code = "Compacted";
+      reply.error_message = "requested event range has been compacted; bootstrap from snapshot";
+    } else {
+      for (const auto& event : log) {
+        const auto index = event.index.value();
+        if (index <= after || index > committed) {
+          continue;
+        }
+        if (reply.events.size() == limit) {
+          reply.has_more = true;
+          break;
+        }
+        reply.events.push_back(choreoos::state::canonical_event(event));
+        reply.next_after_index = index;
+      }
+    }
+  } else if (request.value().operation == "metrics") {
+    const auto& consensus = replica.metrics();
+    reply.role_changes = consensus.role_changes;
+    reply.elections_started = consensus.elections_started;
+    reply.votes_granted = consensus.votes_granted;
+    reply.step_downs = consensus.step_downs;
+    reply.messages_dropped_oversize = consensus.messages_dropped_oversize;
+    reply.snapshot_chunks_sent = consensus.snapshot_chunks_sent;
+    reply.transport_frames_sent = transport_metrics.frames_sent;
+    reply.transport_frames_received = transport_metrics.frames_received;
+    reply.transport_dropped = transport_metrics.dropped;
+  } else if (request.value().operation == "recovery") {
+    const auto& report = replica.store().recovery();
+    reply.snapshot_index = report.snapshot_index;
+    const auto& snapshot = replica.store().latest_snapshot();
+    if (snapshot) {
+      reply.snapshot_index = snapshot->index.value();
+      reply.snapshot_state_hash = snapshot->state_hash;
+    }
+    std::ostringstream description;
+    description << "used_snapshot=" << report.used_snapshot
+                << " replayed_after_snapshot=" << report.replayed_after_snapshot
+                << " truncated_tail_bytes=" << report.truncated_tail_bytes
+                << " commit_index=" << replica.store().commit_index().value();
+    reply.recovery_report = description.str();
+  } else if (request.value().operation == "drop_peer" ||
+             request.value().operation == "delay_peer" ||
+             request.value().operation == "heal" ||
+             request.value().operation == "pause" ||
+             request.value().operation == "resume") {
+    boost::system::error_code endpoint_error;
+    const auto address = session->socket.remote_endpoint(endpoint_error);
+    if (!config.test_mode || endpoint_error || !address.address().is_loopback()) {
+      reply.error_code = "PermissionDenied";
+      reply.error_message = "fault injection requires test_mode and a loopback client";
+    } else if (request.value().operation == "drop_peer" ||
+               request.value().operation == "delay_peer") {
+      const auto& peer = request.value().peer_id;
+      if (!is_configured_peer(peer)) {
+        reply.error_code = "InvalidPeer";
+        reply.error_message = "fault target must be a configured peer";
+      } else if (request.value().operation == "drop_peer") {
+        blocked_peers.insert(peer);
+        for (const auto& connection : sessions) {
+          if (connection->peer_id == peer) {
+            connection->close();
+          }
+        }
+      } else {
+        delayed_peers[peer] = request.value().delay_ms;
+      }
+    } else if (request.value().operation == "heal") {
+      blocked_peers.clear();
+      delayed_peers.clear();
+      paused = false;
+    } else if (request.value().operation == "pause") {
+      paused = true;
+    } else {
+      paused = false;
+    }
+  } else {
+    reply.error_code = "UnsupportedOperation";
+    reply.error_message = "unrecognized management operation";
+  }
+  if (auto payload = choreoos::protocol::encode(reply)) {
+    choreoos::protocol::Frame result;
+    result.type = choreoos::protocol::MessageType::ManagementReply;
+    result.correlation = frame.correlation;
+    result.payload = payload.value();
+    if (auto bytes = choreoos::protocol::encode_frame(result)) {
+      session->send(bytes.value());
+    }
+  }
+}
+
 void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
                                 const choreoos::protocol::Frame& frame) {
   if (frame.type == choreoos::protocol::MessageType::Handshake) {
@@ -473,6 +611,10 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
     session->assign_peer(hello.value().node_id);
     return;
   }
+  if (frame.type == choreoos::protocol::MessageType::ManagementQuery) {
+    on_management(session, frame);
+    return;
+  }
   if (frame.type == choreoos::protocol::MessageType::ClientCommand ||
       frame.type == choreoos::protocol::MessageType::StatusQuery) {
     on_client(session, frame);
@@ -483,6 +625,10 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
   // be persisted and could depose the leader or block elections.
   if (!is_configured_peer(session->peer_id)) {
     ++transport_metrics.rejected;
+    return;
+  }
+  if (paused || blocked_peers.count(session->peer_id) != 0) {
+    ++transport_metrics.dropped;
     return;
   }
   replica.handle(frame);
