@@ -44,3 +44,11 @@ jobs:
           set -euo pipefail
           timeout 300s java -Xmx3g -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config Election.cfg -workers 2 Election.tla
+
+      - name: Model-check two-term restart and stale-message paths
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ElectionTwoTerms.cfg -workers 2 Election.tla
