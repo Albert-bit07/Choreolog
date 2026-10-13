@@ -779,7 +779,7 @@ const choreoos::state::Event* Replica::find_command(const std::string& command_i
   const auto found = command_index_.find(command_id);
   if (found != command_index_.end()) {
     if (const auto* event = find_index(found->second)) {
-      return event;
+      return event->command_id.value() == command_id ? event : nullptr;
     }
   }
   return nullptr;
