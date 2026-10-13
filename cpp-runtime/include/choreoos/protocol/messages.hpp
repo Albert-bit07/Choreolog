@@ -109,6 +109,7 @@ struct ManagementQuery {
   std::uint64_t after_index = 0;
   std::uint32_t page_size = 0;
   std::string peer_id;
+  std::uint32_t delay_ms = 0;
 };
 
 struct ManagementReply {
