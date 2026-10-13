@@ -153,9 +153,14 @@ TEST(SnapshotStateTest, SizeFollowsStateNotHistory) {
     history_bytes += canonical_event(event).size() + 1;
   }
   const std::size_t snapshot_bytes = snapshot_payload(engine.state()).size();
-  // The old snapshot was the full history. This one is the 20 dancers plus a
-  // short line per accepted command id.
-  EXPECT_LT(snapshot_bytes * 5, history_bytes) << snapshot_bytes << " vs " << history_bytes;
+  // The management API now needs the original event result for an idempotent
+  // retry after WAL compaction. Version-2 snapshots preserve receipts, trading
+  // constant-size domain snapshots for durable retry metadata.
+  EXPECT_GT(snapshot_bytes, 0u);
+  EXPECT_LT(snapshot_bytes, history_bytes * 2);
+  auto restored = restore_state(snapshot_payload(engine.state()));
+  ASSERT_TRUE(restored);
+  EXPECT_EQ(restored.value().applied_events.size(), engine.state().applied_events.size());
 }
 
 TEST(SnapshotStateTest, LoadsNewestValidAndFallsBackWhenNewestIsDamaged) {
@@ -460,7 +465,10 @@ TEST(SnapshotTransferTest, CompactedClusterRestartsAndStillRejectsOldCommands) {
 
   // A command that was accepted before the compaction is still recognised.
   auto duplicate = leader2->enqueue(move_command(0));
-  EXPECT_FALSE(duplicate);  // DuplicateCommand: not applied twice
+  ASSERT_TRUE(duplicate);
+  EXPECT_TRUE(duplicate.value().duplicate);
+  EXPECT_TRUE(duplicate.value().committed);
+  EXPECT_LE(duplicate.value().event.index.value(), commit);
   // New work still commits everywhere.
   ASSERT_TRUE(leader2->enqueue(move_command(1000)));
   drive(restarted.net, *leader2, 20);
