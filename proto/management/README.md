@@ -33,12 +33,18 @@ dotnet build dotnet-dashboard/src/ChoreoOS.Client/ChoreoOS.Client.csproj
 - `SubmitCommand` requires an operation ID equal to the canonical command ID.
   Only a leader can accept writes. Success means committed and locally applied.
   Timeouts may hide a successful commit; repeat with the identical operation ID.
-  Conflicting reuses are rejected as `DuplicateCommand`.
-- The compacted WAL may discard an original event. New version-2 snapshot
-  payloads retain canonical event receipts to return the original committed
-  result after compaction and restart. Existing version-1 snapshots can be
-  read, but **cannot recreate outcomes that their old format never stored**.
-  Retaining receipts increases snapshot size with committed history.
+  Conflicting reuses are rejected as `CommandConflict` (gRPC `ALREADY_EXISTS`).
+- The compacted WAL may discard an original event. The new snapshot-state
+  payload format v3 retains compact idempotency receipts (operation ID,
+  deterministic 64-bit command fingerprint, index and term) and reconstructs
+  the original event from a matching retry. Format-v2 canonical receipts are
+  migrated on restore; v1 snapshots are readable, but commands with no
+  recoverable receipt return `OutcomeUnavailable` (gRPC `FAILED_PRECONDITION`).
+  The fingerprint is a collision-prone 64-bit FNV-1a checksum, **not** a
+  cryptographic authentication boundary. IDs and receipts still scale with
+  committed command count, though the serialized snapshot is much smaller
+  than full event history. Restore/retry semantics depend on an unchanged
+  canonical command/event schema.
 - `GetState` and `GetNodeStatus` query the C++ node. A leader's state is
   authoritative for its locally applied log, but **is not a linearizable
   quorum-confirmed read**. A follower's state is diagnostic only.
