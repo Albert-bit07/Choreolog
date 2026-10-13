@@ -51,6 +51,10 @@ Init ==
     /\ votesCast = {}
     /\ leadersEver = {}
 
+\* TLC-only state-space bound for the two-term configuration. This is a
+\* restriction of explored message schedules, NOT a Raft safety assumption.
+MessageBudget == Cardinality(messages) <= 2
+
 TypeOK ==
     /\ currentTerm \in [Nodes -> 0..MaxTerm]
     /\ votedFor \in [Nodes -> (Nodes \cup {NoVote})]
