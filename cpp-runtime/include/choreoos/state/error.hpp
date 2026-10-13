@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
@@ -90,7 +91,12 @@ class [[nodiscard]] Result<void> {
 
   [[nodiscard]] bool has_value() const noexcept { return !error_.has_value(); }
   [[nodiscard]] explicit operator bool() const noexcept { return has_value(); }
-  [[nodiscard]] const Error& error() const { return error_.value(); }
+  [[nodiscard]] const Error& error() const {
+    if (!error_) {
+      throw std::logic_error("Result<void> does not contain an error");
+    }
+    return *error_;
+  }
 
  private:
   std::optional<Error> error_{};
