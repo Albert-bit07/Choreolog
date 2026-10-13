@@ -152,8 +152,7 @@ Result<Command> parse_command(std::string_view text) {
       if (!width || !depth || !travel || !overlap_name) {
         return Error{ErrorCode::ProtocolError, "create command is incomplete"};
       }
-      auto stage = StageBounds::from_mm(width.value(),
-                                        depth.value());
+      auto stage = StageBounds::from_mm(width.value(), depth.value());
       auto overlap = choreoos::state::parse_overlap_policy(overlap_name.value());
       if (!stage || !overlap) {
         return Error{ErrorCode::ProtocolError, "create command stage is invalid"};
@@ -171,8 +170,7 @@ Result<Command> parse_command(std::string_view text) {
         return Error{ErrorCode::ProtocolError, "dancer command is incomplete"};
       }
       auto id = DancerId::parse(dancer.value());
-      auto position = Position::from_mm(x.value(),
-                                        y.value());
+      auto position = Position::from_mm(x.value(), y.value());
       if (!id || !position) {
         return Error{ErrorCode::ProtocolError, "dancer command is invalid"};
       }
