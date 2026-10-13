@@ -170,6 +170,7 @@ class Replica {
   choreoos::state::ChoreographyState speculative_{};
   bool speculative_dirty_ = false;
   std::unordered_map<std::string, std::uint64_t> command_index_;  // command id -> log index
+  mutable std::optional<choreoos::state::Event> cached_receipt_;
   std::vector<Peer> peers_;
   IncomingSnapshot incoming_snapshot_;
   std::uint64_t ticks_ = 0;
