@@ -514,10 +514,18 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
       reply.error_code = "Compacted";
       reply.error_message = "requested event range has been compacted; bootstrap from snapshot";
     } else {
-      for (const auto& event : log) {
+      // Log records are contiguous. Seek directly to the first index after
+      // the page cursor instead of rescanning the full retained WAL per page.
+      std::size_t offset = 0;
+      if (!log.empty() && after >= log.front().index.value()) {
+        const auto distance = after - log.front().index.value() + 1;
+        offset = distance >= log.size() ? log.size() : static_cast<std::size_t>(distance);
+      }
+      for (std::size_t i = offset; i < log.size(); ++i) {
+        const auto& event = log[i];
         const auto index = event.index.value();
-        if (index <= after || index > committed) {
-          continue;
+        if (index > committed) {
+          break;
         }
         const auto canonical = choreoos::state::canonical_event(event);
         if (canonical.size() > kMaxEventPageBytes) {
