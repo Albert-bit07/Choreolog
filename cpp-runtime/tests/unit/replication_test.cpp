@@ -278,12 +278,12 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
     SCOPED_TRACE(isolated);
     const std::string suffix = std::to_string(isolated);
     SimulatedNetwork net{static_cast<std::uint64_t>(100 + isolated)};
-    auto a = Replica::open(electing("node-1", fresh(("choreoos-partition-a-" + suffix).c_str()),
-                                  {"node-2", "node-3"}, 13));
-    auto b = Replica::open(electing("node-2", fresh(("choreoos-partition-b-" + suffix).c_str()),
-                                  {"node-1", "node-3"}, 17));
-    auto c = Replica::open(electing("node-3", fresh(("choreoos-partition-c-" + suffix).c_str()),
-                                  {"node-1", "node-2"}, 19));
+    const auto dir_a = fresh(("choreoos-partition-a-" + suffix).c_str());
+    auto a = Replica::open(electing("node-1", dir_a, {"node-2", "node-3"}, 13));
+    const auto dir_b = fresh(("choreoos-partition-b-" + suffix).c_str());
+    auto b = Replica::open(electing("node-2", dir_b, {"node-1", "node-3"}, 17));
+    const auto dir_c = fresh(("choreoos-partition-c-" + suffix).c_str());
+    auto c = Replica::open(electing("node-3", dir_c, {"node-1", "node-2"}, 19));
     ASSERT_TRUE(a);
     ASSERT_TRUE(b);
     ASSERT_TRUE(c);
