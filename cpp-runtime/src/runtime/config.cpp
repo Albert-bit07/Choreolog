@@ -114,6 +114,11 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
       }
     } else if (key == "elections") {
       config.elections = value == "true" || value == "1";
+    } else if (key == "test_mode") {
+      if (value != "true" && value != "false" && value != "1" && value != "0") {
+        return Error{ErrorCode::StoreError, "test_mode must be true or false"};
+      }
+      config.test_mode = value == "true" || value == "1";
     } else if (key == "rng_seed") {
       auto seed = parse_number(key, value, 0, UINT64_MAX);
       if (!seed) {
