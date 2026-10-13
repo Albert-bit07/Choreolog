@@ -1,0 +1,46 @@
+name: Raft model checking
+
+on:
+  push:
+    paths:
+      - 'formal/raft/**'
+      - '.github/workflows/raft-model.yml'
+  pull_request:
+    paths:
+      - 'formal/raft/**'
+      - '.github/workflows/raft-model.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  election-tlc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download pinned TLC and verify SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --silent --show-error \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
+            --output "$RUNNER_TEMP/tla2tools.jar"
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" \
+            | sha256sum --check
+
+      - name: Model-check three-node elections
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 300s java -Xmx3g -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config Election.cfg -workers 2 Election.tla
