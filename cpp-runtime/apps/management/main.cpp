@@ -287,8 +287,10 @@ int main(int argc, char** argv) {
     const auto parse_port = [](std::string_view text) -> std::optional<std::uint16_t> {
       unsigned int number = 0;
       const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), number);
-      if (text.empty() || error != std::errc{} || end != text.data() + text.size() ||
-          number == 0 || number > 65535) {
+      if (text.empty() || error != std::errc{} || end != text.data() + text.size()) {
+        return std::nullopt;
+      }
+      if (number == 0 || number > 65535) {
         return std::nullopt;
       }
       return static_cast<std::uint16_t>(number);
