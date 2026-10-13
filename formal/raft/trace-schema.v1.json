@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChoreoRaft trace line v1 (one NDJSON object per step)",
+  "type": "object",
+  "required": [
+    "v",
+    "seq",
+    "node",
+    "act",
+    "post"
+  ],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "node": {
+      "type": "string"
+    },
+    "act": {
+      "enum": [
+        "Timeout",
+        "BecomeLeader",
+        "PersistCompleted",
+        "PersistFailed",
+        "Crash",
+        "PersistCommit",
+        "Apply",
+        "AdvanceCommit",
+        "ClientPropose",
+        "SendAppend",
+        "UpdateTerm",
+        "HandleRVReq",
+        "HandleRVResp",
+        "HandleAEReq",
+        "HandleAEResp",
+        "DropMsg",
+        "DuplicateMsg",
+        "Restart"
+      ]
+    },
+    "in": {
+      "type": "object",
+      "description": "Inbound message with echoed request context: type, src, term, epoch, prev, prevTerm, entries, count, hint, success"
+    },
+    "post": {
+      "type": "object",
+      "required": [
+        "term",
+        "role",
+        "commit",
+        "log",
+        "durable",
+        "alive"
+      ],
+      "description": "Projection compared against the model. Timers, batching and retransmission are excluded; one implementation step may map to zero or more model steps (stuttering).",
+      "properties": {
+        "term": {
+          "type": "integer"
+        },
+        "role": {
+          "enum": [
+            "Follower",
+            "Candidate",
+            "Leader"
+          ]
+        },
+        "votedFor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": "integer"
+        },
+        "log": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "term",
+              "val"
+            ]
+          }
+        },
+        "durable": {
+          "type": "object",
+          "required": [
+            "term",
+            "log_len",
+            "commit",
+            "applied"
+          ]
+        },
+        "alive": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
