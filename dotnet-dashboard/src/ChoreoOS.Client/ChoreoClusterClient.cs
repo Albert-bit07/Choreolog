@@ -113,9 +113,7 @@ public sealed class ChoreoClusterClient : IDisposable
                     return result;
                 }
                 catch (RpcException error) when (
-                    IsTransient(error.StatusCode) ||
-                    error.StatusCode == StatusCode.FailedPrecondition &&
-                    error.Status.Detail.Contains("not leader", StringComparison.OrdinalIgnoreCase))
+                    IsTransient(error.StatusCode) || IsLeaderRedirect(error))
                 {
                     // The leader may have stepped down or this write may
                     // already have committed. Never change request IDs.
@@ -139,6 +137,11 @@ public sealed class ChoreoClusterClient : IDisposable
 
     private static bool IsTransient(StatusCode status) =>
         status is StatusCode.Unavailable or StatusCode.DeadlineExceeded;
+
+    private static bool IsLeaderRedirect(RpcException error) =>
+        error.StatusCode == StatusCode.FailedPrecondition &&
+        error.Trailers.Any(entry => entry.Key == "choreoos-error-code" &&
+                                    entry.Value == "NotLeader");
 
     public void Dispose()
     {
