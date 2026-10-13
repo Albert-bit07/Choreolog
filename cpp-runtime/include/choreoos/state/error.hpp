@@ -90,7 +90,7 @@ class [[nodiscard]] Result<void> {
 
   [[nodiscard]] bool has_value() const noexcept { return !error_.has_value(); }
   [[nodiscard]] explicit operator bool() const noexcept { return has_value(); }
-  [[nodiscard]] const Error& error() const { return *error_; }
+  [[nodiscard]] const Error& error() const { return error_.value(); }
 
  private:
   std::optional<Error> error_{};
