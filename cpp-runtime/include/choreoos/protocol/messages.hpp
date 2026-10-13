@@ -101,4 +101,34 @@ struct StatusResponse {
   std::string canonical_state;
 };
 
+
+// Management queries reuse the existing authenticated-by-config peer TCP
+// framing. They are intentionally read-only unless explicitly test-enabled.
+struct ManagementQuery {
+  std::string operation;
+  std::uint64_t after_index = 0;
+  std::uint32_t page_size = 0;
+  std::string peer_id;
+};
+
+struct ManagementReply {
+  std::string error_code;
+  std::string error_message;
+  std::vector<std::string> events;
+  std::uint64_t next_after_index = 0;
+  bool has_more = false;
+  std::uint64_t role_changes = 0;
+  std::uint64_t elections_started = 0;
+  std::uint64_t votes_granted = 0;
+  std::uint64_t step_downs = 0;
+  std::uint64_t messages_dropped_oversize = 0;
+  std::uint64_t snapshot_chunks_sent = 0;
+  std::uint64_t transport_frames_sent = 0;
+  std::uint64_t transport_frames_received = 0;
+  std::uint64_t transport_dropped = 0;
+  std::uint64_t snapshot_index = 0;
+  std::string snapshot_state_hash;
+  std::string recovery_report;
+};
+
 }  // namespace choreoos::protocol
