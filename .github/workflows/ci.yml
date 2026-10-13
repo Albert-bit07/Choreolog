@@ -94,3 +94,49 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure
+
+
+  management-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install gRPC and protobuf toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgrpc++-dev protobuf-compiler-grpc \
+            protobuf-compiler libprotobuf-dev
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" init
+          git -C "$RUNNER_TEMP/vcpkg" remote add origin https://github.com/microsoft/vcpkg.git
+          git -C "$RUNNER_TEMP/vcpkg" fetch --depth 1 origin "$VCPKG_COMMIT"
+          git -C "$RUNNER_TEMP/vcpkg" checkout FETCH_HEAD
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure gRPC gateway
+        shell: bash
+        run: |
+          cmake -S . -B build/management -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DCHOREOOS_BUILD_MANAGEMENT_API=ON \
+            -DCHOREOOS_BUILD_TESTS=OFF \
+            -DCHOREOOS_BUILD_BENCHMARKS=OFF \
+            -DCHOREOOS_WARNINGS_AS_ERRORS=ON
+
+      - name: Build gRPC gateway
+        run: cmake --build build/management --target choreoos-management
+
+      - name: Set up .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build generated C# gRPC client
+        run: dotnet build dotnet-dashboard/src/ChoreoOS.Client/ChoreoOS.Client.csproj --configuration Release
