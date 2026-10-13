@@ -71,3 +71,32 @@ AppendEntries and current-term majority commitment in `Spec.tla`.
 Add a trace mapping that can distinguish durable writes from messages sent,
 and eventually verify that the C++ transition core refines the model.
 Do not represent a green TLC run as proof of the C++ implementation.
+
+## Bounded replication model (next V1 slice)
+
+`Replication.tla` is a **separate, intentionally simplified** log/commit
+model. Run `java -jar /path/to/tla2tools.jar -config Replication.cfg
+Replication.tla`. The configuration models three nodes, two terms, two
+possible commands and at most two entries per node. TLC checks `TypeOK`,
+`LogMatching`, `CommittedPrefix`, `CommittedHistoryOnLeader`, and
+`CommittedIndexesBounded`.
+
+The model includes log-freshness-gated quorum election, append-only leader
+writes, atomic follower prefix repair, majority commitment restricted to
+current-term entries, follower commit propagation and crash/restart with
+durable log and commit indices. The `committed` variable is a specification
+history oracle, **not** a production node or a distributed source of truth.
+
+**Important limitations:** Elections are atomic and unique, not the
+asynchronous message protocol of `Election.tla`; AppendEntries is abstracted
+as a successful prefix transfer, with no message queue or per-follower
+`nextIndex`/`matchIndex`; leadership changes cannot overlap with old-leader
+network actions. Thus checking these invariants does **not** verify the
+interaction between elections and replication, including delayed RPCs,
+misleading acknowledgments or durable write ordering. Snapshotting, log
+compaction, application, client responses, network identity and any
+correspondence to C++ are also out of scope.
+
+A green finite TLC run is only evidence for this bounded abstraction.
+The next step is a **unified asynchronous election/AppendEntries model**
+covering stale leaders and messages, followed by real implementation traces.
