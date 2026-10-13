@@ -165,6 +165,12 @@ TEST(ReplicationTest, FollowerRejectsClientAndDuplicateAppendIsIdempotent) {
   ASSERT_TRUE(again);
   EXPECT_TRUE(again.value().duplicate);
   EXPECT_EQ(leader.value().store().log_events().size(), 1u);
+  auto conflicting = create_command("c-create");
+  conflicting.tick = MusicalTick::from_count(1).value();
+  auto rejected = leader.value().enqueue(conflicting);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::DuplicateCommand);
+  EXPECT_EQ(leader.value().store().log_events().size(), 1u);
 }
 
 TEST(ReplicationTest, ConflictingUncommittedSuffixIsReplaced) {
