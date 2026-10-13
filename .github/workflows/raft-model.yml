@@ -60,3 +60,98 @@ jobs:
           set -euo pipefail
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config Replication.cfg -workers 2 Replication.tla
+
+      - name: Check core election-to-commit safety (exhaustive)
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftCore.cfg -workers 2 ChoreoRaft.tla
+
+      - name: Check crash-restart and torn-write safety (scoped)
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 180s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftRecovery.cfg -workers 2 ChoreoRaft.tla
+
+      - name: Check two-term durable elections and restart safety
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 150s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftTwoTermElection.cfg -workers 2 ChoreoRaft.tla
+
+      - name: Verify leadership changes across terms
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 60s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ReachTwoLeadersDifferentTerms.cfg -workers 2 ChoreoRaft.tla \
+            > "$RUNNER_TEMP/two-term-witness.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/two-term-witness.txt"
+          if [[ $result -ne 12 ]] || ! grep -Fq 'Invariant NoDifferentTermLeadersWitness is violated' "$RUNNER_TEMP/two-term-witness.txt"; then
+            echo "::error::Two-term leadership witness missing; TLC exit code $result"
+            exit 1
+          fi
+
+      - name: Verify non-durable vote mutation is rejected
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config NegativeNonDurableVote.cfg -workers 2 ChoreoRaft.tla \
+            > "$RUNNER_TEMP/negative-vote.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/negative-vote.txt"
+          if [[ $result -ne 12 ]] || ! grep -Fq 'Invariant ElectionSafety is violated' "$RUNNER_TEMP/negative-vote.txt"; then
+            echo "::error::Non-durable vote mutation was not detected; TLC exit code $result"
+            exit 1
+          fi
+
+      - name: Verify protocol milestone reachability
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          for name in Leader Replication Commit Application; do
+            echo "Checking witness: ${name}"
+            set +e
+            timeout 90s java -Xmx3g -jar "$RUNNER_TEMP/tla2tools.jar" \
+              -config "Reach${name}.cfg" -workers 2 ChoreoRaft.tla \
+              > "$RUNNER_TEMP/witness-${name}.txt" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/witness-${name}.txt"
+            if [[ $result -ne 12 ]] || ! grep -Fq "Invariant No${name}Witness is violated" "$RUNNER_TEMP/witness-${name}.txt"; then
+              echo "::error::Missing ${name} witness; TLC exit code $result"
+              exit 1
+            fi
+          done
+
+      - name: Verify node-offline reachability
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 45s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ReachOffline.cfg -workers 2 ChoreoRaft.tla \
+            > "$RUNNER_TEMP/reach-offline.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/reach-offline.txt"
+          if [[ $result -ne 12 ]] || ! grep -Fq 'Invariant NoOfflineWitness is violated' "$RUNNER_TEMP/reach-offline.txt"; then
+            echo "::error::No offline crash state reached; TLC exit code $result"
+            exit 1
+          fi
