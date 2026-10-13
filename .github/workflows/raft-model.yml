@@ -52,3 +52,11 @@ jobs:
           set -euo pipefail
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config ElectionTwoTerms.cfg -workers 2 Election.tla
+
+      - name: Model-check bounded Raft replication and commit safety
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config Replication.cfg -workers 2 Replication.tla
