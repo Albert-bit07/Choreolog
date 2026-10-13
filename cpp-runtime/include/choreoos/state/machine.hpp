@@ -36,6 +36,14 @@ struct CueState {
 };
 
 // Derived from the committed event log. Maps stay ordered so hashing is stable.
+// Compact, replay-stable idempotency receipt. Fingerprints are deterministic
+// 64-bit FNV-1a values, not authentication or collision-proof identity.
+struct EventReceipt {
+  std::uint64_t index = 0;
+  std::uint64_t term = 1;
+  std::uint64_t fingerprint = 0;
+};
+
 struct ChoreographyState {
   bool created = false;                                 // false until first create event
   std::optional<ChoreographyId> id;                     // empty before create
@@ -50,6 +58,7 @@ struct ChoreographyState {
   std::map<std::string, CueState> lighting_cues;        // key = cue id
   std::map<std::string, std::string> applied_events;    // event id -> canonical text
   std::map<std::string, std::string> applied_commands;  // command id -> event id
+  std::map<std::string, EventReceipt> receipts;           // compact durable retry outcomes
 };
 
 struct SubmitResult {
@@ -63,6 +72,10 @@ enum class IndexRule { Contiguous, Monotonic };
 
 // Validate a command against committed state and build one event. No I/O.
 [[nodiscard]] Result<Event> propose(const ChoreographyState& state, const Command& command);
+// Verify a committed retry and reconstruct its original event without replaying
+// it. For legacy snapshots without receipt metadata, return OutcomeUnavailable.
+[[nodiscard]] Result<Event> resolve_receipt(const ChoreographyState& state,
+                                            const Command& command);
 // Apply one committed event. On failure the input state is unchanged.
 [[nodiscard]] Result<void> apply(ChoreographyState& state, const Event& event,
                                  IndexRule index_rule = IndexRule::Contiguous);
