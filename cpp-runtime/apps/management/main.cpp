@@ -59,6 +59,12 @@ class ManagementService final : public ChoreoManagement::Service {
       if (body.value().error_code == "Unavailable") {
         return {StatusCode::UNAVAILABLE, body.value().error_message};
       }
+      if (body.value().error_code == "CommandConflict") {
+        return {StatusCode::ALREADY_EXISTS, body.value().error_message};
+      }
+      if (body.value().error_code == "OutcomeUnavailable") {
+        return {StatusCode::FAILED_PRECONDITION, body.value().error_message};
+      }
       return {StatusCode::INVALID_ARGUMENT,
               body.value().error_code + ": " + body.value().error_message};
     }
