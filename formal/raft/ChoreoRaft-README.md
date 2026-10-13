@@ -69,3 +69,42 @@ All these unfinished runs remain evidence of exploration only.
 - Do not claim refinement or machine-checked C++ verification from these
   bounded TLC results.
 
+
+## Verified CI profiles (bounded TLC, October 13, 2026)
+
+Each of the following runs used the three-node unified `ChoreoRaft.tla`
+model with **one value**, at most two messages in flight, and the safety
+invariants/action properties declared in its respective configuration.
+All listed runs **exhausted their reachable state space**, with zero states
+remaining in the TLC queue and no invariant violations:
+
+| Configuration | Terms | Distinct states | Depth | Checked behavior |
+| --- | ---: | ---: | ---: | --- |
+| `ChoreoRaftCore.cfg` | 1 | 5,090 | 35 | Durable election, replication, majority commit and apply |
+| `ChoreoRaftRecovery.cfg` | 1 | 88,966 | 38 | Core plus crash, torn-write failure and restart |
+| `ChoreoRaftTwoTermElection.cfg` | 2 | 46,897 | 31 | Competing elections, durable votes, crash/restart and dropped vote messages; **no client logs** |
+
+See [Raft model-checking workflow](../../.github/workflows/raft-model.yml).
+The expected-failure reachability configurations demonstrate leader election,
+durable replication, commit, application, a node offline and leadership changes
+across different terms. An expected witness counterexample is *not* a safety
+violation of the main configuration.
+
+**Unverified combinations:** The two-term model intentionally does not
+include committed log entries or AppendEntries. The full `Spec` with
+unrestricted message drops, duplication, retransmissions, multi-term
+replication and crash/restart is still too large for the previous CI limit.
+Therefore **leader completeness across an actual committed log and later
+leader is not yet exhaustively checked in this unified model**. The
+`NegativeNonDurableVote.cfg` mutation is intended to demonstrate vote
+persistence safety and must be confirmed separately by CI.
+
+In all these configurations, `CHECK_DEADLOCK FALSE` is appropriate because
+liveness is explicitly out of scope and a bounded election can end without a
+quorum. This option does not disable any safety invariant. The specialized
+`CoreSpec`, `RecoverySpec` and `ElectionSpec` intentionally restrict enabled
+actions; they are **not** sound state-space-preserving reductions of full
+`Spec`. Do not generalize their successful results to omitted behaviors.
+
+Persistence mapping caveats are recorded in
+[docs/raft-storage-audit.md](../../docs/raft-storage-audit.md).
