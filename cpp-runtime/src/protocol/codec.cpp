@@ -243,7 +243,7 @@ Result<Handshake> decode_handshake(std::string_view bytes) {
         return value.error();
       }
       message.node_id = value.value();
-    } else if ((field == 2 || field == 3 || field == 5) && wire == kVarint) {
+    } else if ((field == 2 || field == 3) && wire == kVarint) {
       auto value = reader.varint();
       if (!value) {
         return value.error();
