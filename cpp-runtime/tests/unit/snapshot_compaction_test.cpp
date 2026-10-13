@@ -153,14 +153,14 @@ TEST(SnapshotStateTest, SizeFollowsStateNotHistory) {
     history_bytes += canonical_event(event).size() + 1;
   }
   const std::size_t snapshot_bytes = snapshot_payload(engine.state()).size();
-  // The management API now needs the original event result for an idempotent
-  // retry after WAL compaction. Version-2 snapshots preserve receipts, trading
-  // constant-size domain snapshots for durable retry metadata.
+  // Receipts must remain materially smaller than the event history, even
+  // though one compact fingerprint is retained for each accepted command.
   EXPECT_GT(snapshot_bytes, 0u);
-  EXPECT_LT(snapshot_bytes, history_bytes * 2);
+  EXPECT_LT(snapshot_bytes * 5, history_bytes);
   auto restored = restore_state(snapshot_payload(engine.state()));
   ASSERT_TRUE(restored);
-  EXPECT_EQ(restored.value().applied_events.size(), engine.state().applied_events.size());
+  EXPECT_EQ(restored.value().receipts.size(), engine.state().receipts.size());
+  EXPECT_EQ(state_hash(restored.value()), state_hash(engine.state()));
 }
 
 TEST(SnapshotStateTest, LoadsNewestValidAndFallsBackWhenNewestIsDamaged) {
@@ -422,7 +422,7 @@ TEST(SnapshotTransferTest, ChunkedTransferSurvivesLossAndDuplication) {
   EXPECT_TRUE(converged(leader, helper));
 }
 
-TEST(SnapshotTransferTest, CompactedClusterRestartsAndStillRejectsOldCommands) {
+TEST(SnapshotTransferTest, CompactedClusterRestartReturnsSameOutcomeWithoutNewEvents) {
   Cluster cluster{6};
   Replica* leader = &cluster.open(node_config("node-1", "choreoos-xfer-l4", {"node-2", "node-3"}));
   Replica* a = &cluster.open(node_config("node-2", "choreoos-xfer-a4", {"node-1", "node-3"}));
@@ -463,12 +463,16 @@ TEST(SnapshotTransferTest, CompactedClusterRestartsAndStillRejectsOldCommands) {
   EXPECT_EQ(leader2->status().commit_index, commit);
   EXPECT_TRUE(converged(*leader2, *a2));
 
-  // A command that was accepted before the compaction is still recognised.
+  // A compacted retry returns the exact original outcome without mutation.
+  const auto before_retry = leader2->status();
   auto duplicate = leader2->enqueue(move_command(0));
   ASSERT_TRUE(duplicate);
   EXPECT_TRUE(duplicate.value().duplicate);
   EXPECT_TRUE(duplicate.value().committed);
-  EXPECT_LE(duplicate.value().event.index.value(), commit);
+  EXPECT_LT(duplicate.value().event.index.value(), leader2->store().log_first_index());
+  EXPECT_EQ(leader2->status().state_hash, before_retry.state_hash);
+  EXPECT_EQ(leader2->status().commit_index, before_retry.commit_index);
+  EXPECT_EQ(leader2->status().last_log_index, before_retry.last_log_index);
   // New work still commits everywhere.
   ASSERT_TRUE(leader2->enqueue(move_command(1000)));
   drive(restarted.net, *leader2, 20);
