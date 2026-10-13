@@ -841,12 +841,11 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
 Result<SubmitResult> Engine::submit(Command command) {
   const auto seen = state_.applied_commands.find(command.id.value());
   if (seen != state_.applied_commands.end()) {
-    for (const auto& event : events_) {
-      if (event.id.value() == seen->second) {
-        return SubmitResult{event, true};
-      }
+    auto receipt = resolve_receipt(state_, command);
+    if (!receipt) {
+      return receipt.error();
     }
-    return Error{ErrorCode::DuplicateCommand, "command was accepted but its event is missing"};
+    return SubmitResult{receipt.value(), true};
   }
 
   auto proposed = propose(state_, command);
@@ -870,6 +869,12 @@ Result<void> Engine::apply_committed(const Event& event) {
 void Engine::restore(ChoreographyState state, std::vector<Event> history) {
   state_ = std::move(state);
   events_ = std::move(history);
+  // Legacy v1 snapshots can recover receipts for history that still exists.
+  for (const auto& event : events_) {
+    if (event.type != EventType::NoOp) {
+      state_.receipts[event.command_id.value()] = receipt_from_event(event);
+    }
+  }
 }
 
 Result<ChoreographyState> Engine::replay_through(std::optional<MusicalTick> through_tick,
