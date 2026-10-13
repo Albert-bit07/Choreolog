@@ -1,10 +1,13 @@
 #include <grpcpp/grpcpp.h>
 
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "choreoos/protocol/client.hpp"
 #include "choreoos/protocol/codec.hpp"
@@ -281,16 +284,24 @@ int main(int argc, char** argv) {
     return 2;
   }
   try {
-    const auto node_port = std::stoul(argv[1]);
-    const auto management_port = std::stoul(argv[2]);
-    if (node_port == 0 || node_port > 65535 || management_port == 0 || management_port > 65535 ||
-        node_port == management_port) {
-      std::cerr << "ports must be distinct values between 1 and 65535\n";
+    const auto parse_port = [](std::string_view text) -> std::optional<std::uint16_t> {
+      unsigned int number = 0;
+      const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), number);
+      if (text.empty() || error != std::errc{} || end != text.data() + text.size() ||
+          number == 0 || number > 65535) {
+        return std::nullopt;
+      }
+      return static_cast<std::uint16_t>(number);
+    };
+    const auto node_port = parse_port(argv[1]);
+    const auto management_port = parse_port(argv[2]);
+    if (!node_port || !management_port || node_port == management_port) {
+      std::cerr << "ports must be distinct whole numbers between 1 and 65535\n";
       return 2;
     }
-    ManagementService service{static_cast<std::uint16_t>(node_port)};
+    ManagementService service{*node_port};
     grpc::ServerBuilder builder;
-    const std::string address = "127.0.0.1:" + std::to_string(management_port);
+    const std::string address = "127.0.0.1:" + std::to_string(*management_port);
     builder.AddListeningPort(address, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
     auto server = builder.BuildAndStart();
