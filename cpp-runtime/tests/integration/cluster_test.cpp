@@ -73,7 +73,7 @@ choreoos::state::Result<choreoos::protocol::StatusResponse> status_of(std::uint1
 
 TEST(ClusterTest, ReplicationFramesFromUnidentifiedConnectionsAreRejected) {
   const auto root = fresh("choreoos-tcp-gate");
-  auto node = NodeServer::open(node_config("node-2", "node-1", root / "node-2", 19141,
+  auto node = NodeServer::open(node_config("node-2", "node-1", root / "node-2", 19144,
                                            {{"node-1", "127.0.0.1", 19140}}, true, 3));
   ASSERT_TRUE(node);
   std::thread runner([&] { node.value()->run(); });
@@ -88,15 +88,15 @@ TEST(ClusterTest, ReplicationFramesFromUnidentifiedConnectionsAreRejected) {
   frame.type = choreoos::protocol::MessageType::AppendEntries;
   frame.correlation = 7;
   frame.payload = choreoos::protocol::encode(forged).value();
-  (void)choreoos::protocol::transact("127.0.0.1", 19141, frame, std::chrono::milliseconds(300));
+  (void)choreoos::protocol::transact("127.0.0.1", 19144, frame, std::chrono::milliseconds(300));
 
   // A handshake claiming an id that is not a configured peer gains nothing.
   choreoos::protocol::Frame hello;
   hello.type = choreoos::protocol::MessageType::Handshake;
   hello.payload = choreoos::protocol::encode(choreoos::protocol::Handshake{"node-9", 1, 0}).value();
-  (void)choreoos::protocol::transact("127.0.0.1", 19141, hello, std::chrono::milliseconds(200));
+  (void)choreoos::protocol::transact("127.0.0.1", 19144, hello, std::chrono::milliseconds(200));
 
-  auto status = status_of(19141);
+  auto status = status_of(19144);
   ASSERT_TRUE(status);
   EXPECT_LT(status.value().term, 1000u);
   EXPECT_GE(node.value()->metrics().rejected, 2u);
