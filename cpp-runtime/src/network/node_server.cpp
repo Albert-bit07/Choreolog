@@ -498,7 +498,13 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
                                      const choreoos::protocol::Frame& frame) {
   choreoos::protocol::ManagementReply reply;
   auto request = choreoos::protocol::decode_management_query(frame.payload);
-  if (!request) {
+  boost::system::error_code endpoint_error;
+  const auto endpoint = session->socket.remote_endpoint(endpoint_error);
+  const bool local = !endpoint_error && endpoint.address().is_loopback();
+  if (!local) {
+    reply.error_code = "PermissionDenied";
+    reply.error_message = "management requests require a loopback client";
+  } else if (!request) {
     reply.error_code = "ProtocolError";
     reply.error_message = request.error().message();
   } else if (request.value().operation == "events") {
@@ -571,9 +577,7 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
   } else if (request.value().operation == "drop_peer" ||
              request.value().operation == "delay_peer" || request.value().operation == "heal" ||
              request.value().operation == "pause" || request.value().operation == "resume") {
-    boost::system::error_code endpoint_error;
-    const auto address = session->socket.remote_endpoint(endpoint_error);
-    if (!config.test_mode || endpoint_error || !address.address().is_loopback()) {
+    if (!config.test_mode) {
       reply.error_code = "PermissionDenied";
       reply.error_message = "fault injection requires test_mode and a loopback client";
     } else if (request.value().operation == "drop_peer" ||
