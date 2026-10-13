@@ -473,8 +473,7 @@ TEST(SnapshotTransferTest, FreshFollowerCatchesUpFromACompactedLeaderInChunks) {
 
 TEST(SnapshotTransferTest, SnapshotInstalledFollowerCanLeadAndReplayCompactedReceipt) {
   Cluster installed{61};
-  auto original_config =
-      node_config("node-1", "choreoos-promotion-l", {"node-2", "node-3"});
+  auto original_config = node_config("node-1", "choreoos-promotion-l", {"node-2", "node-3"});
   original_config.max_snapshot_chunk_bytes = 200;
   Replica& original = installed.open(std::move(original_config));
   Replica& helper =
@@ -523,12 +522,12 @@ TEST(SnapshotTransferTest, SnapshotInstalledFollowerCanLeadAndReplayCompactedRec
     config.snapshot_every = 10;
     return config;
   };
-  Replica& old_leader = elected.open(
-      existing("node-1", "choreoos-promotion-l", {"node-2", "node-3"}, 11));
-  Replica& voter = elected.open(
-      existing("node-2", "choreoos-promotion-a", {"node-1", "node-3"}, 17));
-  Replica& promoted = elected.open(
-      existing("node-3", "choreoos-promotion-b", {"node-1", "node-2"}, 23));
+  Replica& old_leader =
+      elected.open(existing("node-1", "choreoos-promotion-l", {"node-2", "node-3"}, 11));
+  Replica& voter =
+      elected.open(existing("node-2", "choreoos-promotion-a", {"node-1", "node-3"}, 17));
+  Replica& promoted =
+      elected.open(existing("node-3", "choreoos-promotion-b", {"node-1", "node-2"}, 23));
   ASSERT_EQ(promoted.store().log_entry(old_event->index.value()), nullptr);
   elected.net.isolate("node-1");
   for (int step = 0; step < 100 && !promoted.is_leader(); ++step) {
