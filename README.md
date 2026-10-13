@@ -6,6 +6,8 @@ This is not an operating-system kernel or a production-grade consensus product. 
 
 See [PLAN.md](PLAN.md) for the architecture and [TASKS.md](TASKS.md) for the ordered implementation checklist.
 
+The next correctness initiative is a [scoped Raft verification program](docs/raft-verification.md), progressing from protocol conformance and bounded model checking to implementation-level proof. Formal verification of the C++ implementation has **not** been established.
+
 ## Responsibility boundaries
 
 ### C++20+ — authoritative runtime
