@@ -197,4 +197,19 @@ CandidateOwnsVote ==
     \A n \in Nodes :
         role[n] = "Candidate" => votedFor[n] = n
 
+\* Every recorded leader received durable grants from a majority.
+LeaderHasQuorum ==
+    \A l \in leadersEver :
+        Cardinality({n \in Nodes :
+            [voter |-> n, term |-> l.term, candidate |-> l.leader]
+                \in votesCast}) >= Quorum
+
+\* A granted response in flight always corresponds to a recorded vote,
+\* including if that voter subsequently crashes.
+GrantsWereRecorded ==
+    \A m \in messages :
+        (m.kind = "Response" /\ m.granted) =>
+            [voter |-> m.from, term |-> m.term, candidate |-> m.to]
+                \in votesCast
+
 =============================================================================
