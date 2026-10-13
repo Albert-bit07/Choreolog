@@ -169,7 +169,7 @@ TEST(ReplicationTest, FollowerRejectsClientAndDuplicateAppendIsIdempotent) {
   conflicting.tick = MusicalTick::from_count(1).value();
   auto rejected = leader.value().enqueue(conflicting);
   ASSERT_FALSE(rejected);
-  EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::DuplicateCommand);
+  EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::CommandConflict);
   EXPECT_EQ(leader.value().store().log_events().size(), 1u);
 }
 
@@ -495,7 +495,7 @@ TEST(ReplicationTest, CompactedCommittedCommandReturnsOriginalReceiptAfterRestar
     conflict.tick = MusicalTick::from_count(1).value();
     auto rejected = leader.value().enqueue(conflict);
     ASSERT_FALSE(rejected);
-    EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::DuplicateCommand);
+    EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::CommandConflict);
   }
   auto recovered = Replica::open(config);
   ASSERT_TRUE(recovered);
