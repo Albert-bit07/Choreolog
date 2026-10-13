@@ -273,6 +273,57 @@ TEST(ElectionTest, OneLeaderPerTermThenCommit) {
             1u);
 }
 
+TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
+  for (int isolated = 0; isolated < 3; ++isolated) {
+    SCOPED_TRACE(isolated);
+    const std::string suffix = std::to_string(isolated);
+    SimulatedNetwork net{static_cast<std::uint64_t>(100 + isolated)};
+    auto a = Replica::open(electing("node-1", fresh(("choreoos-partition-a-" + suffix).c_str()),
+                                   {"node-2", "node-3"}, 13));
+    auto b = Replica::open(electing("node-2", fresh(("choreoos-partition-b-" + suffix).c_str()),
+                                   {"node-1", "node-3"}, 17));
+    auto c = Replica::open(electing("node-3", fresh(("choreoos-partition-c-" + suffix).c_str()),
+                                   {"node-1", "node-2"}, 19));
+    ASSERT_TRUE(a);
+    ASSERT_TRUE(b);
+    ASSERT_TRUE(c);
+    Replica* nodes[] = {&a.value(), &b.value(), &c.value()};
+    net.attach(*nodes[0]);
+    net.attach(*nodes[1]);
+    net.attach(*nodes[2]);
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 80);
+    Replica* original = current_leader(*nodes[0], *nodes[1], *nodes[2]);
+    ASSERT_NE(original, nullptr);
+    ASSERT_TRUE(original->enqueue(create_command()));
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 40);
+    const auto committed_hash = state_hash(original->store().engine().state());
+    const auto isolated_commit = nodes[isolated]->store().commit_index();
+    net.isolate(nodes[isolated]->id());
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 100);
+    EXPECT_EQ(nodes[isolated]->store().commit_index(), isolated_commit);
+    Replica* majority_leader = nullptr;
+    for (int i = 0; i < 3; ++i) {
+      if (i != isolated && nodes[i]->is_leader()) {
+        majority_leader = nodes[i];
+      }
+    }
+    ASSERT_NE(majority_leader, nullptr);
+    ASSERT_TRUE(majority_leader->enqueue(add_command("partition-dancer", 1000)));
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 50);
+    EXPECT_EQ(nodes[isolated]->store().commit_index(), isolated_commit);
+    EXPECT_EQ(state_hash(nodes[isolated]->store().engine().state()), committed_hash);
+    EXPECT_GT(majority_leader->store().commit_index(), isolated_commit);
+    net.heal();
+    campaign(net, *nodes[0], *nodes[1], *nodes[2], 120);
+    const auto final_hash = state_hash(majority_leader->store().engine().state());
+    for (Replica* node : nodes) {
+      EXPECT_EQ(state_hash(node->store().engine().state()), final_hash);
+      EXPECT_EQ(node->store().commit_index(), majority_leader->store().commit_index());
+    }
+    EXPECT_EQ(leaders_now(*nodes[0], *nodes[1], *nodes[2]), 1);
+  }
+}
+
 TEST(ElectionTest, MinorityCannotCommit) {
   SimulatedNetwork net{4};
   auto a = Replica::open(electing("node-1", fresh("choreoos-min-1"), {"node-2", "node-3"}, 3));
