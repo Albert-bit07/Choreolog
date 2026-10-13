@@ -315,6 +315,10 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
     net.attach(b.value());
     net.attach(c.value());
     Replica* nodes[] = {&a.value(), &b.value(), &c.value()};
+    // Stagger elections to avoid a deterministic split-vote lockstep.
+    a.value().set_election_bounds(4, 4);
+    b.value().set_election_bounds(7, 7);
+    c.value().set_election_bounds(10, 10);
 
     campaign(net, a.value(), b.value(), c.value(), 80);
     auto* original = current_leader(a.value(), b.value(), c.value());
@@ -325,6 +329,11 @@ TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
       ASSERT_GE(node->store().commit_index().value(), 1u);
     }
 
+    // Drain already-sent commit acknowledgements before cutting the network.
+    // Otherwise a pre-partition message may advance the isolated node's index.
+    for (int i = 0; i < 4; ++i) {
+      net.advance();
+    }
     const auto minority_commit = nodes[isolated]->store().commit_index().value();
     net.partition({nodes[isolated]->id()});
     campaign(net, a.value(), b.value(), c.value(), 100);
