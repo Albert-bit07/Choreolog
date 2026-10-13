@@ -279,6 +279,66 @@ TEST(ElectionTest, OneLeaderPerTermThenCommit) {
             1u);
 }
 
+TEST(ElectionTest, RetryingCommittedCommandAfterLeaderChangeDoesNotAppend) {
+  SimulatedNetwork net{71};
+  auto a = Replica::open(electing("node-1", fresh("choreoos-retry-election-a"),
+                                 {"node-2", "node-3"}, 13));
+  auto b = Replica::open(electing("node-2", fresh("choreoos-retry-election-b"),
+                                 {"node-1", "node-3"}, 17));
+  auto c = Replica::open(electing("node-3", fresh("choreoos-retry-election-c"),
+                                 {"node-1", "node-2"}, 19));
+  ASSERT_TRUE(a);
+  ASSERT_TRUE(b);
+  ASSERT_TRUE(c);
+  net.attach(a.value());
+  net.attach(b.value());
+  net.attach(c.value());
+  campaign(net, a.value(), b.value(), c.value(), 80);
+  Replica* original = current_leader(a.value(), b.value(), c.value());
+  ASSERT_NE(original, nullptr);
+  auto created = original->enqueue(create_command());
+  ASSERT_TRUE(created);
+  const auto original_event = choreoos::state::canonical_event(created.value().event);
+  const auto original_index = created.value().event.index.value();
+  campaign(net, a.value(), b.value(), c.value(), 60);
+  for (Replica* node : {&a.value(), &b.value(), &c.value()}) {
+    ASSERT_EQ(node->store().engine().state().applied_commands.count("c-create"), 1u);
+  }
+  net.isolate(original->id());
+  campaign(net, a.value(), b.value(), c.value(), 120);
+  Replica* replacement = nullptr;
+  for (Replica* node : {&a.value(), &b.value(), &c.value()}) {
+    if (node != original && node->is_leader()) {
+      replacement = node;
+    }
+  }
+  ASSERT_NE(replacement, nullptr);
+  const auto before_hash = state_hash(replacement->store().engine().state());
+  const auto before_log = replacement->store().last_log_index();
+  const auto before_commit = replacement->store().commit_index();
+  auto retry = replacement->enqueue(create_command());
+  ASSERT_TRUE(retry);
+  EXPECT_TRUE(retry.value().duplicate);
+  EXPECT_TRUE(retry.value().committed);
+  EXPECT_EQ(retry.value().event.index.value(), original_index);
+  EXPECT_EQ(choreoos::state::canonical_event(retry.value().event), original_event);
+  EXPECT_EQ(replacement->store().last_log_index(), before_log);
+  EXPECT_EQ(replacement->store().commit_index(), before_commit);
+  EXPECT_EQ(state_hash(replacement->store().engine().state()), before_hash);
+  auto conflict = create_command();
+  conflict.tick = MusicalTick::from_count(1).value();
+  auto rejected = replacement->enqueue(conflict);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), choreoos::state::ErrorCode::CommandConflict);
+  EXPECT_EQ(replacement->store().last_log_index(), before_log);
+  net.heal();
+  campaign(net, a.value(), b.value(), c.value(), 120);
+  EXPECT_EQ(state_hash(a.value().store().engine().state()),
+            state_hash(b.value().store().engine().state()));
+  EXPECT_EQ(state_hash(a.value().store().engine().state()),
+            state_hash(c.value().store().engine().state()));
+}
+
 TEST(ElectionTest, EveryTwoVersusOnePartitionPreservesQuorumAndConverges) {
   for (int isolated = 0; isolated < 3; ++isolated) {
     SCOPED_TRACE(isolated);
