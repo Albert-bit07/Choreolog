@@ -384,6 +384,31 @@ ActiveNext ==
         \/ HandleAEReq(i, m) \/ HandleAEResp(i, m)
   \/ \E m \in DOMAIN net : DropMsg(m) \/ DuplicateMsg(m)
 
+\* Core-safety profile: a finite, fault-free execution with one outstanding
+\* AppendEntries exchange per peer and no redundant heartbeats. It deliberately
+\* retains term changes, durable writes, real vote messages, replication and
+\* commitment. It does NOT cover crashes, partitions, retransmissions or
+\* arbitrary message duplication: those remain in full Spec and separate tests.
+CoreSendAppend(i, j) ==
+  /\ i # j
+  /\ nextIndex[i][j] <= Len(mem[i].log)
+  /\ \A m \in DOMAIN net :
+       ~((m.mtype = "AEReq" /\ m.msrc = i /\ m.mdst = j)
+          \/ (m.mtype = "AEResp" /\ m.msrc = j /\ m.mdst = i))
+  /\ SendAppend(i, j)
+
+CoreNext ==
+  \/ \E i \in Servers :
+       Timeout(i) \/ BecomeLeader(i) \/ PersistCompleted(i)
+       \/ PersistCommit(i) \/ Apply(i) \/ AdvanceCommit(i)
+  \/ \E i \in Servers, v \in Values : ClientPropose(i, v)
+  \/ \E i, j \in Servers : CoreSendAppend(i, j)
+  \/ \E i \in Servers, m \in DOMAIN net :
+       UpdateTerm(i, m) \/ HandleRVReq(i, m) \/ HandleRVResp(i, m)
+       \/ HandleAEReq(i, m) \/ HandleAEResp(i, m)
+
+CoreSpec == Init /\ [][CoreNext]_vars
+
 Next ==
   \/ /\ UNCHANGED alive /\ ActiveNext
   \/ \E i \in Servers : Crash(i) \/ PersistFailed(i) \/ Restart(i)
@@ -454,6 +479,22 @@ SafetyInvariant ==
   /\ TypeOK /\ PendingSynced /\ ElectionSafety /\ LogMatching /\ CommittedUnique
   /\ LeaderCompleteness /\ CommittedNeverLost /\ CommitKnowledgeSound
   /\ StateMachineSafety /\ MatchIndexSound
+
+\* Reachability checks: use *separate* TLC configurations that invert each
+\* predicate and intentionally expect a concrete invariant counterexample.
+\* A successful reachability test means TLC FOUND the witness, not that the
+\* negated predicate holds universally.
+SomeLeader == \E i \in Servers : role[i] = Leader
+SomeReplicatedEntry ==
+  \E i, j \in Servers :
+    i # j /\ Len(disk[i].log) > 0
+    /\ disk[i].log = disk[j].log
+SomeCommittedEntry == ghostCommitted # {}
+SomeAppliedEntry == ghostApplied # {}
+NoLeaderWitness == ~SomeLeader
+NoReplicationWitness == ~SomeReplicatedEntry
+NoCommitWitness == ~SomeCommittedEntry
+NoApplicationWitness == ~SomeAppliedEntry
 
 \* ============================ ACTION PROPERTIES ============================
 \* Recovery and every other step never roll back durable progress.
