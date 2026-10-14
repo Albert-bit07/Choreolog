@@ -68,3 +68,23 @@ does not activate the new Raft behavior. A future PR must implement storage
 phase coordination, trace projection, conformance testing and staged migration
 of production `Replica`. See [verification scope](raft-verification.md) and
 [storage correspondence audit](raft-storage-audit.md).
+
+## Deterministic trace projection (first PR #10 conformance prerequisite)
+
+`cpp-runtime/include/choreoos/raft/trace.hpp` exposes `trace_action` and
+`trace_line(config, node, input, seq)`. The resulting JSON line follows the
+basic post-state fields and action vocabulary in
+[`formal/raft/trace-schema.v1.json`](../formal/raft/trace-schema.v1.json).
+An externally supplied monotonically increasing sequence and node ID make
+this side-effect-free; the production runtime does **not** yet emit it.
+`post.term`, `post.log` and `post.commit` project the *staged* state
+(`pending.target`) when a write is outstanding; `post.durable` reports
+acknowledged persistence. `post.alive` maps `!halted`.
+
+The trace serializer is covered by deterministic output, JSON escaping and
+staged-versus-acknowledged durability tests. **It is only a projection**, not
+a trace-refinement checker: it omits the full inbound request payload, network
+bag, host write boundaries and a formal stuttering-step matcher. The concrete
+`Entry.command` value also needs a reviewed mapping to the TLA+ value
+alphabet. No code-to-model conformance claim follows from producing a valid
+trace line.
