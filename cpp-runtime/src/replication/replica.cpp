@@ -55,9 +55,12 @@ choreoos::state::Result<Replica> Replica::open(ReplicaConfig config) {
   }
   Replica replica{std::move(config), std::move(store.value()), std::move(speculative.value())};
   const auto metadata = replica.store_.consensus_metadata();
-  replica.current_term_ = metadata.term;
-  if (metadata.voted_for) {
-    replica.voted_for_ = metadata.voted_for->value();
+  if (!metadata) {
+    return metadata.error();
+  }
+  replica.current_term_ = metadata.value().term;
+  if (metadata.value().voted_for) {
+    replica.voted_for_ = metadata.value().voted_for->value();
   }
   if (!replica.config_.elections) {
     replica.role_ = replica.config_.id == replica.config_.leader_id ? Role::Leader : Role::Follower;
