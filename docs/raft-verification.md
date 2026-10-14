@@ -1,8 +1,10 @@
 # Raft conformance and verification program
 
-Status: **proposed; not yet Raft-verified**. The existing runtime is explicitly
-Raft-like. This document defines acceptance criteria for changing that claim.
-It does not certify the C++ implementation.
+Status: **active; not yet Raft-verified**. The deployed runtime is still
+Raft-like. PRs #7–#9 merged bounded TLA+ election, replication and unified
+asynchronous models; PR #10 introduces a separate, experimental C++ pure
+transition core. Neither model-to-code refinement nor a machine-checked C++
+proof has been established.
 
 ## Scope and trust boundary
 
@@ -43,12 +45,13 @@ crash model form a trusted/assumed boundary unless covered separately.
 - `cpp-runtime/src/state/machine.cpp`: deterministic domain state
   transitions and state hashing; must not decide Raft commitment.
 
-**Proposed refactor:** isolate a deterministic Raft transition function from
-transport and persistence adapters, without silently changing existing
-behavior. Define input as an event (tick, message, client proposal, disk
-completion, restart) and output as a new protocol state plus side-effect
-intents. Persist required term/vote/log changes before transmitting dependent
-responses. Make this boundary observable by a trace recorder.
+**Refactor status (PR #10 draft):** a new `cpp-runtime/src/raft/transition.cpp`
+implements a pure `step(Config, Node, Input)` with persistence, messaging and
+application effect intents and corresponding GoogleTests. It is compiled
+separately from the deployed `replication::Replica` and does **not** replace
+production I/O or establish a refinement mapping. The eventual host must
+persist dependent term/vote/log changes before releasing associated effects,
+including on failure/restart.
 
 ## Raft safety properties
 
@@ -90,23 +93,28 @@ security. Each future addition extends the specification before code.
 
 ### V0 — Freeze a reliable baseline
 - [x] Three two-versus-one partitions tested; PR #3 merged after CI success.
-- [ ] Run Windows and Linux CI, sanitizer builds and repeatable fault tests
-      on the integration branch. Preserve failing seed and network schedule.
+- [x] Run Windows and Linux CI, sanitizer builds and repeatable fault tests
+      on main (earlier CI passes). Preserve failing seed and network schedule.
 - [ ] Inventory every consensus-changing field and persist-before-reply edge.
 - [ ] Record current protocol deviations as executable, regression-tested
       issues rather than modifying behavior to satisfy a weak test.
 
 ### V1 — Specify the protocol
-- [ ] Add `formal/raft/Spec.tla` and finite TLC model configurations.
-- [ ] Include terms, votes, logs, commit/applied indexes, crashed nodes,
-      network messages and restart-visible persistence in the state space.
-- [ ] Define inductive invariants and TLC checks; save counterexample traces.
-- [ ] Automate model checking in CI. Record finite bounds and run times.
-- [ ] Review scope against the extended Raft paper's safety requirements.
+- [x] Add `formal/raft/Election.tla`, `Replication.tla` and
+      `ChoreoRaft.tla` with finite TLC configurations (PRs #7–#9).
+- [x] Model terms, votes, logs, commit/applied indexes, crashed nodes,
+      messages and persistence in the unified specification.
+- [x] Run TLC in CI with recorded **bounded** profiles and explicit
+      reachability witnesses; record expected mutation counterexamples.
+- [ ] Complete an exhaustive configuration combining **multi-term committed
+      log replication**, stale messages, network loss/duplication and restarts.
+- [ ] Strengthen Figure 8, snapshot and storage-correspondence obligations;
+      establish proof obligations beyond bounded exploration.
 
 ### V2 — Make the implementation auditable
-- [ ] Introduce a pure transition core with explicit persistence and send
-      effects, preserving the existing TCP and storage adapters.
+- [x] Introduce an **experimental** pure transition core with explicit
+      persistence and send effects alongside the existing `Replica`
+      (PR #10 draft; not integrated).
 - [ ] Add protocol trace events with term, role, log indices, message cause
       and durable completion boundaries.
 - [ ] Build a model/implementation trace comparer; check that observable
@@ -141,3 +149,7 @@ References:
 - Ongaro, *Consensus: Bridging Theory and Practice*, extended Raft description.
 - TLA+ and TLC for bounded model checking; model checking a design does not
   establish verified C++ refinement.
+
+## Model-checking status (merged PR #9)
+
+The unified model completes three **separate** CI profiles: core election-to-commit (5,090 distinct states), crash/restart recovery (88,966) and two-term election without client logs (46,897). The original broader combined state space did **not** exhaust TLC under its timeout. The negative non-durable-vote mutation is caught by `ElectionSafety`. See [the detailed results](../formal/raft/ChoreoRaft-README.md) and [storage audit](raft-storage-audit.md). The PR #10 C++ core is not refinement-checked against this model.
