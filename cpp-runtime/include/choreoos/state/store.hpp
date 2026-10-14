@@ -76,7 +76,8 @@ class FileEngine {
 
   // Election term and vote. Written before a node answers a vote or steps down.
   // A higher term is kept even when the applied log term is still behind.
-  [[nodiscard]] storage::NodeMetadata consensus_metadata() const;
+  // Never substitute a default term/vote for unreadable or corrupt metadata.
+  [[nodiscard]] Result<storage::NodeMetadata> consensus_metadata() const;
   Result<void> persist_consensus(Term term, std::optional<NodeId> voted_for);
 
   // Snapshot catch-up. latest_snapshot() is the state a lagging peer installs.
