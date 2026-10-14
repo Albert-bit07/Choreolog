@@ -68,6 +68,14 @@ struct Harness {
     trace += before.pending ? std::to_string(before.pending->token) : "null";
     trace += ",\"pending_after\":";
     trace += after.pending ? std::to_string(after.pending->token) : "null";
+    trace += ",\"input_token\":";
+    if (const auto* completed = std::get_if<PersistCompleted>(&input)) {
+      trace += std::to_string(completed->token);
+    } else if (const auto* failed = std::get_if<PersistFailed>(&input)) {
+      trace += std::to_string(failed->token);
+    } else {
+      trace += "null";
+    }
     trace += ",\"effects\":{\"persist\":";
     trace += effects.persist ? std::to_string(effects.persist->token) : "null";
     trace += ",\"send\":[";
