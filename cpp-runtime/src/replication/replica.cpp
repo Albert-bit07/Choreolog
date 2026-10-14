@@ -208,8 +208,7 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
 
 void Replica::handle(const choreoos::protocol::Frame& frame) { handle(frame, {}); }
 
-void Replica::handle(const choreoos::protocol::Frame& frame,
-                     const std::string& transport_peer) {
+void Replica::handle(const choreoos::protocol::Frame& frame, const std::string& transport_peer) {
   if (halted_ || (!transport_peer.empty() && !is_configured_peer(transport_peer))) return;
   using choreoos::protocol::MessageType;
   switch (frame.type) {
@@ -614,8 +613,7 @@ void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
     }
     return;
   }
-  if (config_.elections && message.term > current_term_.value() &&
-      !step_down(message.term)) return;
+  if (config_.elections && message.term > current_term_.value() && !step_down(message.term)) return;
   if (config_.elections) {
     config_.leader_id = message.leader_id;
     if (role_ != Role::Follower) {
@@ -904,8 +902,7 @@ void Replica::become_leader() {
 }
 
 bool Replica::is_configured_peer(const std::string& id) const {
-  return std::any_of(peers_.begin(), peers_.end(),
-                     [&](const Peer& peer) { return peer.id == id; });
+  return std::any_of(peers_.begin(), peers_.end(), [&](const Peer& peer) { return peer.id == id; });
 }
 
 void Replica::halt_after_storage_failure() {

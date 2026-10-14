@@ -14,8 +14,8 @@ namespace choreoos::replication {
 namespace {
 
 std::filesystem::path safety_directory(const char* suffix) {
-  auto path = std::filesystem::temp_directory_path() /
-              (std::string("choreoos-raft-safety-") + suffix);
+  auto path =
+      std::filesystem::temp_directory_path() / (std::string("choreoos-raft-safety-") + suffix);
   std::filesystem::remove_all(path);
   return path;
 }
@@ -29,8 +29,7 @@ ReplicaConfig safety_config(const std::filesystem::path& path) {
 }
 
 template <class Message>
-choreoos::protocol::Frame wire(choreoos::protocol::MessageType type,
-                                const Message& message) {
+choreoos::protocol::Frame wire(choreoos::protocol::MessageType type, const Message& message) {
   choreoos::protocol::Frame frame;
   frame.type = type;
   frame.correlation = 7;
@@ -59,9 +58,8 @@ TEST(ConsensusHardeningTest, HigherTermWriteFailureHaltsAndPreventsAcknowledgeme
   auto replica = Replica::open(safety_config(path));
   ASSERT_TRUE(replica);
   std::size_t sends = 0;
-  replica.value().set_sender([&](const std::string&, const choreoos::protocol::Frame&) {
-    ++sends;
-  });
+  replica.value().set_sender(
+      [&](const std::string&, const choreoos::protocol::Frame&) { ++sends; });
   // Force the atomic metadata write to fail without changing the old term.
   ASSERT_TRUE(std::filesystem::create_directory(path / "meta.bin.tmp"));
   const auto request = wire(choreoos::protocol::MessageType::RequestVote,
@@ -96,7 +94,7 @@ TEST(ConsensusHardeningTest, ForgedSessionIdentityCannotChangeTermOrCastVote) {
   EXPECT_EQ(replica.value().status().role, "candidate");
   const auto term = replica.value().status().term;
   const auto fake_vote = wire(choreoos::protocol::MessageType::RequestVoteResponse,
-                               choreoos::protocol::RequestVoteResponse{term, "stranger", true});
+                              choreoos::protocol::RequestVoteResponse{term, "stranger", true});
   replica.value().handle(fake_vote);
   EXPECT_EQ(replica.value().status().term, term);
   EXPECT_EQ(replica.value().status().role, "candidate");
@@ -104,7 +102,7 @@ TEST(ConsensusHardeningTest, ForgedSessionIdentityCannotChangeTermOrCastVote) {
 
   // Known members with authenticated matching identities still work.
   const auto real_vote = wire(choreoos::protocol::MessageType::RequestVoteResponse,
-                               choreoos::protocol::RequestVoteResponse{term, "node-b", true});
+                              choreoos::protocol::RequestVoteResponse{term, "node-b", true});
   replica.value().handle(real_vote, "node-b");
   EXPECT_TRUE(replica.value().is_leader());
   std::filesystem::remove_all(path);
