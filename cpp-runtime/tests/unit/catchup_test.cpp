@@ -137,8 +137,7 @@ TEST(CatchUpTest, BacklogLargerThanOneFrameStillConverges) {
   net.attach(a.value());
   net.attach(b.value());
 
-  ASSERT_GT(leader.value().status().commit_index,
-            static_cast<std::uint64_t>(kLargeBacklogMoves));
+  ASSERT_GT(leader.value().status().commit_index, static_cast<std::uint64_t>(kLargeBacklogMoves));
   std::size_t backlog_bytes = 0;
   for (const auto& event : leader.value().store().log_events()) {
     backlog_bytes += choreoos::state::canonical_event(event).size();
