@@ -195,18 +195,17 @@ void uncommitted_repair() {
   Harness h{"log-repair"};
   h.nodes["b"].durable.term = 2;
   h.nodes["b"].durable.log = {{1, "stale-1"}, {1, "stale-2"}};
-  auto staged = h.advance("b", RecvAppend{
-      AppendEntries{2, "a", 0, 0, {{2, "replacement"}}, 0, 201}});
+  auto staged =
+      h.advance("b", RecvAppend{AppendEntries{2, "a", 0, 0, {{2, "replacement"}}, 0, 201}});
   require(staged.persist.has_value() && staged.send_now.empty(),
           "follower sent acknowledgement before durable suffix repair");
-  require(h.nodes["b"].durable.log.size() == 2,
-          "unacknowledged truncate changed durable log");
+  require(h.nodes["b"].durable.log.size() == 2, "unacknowledged truncate changed durable log");
   auto completed = h.advance("b", PersistCompleted{staged.persist->token});
   require(h.nodes["b"].durable.log.size() == 1 &&
-          h.nodes["b"].durable.log.front().command == "replacement",
+              h.nodes["b"].durable.log.front().command == "replacement",
           "conflicting uncommitted suffix was not repaired");
   require(completed.send_now.size() == 1 &&
-          std::get<AppendReply>(completed.send_now[0].message).success,
+              std::get<AppendReply>(completed.send_now[0].message).success,
           "durable repair did not produce append acknowledgement");
 }
 
