@@ -17,7 +17,7 @@ import sys
 from collections import defaultdict
 
 REQUIRED_SCENARIOS = {"election-commit", "failed-persist",
-                      "conflict-protection", "stale-ack"}
+                      "conflict-protection", "log-repair", "stale-ack"}
 
 
 class Violation(ValueError):
@@ -54,7 +54,8 @@ def check_projection(state: object, actions: set[str]) -> None:
     demand(disk["applied"] <= disk["commit"] <= disk["log_len"],
            "durable applied/commit/log ordering invalid")
     demand(state["commit"] <= len(log), "commit beyond staged log")
-    demand(disk["log_len"] <= len(log), "durable log longer than staged log")
+    # A new append may stage truncation of an uncommitted suffix. Until the
+    # WAL write completes, the old durable log can legitimately be longer.
 
 
 def validate(rows: list[dict], schema: dict) -> dict[str, int]:
@@ -118,6 +119,9 @@ def validate(rows: list[dict], schema: dict) -> dict[str, int]:
                "durable application rollback")
         demand(post["durable"]["log_len"] >= post["durable"]["commit"],
                "committed entry absent from durable log")
+        if after_token is None:
+            demand(post["durable"]["log_len"] == len(post["log"]),
+                   "settled state disagrees with durable log length")
         if pre["commit"] > 0:
             demand(post["log"][:pre["commit"]] == pre["log"][:pre["commit"]],
                    "locally committed prefix changed")
@@ -181,6 +185,10 @@ def validate(rows: list[dict], schema: dict) -> dict[str, int]:
            "write-failure path not exercised")
     demand(any(r["act"] == "Restart" and r["post"]["alive"]
                for r in scenarios["failed-persist"]), "restart absent")
+    repair = scenarios["log-repair"]
+    demand(any(r["post"]["durable"]["log_len"] == 1 and
+               r["post"]["log"][0]["val"] == "replacement" for r in repair),
+           "uncommitted suffix repair never durably completed")
     conflict = scenarios["conflict-protection"]
     demand(any(r["effects"]["send"] and
                any(m["kind"] == "AEResp" and not m["positive"]
