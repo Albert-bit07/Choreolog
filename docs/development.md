@@ -1,8 +1,8 @@
 # Development environment
 
-## Verified Windows toolchain
+## Historical Windows development toolchain
 
-The initial scaffold was configured and tested on Windows with:
+The initial scaffold was configured and tested on a Windows workstation with the versions below. These are historical local measurements, **not** claims about the current GitHub Actions runner or required tool versions:
 
 - Windows build `10.0.26200`
 - CMake `4.2.1`
@@ -19,13 +19,9 @@ The current MSVC toolchain is sufficient for the first C++20 milestone. Moving
 to a newer compiler remains desirable before advanced concurrency and
 cross-platform compatibility work.
 
-## Pending tools
+## Pending local tools and platform notes
 
-A .NET runtime is installed, but no .NET SDK is currently available. The .NET
-10 SDK installer first failed because the system drive had insufficient free
-space and a later retry was cancelled. The SDK is not needed for the initial
-C++ milestones, but must be installed before creating the Avalonia and
-Temporal Worker projects.
+The original development workstation had a .NET runtime but no .NET SDK when this note was written. Its .NET 10 SDK installation attempt failed due to insufficient disk space and a later retry was canceled. This is **historical workstation state**, not a verified statement about the current machine or CI. The generated C# management client is already in the repository; the Avalonia dashboard and Temporal Worker remain separate future work. Consult the current CI workflow for runner-provided SDKs and compilers.
 
 Docker Desktop or another supported container runtime is deferred until the
 Temporal milestone. That stack lives under `temporal/` and never stores
@@ -68,3 +64,7 @@ Run the current CLI foundation:
   UndefinedBehaviorSanitizer
 
 CI independently builds with Ninja on current Windows and Ubuntu runners.
+
+## Current Raft development (PR #10 draft)
+
+The pure transition core is in `cpp-runtime/include/choreoos/raft/transition.hpp` and `cpp-runtime/src/raft/transition.cpp`, with focused GoogleTests in `cpp-runtime/tests/unit/raft_transition_test.cpp`. It is an **experimental** library component: existing CLI, TCP nodes and gRPC gateway still use `replication::Replica`. The new core is built by the ordinary CMake targets and must pass formatting, Windows/Linux tests and sanitizer CI before review. The bounded TLA+ models and their scope limitations are in [`formal/raft/README.md`](../formal/raft/README.md).
