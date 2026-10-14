@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,15 @@ struct PeerEndpoint {
   std::string id;
   std::string host;
   std::uint16_t port = 0;
+};
+
+struct PeerTlsConfig {
+  std::string host = "127.0.0.1";
+  std::uint16_t port = 0;
+  std::filesystem::path ca_file;
+  std::filesystem::path certificate_file;
+  std::filesystem::path private_key_file;
+  std::vector<PeerEndpoint> peers;
 };
 
 struct NodeConfig {
@@ -38,7 +48,11 @@ struct NodeConfig {
   std::uint32_t heartbeat_ms = 50;
   std::uint32_t election_timeout_min = 3;
   std::uint32_t election_timeout_max = 6;
+  std::optional<PeerTlsConfig> peer_tls = std::nullopt;
 };
+
+// Called both by the file loader and NodeServer::open for programmatic configs.
+[[nodiscard]] choreoos::state::Result<void> validate_peer_tls_config(const NodeConfig& config);
 
 [[nodiscard]] choreoos::state::Result<NodeConfig> load_node_config(
     const std::filesystem::path& path);

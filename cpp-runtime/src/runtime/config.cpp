@@ -1,9 +1,13 @@
 #include "choreoos/runtime/config.hpp"
 
+#include <boost/asio/ip/address.hpp>
 #include <cctype>
 #include <charconv>
 #include <fstream>
+#include <set>
 #include <sstream>
+
+#include "choreoos/state/types.hpp"
 
 namespace choreoos::runtime {
 namespace {
@@ -112,6 +116,27 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
         }
         config.peers.push_back(peer.value());
       }
+    } else if (key.starts_with("peer_tls_")) {
+      if (!config.peer_tls) config.peer_tls.emplace();
+      auto& tls = *config.peer_tls;
+      if (key == "peer_tls_listen") {
+        auto endpoint = parse_peer("listener@" + value);
+        if (!endpoint) return endpoint.error();
+        tls.host = endpoint.value().host;
+        tls.port = endpoint.value().port;
+      } else if (key == "peer_tls_ca") {
+        tls.ca_file = value;
+      } else if (key == "peer_tls_certificate") {
+        tls.certificate_file = value;
+      } else if (key == "peer_tls_key") {
+        tls.private_key_file = value;
+      } else if (key == "peer_tls_peer") {
+        auto endpoint = parse_peer(value);
+        if (!endpoint) return endpoint.error();
+        tls.peers.push_back(endpoint.value());
+      } else {
+        return Error{ErrorCode::StoreError, "unknown peer TLS configuration key: " + key};
+      }
     } else if (key == "elections") {
       config.elections = value == "true" || value == "1";
     } else if (key == "test_mode") {
@@ -152,7 +177,41 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
   if (config.id.empty() || config.leader_id.empty() || config.data.empty()) {
     return Error{ErrorCode::StoreError, "config requires id, leader, and data"};
   }
+  if (auto valid = validate_peer_tls_config(config); !valid) return valid.error();
   return config;
+}
+
+Result<void> validate_peer_tls_config(const NodeConfig& config) {
+  if (!config.peer_tls) return {};
+  const auto& tls = *config.peer_tls;
+  auto invalid = [](const std::string& why) -> Result<void> {
+    return Error{ErrorCode::StoreError, "peer TLS: " + why};
+  };
+  if (tls.port == 0 || tls.ca_file.empty() || tls.certificate_file.empty() ||
+      tls.private_key_file.empty())
+    return invalid("listener, CA, certificate and key are required");
+  boost::system::error_code error;
+  const auto client_address = boost::asio::ip::make_address(config.host, error);
+  if (error || !client_address.is_loopback())
+    return invalid("plaintext client listener must be loopback");
+  (void)boost::asio::ip::make_address(tls.host, error);
+  if (error) return invalid("listener host must be a numeric IP address");
+  if (tls.port == config.port) return invalid("peer and client ports must differ");
+  if (!choreoos::state::NodeId::parse(config.id)) return invalid("invalid local node ID");
+  std::set<std::string> members;
+  for (const auto& peer : config.peers) {
+    if (peer.id == config.id || !choreoos::state::NodeId::parse(peer.id) ||
+        !members.insert(peer.id).second)
+      return invalid("duplicate or invalid configured peer ID");
+  }
+  std::set<std::string> secured;
+  for (const auto& peer : tls.peers) {
+    (void)boost::asio::ip::make_address(peer.host, error);
+    if (error || peer.port == 0 || !members.contains(peer.id) || !secured.insert(peer.id).second)
+      return invalid("invalid, unknown or duplicate TLS peer endpoint");
+  }
+  if (secured != members) return invalid("every configured peer needs exactly one TLS endpoint");
+  return {};
 }
 
 }  // namespace choreoos::runtime

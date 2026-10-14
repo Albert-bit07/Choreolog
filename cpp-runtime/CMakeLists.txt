@@ -2,6 +2,7 @@
 # Node, CLI, and replay binaries only link this library; they do not own rules.
 
 find_package(boost_asio CONFIG REQUIRED)
+find_package(OpenSSL 3 REQUIRED)
 
 add_library(choreoos_core STATIC)
 add_library(ChoreoOS::Core ALIAS choreoos_core)
@@ -34,9 +35,10 @@ target_sources(
     src/replication/simulator.cpp
     src/runtime/config.cpp
     src/network/node_server.cpp
+    src/network/peer_tls.cpp
 )
 
-target_link_libraries(choreoos_core PUBLIC Boost::asio)
+target_link_libraries(choreoos_core PUBLIC Boost::asio OpenSSL::SSL OpenSSL::Crypto)
 if(WIN32)
   # MSVC auto-links Winsock. MinGW does not, so keep these on every WIN32
   # link line. CI now compiles with cl, but a local MinGW build still needs them.

@@ -30,8 +30,10 @@ Windows, management API and remote CI results must be checked on the pushed head
 
 ## Still open; do not report these as solved
 
-- Cryptographic peer authentication/mTLS and certificate lifecycle. Knowing a
-  configured peer ID still allows a process to claim it at handshake time.
+- Optional [peer mTLS](peer-tls.md) now authenticates configured peer identities
+  when enabled on every member. Plaintext mode remains unauthenticated.
+  Automated issuance, live reload and immediate certificate revocation remain
+  open; the initial lifecycle uses overlapping trust and rolling restarts.
 - Snapshot installation now has a durable redo transaction spanning WAL,
   metadata and snapshot replacement; see `docs/persistence.md`. General
   multi-operation transactions and exhaustive power-loss testing remain open.
