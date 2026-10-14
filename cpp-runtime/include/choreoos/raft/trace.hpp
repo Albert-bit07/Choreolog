@@ -13,7 +13,7 @@ namespace choreoos::raft {
 [[nodiscard]] const char* trace_action(const Input& input) noexcept;
 
 // One valid v1 NDJSON line; the caller owns sequencing and durable I/O.
-[[nodiscard]] std::string trace_line(const Config& config, const Node& state,
-                                     const Input& input, std::uint64_t sequence);
+[[nodiscard]] std::string trace_line(const Config& config, const Node& state, const Input& input,
+                                     std::uint64_t sequence);
 
 }  // namespace choreoos::raft
