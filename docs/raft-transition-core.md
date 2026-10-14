@@ -1,6 +1,6 @@
 # Experimental Raft transition core (PR #10, phase A)
 
-Status: **draft, side-by-side implementation**. The authoritative consensus
+Status: **merged PR #10, side-by-side experimental implementation**. The authoritative consensus
 implementation is still `choreoos::replication::Replica`. This module is a
 separate C++20 library component and is not wired to the production node, TCP
 transport, persistence store, snapshot recovery, or gRPC gateway.
@@ -61,8 +61,8 @@ tests are `cpp-runtime/tests/unit/raft_transition_test.cpp`.
 
 ## Merge discipline
 
-CI must pass Linux and Windows builds/tests, formatting, sanitizers/static
-analysis, and existing model checks. Merge of phase A means only that an
+Linux and Windows builds/tests, formatting, sanitizers/static analysis, and
+existing model checks passed on PR #10 before merge. Merging phase A means only that an
 **experimental** component and its characterization tests are available; it
 does not activate the new Raft behavior. A future PR must implement storage
 phase coordination, trace projection, conformance testing and staged migration
