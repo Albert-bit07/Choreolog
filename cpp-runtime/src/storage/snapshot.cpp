@@ -94,26 +94,13 @@ Result<choreoos::state::ChoreographyState> verify_snapshot(const Snapshot& snaps
     return state.error();
   }
   if (choreoos::state::state_hash(state.value()) != snapshot.state_hash ||
-      state.value().last_applied != snapshot.index) {
+      state.value().last_applied != snapshot.index || state.value().term != snapshot.term) {
     return Error{ErrorCode::StoreError, "snapshot state hash does not match its contents"};
   }
   return state;
 }
 
-Result<void> save_snapshot(const std::filesystem::path& directory,
-                           const choreoos::state::ChoreographyState& state, bool sync) {
-  std::error_code ec;
-  std::filesystem::create_directories(directory / "snapshots", ec);
-  if (ec) {
-    return Error{ErrorCode::StoreError, "unable to create snapshot directory"};
-  }
-  if (sync) {
-    // The snapshots/ directory entry itself must be durable, not just the
-    // renamed file inside it.
-    if (auto synced = sync_directory(directory); !synced) {
-      return synced.error();
-    }
-  }
+Result<std::string> encode_snapshot(const choreoos::state::ChoreographyState& state) {
   const std::string payload = choreoos::state::snapshot_payload(state);
   const std::string hash = choreoos::state::state_hash(state);
   if (hash.size() != 16) {
@@ -134,7 +121,20 @@ Result<void> save_snapshot(const std::filesystem::path& directory,
     bytes.replace(48, payload.size(), payload);
   }
   write_u32(bytes, bytes.size() - 4, crc32(bytes.substr(0, bytes.size() - 4)));
-  return write_atomic(snapshot_path(directory, state.last_applied.value()), bytes, sync);
+  return bytes;
+}
+
+Result<void> save_snapshot(const std::filesystem::path& directory,
+                           const choreoos::state::ChoreographyState& state, bool sync) {
+  auto bytes = encode_snapshot(state);
+  if (!bytes) return bytes.error();
+  std::error_code ec;
+  std::filesystem::create_directories(directory / "snapshots", ec);
+  if (ec) return Error{ErrorCode::StoreError, "unable to create snapshot directory"};
+  if (sync) {
+    if (auto synced = sync_directory(directory); !synced) return synced.error();
+  }
+  return write_atomic(snapshot_path(directory, state.last_applied.value()), bytes.value(), sync);
 }
 
 Result<std::optional<Snapshot>> load_latest_snapshot(const std::filesystem::path& directory) {

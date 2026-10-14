@@ -20,6 +20,7 @@ target_sources(
     src/storage/wal.cpp
     src/storage/metadata.cpp
     src/storage/snapshot.cpp
+    src/storage/transaction.cpp
     src/protocol/frame.cpp
     src/protocol/codec.cpp
     src/protocol/command_codec.cpp

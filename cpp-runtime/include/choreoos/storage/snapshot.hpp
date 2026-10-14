@@ -31,6 +31,8 @@ struct Snapshot {
 };
 
 // Writes a format 2 snapshot named by the state's last_applied index.
+[[nodiscard]] choreoos::state::Result<std::string> encode_snapshot(
+    const choreoos::state::ChoreographyState& state);
 [[nodiscard]] choreoos::state::Result<void> save_snapshot(
     const std::filesystem::path& directory, const choreoos::state::ChoreographyState& state,
     bool sync);

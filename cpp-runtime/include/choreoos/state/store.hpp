@@ -14,6 +14,7 @@
 #include "choreoos/state/machine.hpp"
 #include "choreoos/storage/metadata.hpp"
 #include "choreoos/storage/snapshot.hpp"
+#include "choreoos/storage/transaction.hpp"
 #include "choreoos/storage/wal.hpp"
 
 namespace choreoos::state {
@@ -97,8 +98,10 @@ class FileEngine {
 
   // Returns an error when test_mode is false. The next append consumes the fault.
   Result<void> arm_storage_fault(StorageFault fault);
+  Result<void> arm_snapshot_install_fault(storage::InstallFault fault);
 
  private:
+  Result<void> require_writable_unlocked() const;
   Result<void> fail_before_flush_unlocked();
   Result<void> fail_after_flush_unlocked();
   FileEngine(std::filesystem::path directory, StoreOptions options);
@@ -116,6 +119,8 @@ class FileEngine {
   LogIndex commit_index_ = LogIndex::none();
   std::optional<storage::Snapshot> snapshot_;
   StorageFault fault_ = StorageFault::None;
+  storage::InstallFault install_fault_ = storage::InstallFault::None;
+  bool recovery_required_ = false;
 };
 
 [[nodiscard]] std::filesystem::path event_log_path(const std::filesystem::path& directory);

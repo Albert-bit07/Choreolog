@@ -38,7 +38,7 @@ If the file ends before a record's declared bytes are present, that tail is inco
 
 ## Metadata (`meta.bin`)
 
-Written to `meta.bin.tmp`, flushed, then atomically replaced over `meta.bin`. On POSIX the parent directory is fsynced after the rename, so a term or vote change survives power loss. A commit-index-only update skips that directory sync: any earlier durable copy still carries the latest term and vote.
+Written to `meta.bin.tmp`, flushed, then atomically replaced over `meta.bin`. In sync mode the parent directory is fsynced after the rename, including commit-index updates. Application state and retry receipts are published only after successful metadata persistence. Submission and recovery preserve a higher persisted election term and vote.
 
 | Offset | Size | Field |
 | --- | --- | --- |
@@ -85,5 +85,59 @@ If the log starts after index 1 and no valid snapshot covers the gap, `open()` f
 Each multi-file change is ordered so every intermediate on-disk state is one `open()` can reconcile:
 
 - **Rewriting the log** builds the replacement in memory and swaps it in with an atomic replace. The old file is never removed first.
-- **Installing a snapshot** saves the snapshot file, then the metadata commit index, then rewrites the log, then swaps the in-memory state. A snapshot newer than the metadata commit index is ignored on restart; once the metadata covers it, recovery restores from it and skips log records at or below it.
+- **Installing a snapshot** commits a complete redo journal first; recovery completes the snapshot, metadata and WAL replacement before opening any of them. Legacy intermediate states without a journal retain the previous metadata-based recovery rules. See the transaction contract below.
 - **Truncating a conflicting log suffix** fsyncs the shortened file so the removed records cannot reappear.
+
+## Recovery-atomic snapshot installation
+
+`snapshot-install.txn` is the commit decision for one snapshot install. It holds
+the exact encoded replacement snapshot, metadata and WAL, including an anchor
+and uncommitted suffix only when the local anchor term matches the snapshot.
+Existing on-disk file formats and golden fixtures remain unchanged.
+Do not downgrade a node with a pending journal: complete recovery with the
+journal-aware binary first, since older binaries do not recognize the decision.
+
+The installer validates the snapshot index, term and state hash and encodes all
+three images before touching the authoritative files. It atomically writes and
+syncs the journal, then replaces/syncs the snapshot, metadata and WAL. Finally it
+removes the journal and syncs the node directory. Snapshot installation always
+uses sync writes, even for a buffered store. Directory ancestry is synced before
+committing a new journal so newly created node directories are retained too.
+
+Recovery resolves a journal **before** scanning the WAL or selecting snapshots:
+
+- Without a journal, no transaction decision exists. A leftover `.txn.tmp` is
+  ignored and the prior store is opened normally.
+- With a valid journal, recovery replays every replacement and retires the
+  journal. Replay is idempotent; an interrupted recovery can retry it again.
+- A corrupt, truncated, oversized or unsupported journal blocks opening the
+  store. It is never silently deleted or treated as an aborted transaction.
+- After an uncertain installation error, the live FileEngine rejects further
+  mutations until reopen; the production Replica also halts as in PR #14.
+
+The journal is CRC-32 protected and bounded to 128 MiB including all images:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | Magic `CHOSTXN1` |
+| 8 | 4 | Format version `1` |
+| 12 | 8 | Snapshot index, positive |
+| 20 | 4 | Snapshot image length |
+| 24 | 4 | Metadata image length |
+| 28 | 4 | WAL image length |
+| 32 | variable | Snapshot, metadata and WAL image bytes, in that order |
+| end | 4 | CRC-32 of all preceding journal bytes |
+
+This provides atomicity **at FileEngine recovery**, not simultaneous visibility
+to arbitrary readers of the three raw files. The node directory remains a
+single-writer store; concurrent processes sharing it are unsupported. Guarantees
+depend on the existing platform atomic-replace and sync primitives and supported
+filesystem behavior. CRC-32 detects accidental corruption, not malicious writes.
+Fault tests simulate interruption after each durable boundary, interrupted redo,
+unavailable old WAL data, malformed journals and retained uncommitted suffixes;
+they are not exhaustive hardware power-loss testing.
+
+This is the snapshot-install transaction milestone. Ordinary append, term/vote
+and commit operations still have their existing separate persistence boundaries;
+there is no general multi-operation transaction API. mTLS and production
+model-to-code refinement remain separate work.

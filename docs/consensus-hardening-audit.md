@@ -32,9 +32,9 @@ Windows, management API and remote CI results must be checked on the pushed head
 
 - Cryptographic peer authentication/mTLS and certificate lifecycle. Knowing a
   configured peer ID still allows a process to claim it at handshake time.
-- A single atomic storage transaction spanning WAL, metadata and snapshots.
-  Current protection is ordered persistence, fail-stop and disk recovery, with
-  selected failure regressions rather than exhaustive power-loss injection.
+- Snapshot installation now has a durable redo transaction spanning WAL,
+  metadata and snapshot replacement; see `docs/persistence.md`. General
+  multi-operation transactions and exhaustive power-loss testing remain open.
 - Machine-checked refinement from TLA+ to the deployed production Replica.
   Bounded model results and the experimental trace checker have separate scope.
 - Production migration to the experimental transition core and snapshot-offset
