@@ -117,8 +117,12 @@ security. Each future addition extends the specification before code.
       (PR #10 merged; not integrated).
 - [ ] Add protocol trace events with term, role, log indices, message cause
       and durable completion boundaries.
-- [ ] Build a model/implementation trace comparer; check that observable
-      transitions are allowed by the specification.
+- [x] Add a **bounded C++ trace-contract checker and seeded negative cases**
+      (PR #11 draft), separate from the production `Replica`.
+- [ ] Build a *TLC behavior-to-C++* trace refinement checker with explicitly
+      justified projection and stuttering. The current independent contract
+      tests are not a machine-checked refinement proof. See
+      [PR #11 verification boundary](raft-conformance.md).
 - [ ] Extend fault tests across elections, conflict repair, snapshots and
       restart. Verify specific command IDs and values, not only commit counts.
 
