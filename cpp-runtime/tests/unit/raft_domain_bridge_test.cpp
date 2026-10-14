@@ -136,6 +136,54 @@ TEST(RaftDomainBridgeTest, NonCanonicalOrInconsistentEntryIsRejected) {
   std::filesystem::remove_all(path);
 }
 
+TEST(RaftDomainBridgeTest, RejectsDecreasingTermsIncludingUncommittedSuffix) {
+  const auto path = fresh("choreoos-raft-domain-term-order");
+  auto store = state::FileEngine::open(path);
+  ASSERT_TRUE(store);
+  ASSERT_TRUE(store.value().submit(create_show()));
+  ASSERT_TRUE(store.value().submit(add_dancer()));
+
+  auto first = store.value().log_events()[0];
+  auto second = store.value().log_events()[1];
+  first.term = state::Term::parse(2).value();
+  second.term = state::Term::parse(1).value();
+  auto first_entry = encode_domain_event(first);
+  auto second_entry = encode_domain_event(second);
+  ASSERT_TRUE(first_entry);
+  ASSERT_TRUE(second_entry);
+  Durable durable;
+  durable.term = 2;
+  durable.log = {first_entry.value(), second_entry.value()};
+
+  state::StoreOptions options;
+  options.commit_on_append = false;
+  options.snapshot_every = 0;
+  auto follower = state::FileEngine::open(path / "follower", options);
+  ASSERT_TRUE(follower);
+  ASSERT_TRUE(follower.value().persist_consensus(first.term, std::nullopt));
+  ASSERT_TRUE(follower.value().append_event(first));
+  ASSERT_TRUE(follower.value().append_event(second));
+  EXPECT_FALSE(audit_domain_store(follower.value()));
+
+  for (const auto commit : {0u, 1u, 2u}) {
+    durable.commit = commit;
+    EXPECT_FALSE(replay_domain_committed(durable)) << "commit=" << commit;
+  }
+
+  // Equal terms and increasing terms are both valid Raft histories.
+  second.term = state::Term::parse(2).value();
+  second_entry = encode_domain_event(second);
+  ASSERT_TRUE(second_entry);
+  durable.log[1] = second_entry.value();
+  EXPECT_TRUE(replay_domain_committed(durable));
+  first.term = state::Term::parse(1).value();
+  first_entry = encode_domain_event(first);
+  ASSERT_TRUE(first_entry);
+  durable.log[0] = first_entry.value();
+  EXPECT_TRUE(replay_domain_committed(durable));
+  std::filesystem::remove_all(path);
+}
+
 TEST(RaftDomainBridgeTest, MetadataCorruptionNeverFallsBackToDefaultVote) {
   const auto path = fresh("choreoos-raft-domain-meta");
   auto store = state::FileEngine::open(path);

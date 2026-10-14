@@ -50,11 +50,13 @@ state::Result<state::ChoreographyState> replay_domain_committed(const Durable& d
   }
   std::vector<state::Event> committed;
   committed.reserve(static_cast<std::size_t>(durable.commit));
+  std::uint64_t previous_term = 0;
   for (std::uint64_t index = 1; index <= durable.log.size(); ++index) {
     const auto& entry = durable.log[static_cast<std::size_t>(index - 1)];
-    if (entry.term > durable.term) {
-      return bridge_error("Raft domain entry term exceeds the current term");
+    if (entry.term < previous_term || entry.term > durable.term) {
+      return bridge_error("Raft domain entry terms decrease or exceed the current term");
     }
+    previous_term = entry.term;
     auto decoded = decode_domain_entry(entry, index);
     if (!decoded) return decoded.error();
     if (index <= durable.commit) committed.push_back(std::move(decoded.value()));
