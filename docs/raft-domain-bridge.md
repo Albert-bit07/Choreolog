@@ -30,8 +30,9 @@ metadata read would invalidate Raft vote durability.
 
 For a **complete, uncompacted** log beginning at index 1:
 
-1. Verify every WAL index is contiguous, each event term is no newer than
-   the recovered metadata term and all typed entries round-trip canonically.
+1. Verify every WAL index is contiguous, event terms never decrease and are
+   no newer than the recovered metadata term, and all typed entries round-trip
+   canonically. This includes the uncommitted suffix.
 2. Check the metadata commit index equals the engine commit index and the
    recovered choreography `last_applied` index.
 3. Reconstruct the deterministic applied choreography state by replaying only
