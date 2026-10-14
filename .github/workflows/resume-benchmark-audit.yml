@@ -1,0 +1,56 @@
+name: Resume performance audit
+on:
+  push:
+    branches:
+      - audit/resume-bench-20261014
+    paths:
+      - '.github/workflows/resume-benchmark-audit.yml'
+      - 'cpp-runtime/**'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bootstrap pinned vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" remote add origin https://github.com/microsoft/vcpkg.git
+          git -C "$RUNNER_TEMP/vcpkg" fetch --depth 1 origin 6e856794aebd1ee877acb74c9264d9552903c6fe
+          git -C "$RUNNER_TEMP/vcpkg" checkout FETCH_HEAD
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+      - name: Configure benchmark and test suite
+        shell: bash
+        run: |
+          cmake -S . -B build/resume-bench -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DCHOREOOS_BUILD_BENCHMARKS=ON -DCHOREOOS_BUILD_TESTS=ON \
+            -DCHOREOOS_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build/resume-bench --parallel 2
+      - name: Run CTest
+        run: ctest --test-dir build/resume-bench --output-on-failure --timeout 240
+      - name: Run scoped cluster benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "SOURCE=$(git rev-parse HEAD)"
+          lscpu | grep -E 'Model name|CPU\(s\)' | head -3
+          build/resume-bench/cpp-runtime/benchmarks/choreoos-bench-cluster \
+            '--benchmark_filter=BM_(ThreeNodeThroughput|CommandToCommitLatency)' \
+            '--benchmark_min_time=0.2s' \
+            '--benchmark_repetitions=2' \
+            '--benchmark_format=json' | tee "$RUNNER_TEMP/choreoos-cluster-benchmark.json"
+          cp "$RUNNER_TEMP/choreoos-cluster-benchmark.json" ./resume-benchmark.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resume-benchmark-results
+          path: resume-benchmark.json
