@@ -552,12 +552,8 @@ Result<void> FileEngine::compact_unlocked(std::uint64_t anchor) {
   return wal_->rewrite(kept);
 }
 
-storage::NodeMetadata FileEngine::consensus_metadata() const {
-  auto loaded = storage::load_metadata(directory_ / "meta.bin");
-  if (!loaded) {
-    return storage::NodeMetadata{};
-  }
-  return loaded.value();
+Result<storage::NodeMetadata> FileEngine::consensus_metadata() const {
+  return storage::load_metadata(directory_ / "meta.bin");
 }
 
 Result<void> FileEngine::persist_consensus(Term term, std::optional<NodeId> voted_for) {
