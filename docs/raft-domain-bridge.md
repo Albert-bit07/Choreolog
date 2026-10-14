@@ -76,8 +76,8 @@ term/index mismatch and refusal to guess missing snapshot prefixes. Linux,
 Windows, sanitizer/static analysis, formatting and management API jobs must
 pass on the exact pull request head before merge.
 
-**Next implementation:** add a recovery-safe **writable** `FileEngine`
-adapter with term/vote/WAL/commit sequencing, fail-stop across mid-transition
-write errors, snapshot offset mapping and atomic applied-state/receipt
-correspondence; only then consider an incremental production `Replica`
-migration.
+An experimental [writable FileEngine adapter](raft-file-engine-adapter.md) now
+executes prevalidated plans with term/vote/WAL/commit sequencing, snapshot
+offsets and fail-stop/reopen handling. It remains separate from the pure core
+and production Replica. Snapshot maintenance, the core's commit/apply mapping,
+host effect discipline and formal correspondence remain migration gates.

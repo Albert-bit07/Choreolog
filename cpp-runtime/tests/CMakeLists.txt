@@ -14,6 +14,7 @@ add_executable(
   unit/raft_transition_test.cpp
   unit/raft_domain_bridge_test.cpp
   unit/raft_recovery_projection_test.cpp
+  unit/file_engine_adapter_test.cpp
   unit/raft_durable_test.cpp
   unit/raft_trace_test.cpp
   unit/catchup_test.cpp
