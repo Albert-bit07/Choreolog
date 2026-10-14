@@ -65,9 +65,11 @@ def validate(rows: list[dict], schema: dict) -> dict[str, int]:
     for index, row in enumerate(rows):
         demand(isinstance(row, dict), "trace row not object")
         demand(row.get("v") == 1 and type(row.get("v")) is int, "unsupported version")
-        demand(row.get("seq") == index, "sequence must be gap-free and ordered")
+        demand(uint(row.get("seq")), "sequence must be nonnegative")
         scenario, actor, action = row.get("scenario"), row.get("node"), row.get("act")
         demand(scenario in REQUIRED_SCENARIOS, "unknown scenario")
+        demand(row["seq"] == len(scenarios[scenario]),
+               f"{scenario}: sequence must be gap-free and ordered within each scenario")
         demand(actor in ("a", "b", "c"), "unknown node")
         demand(action in actions, f"action not declared in TLA+ schema: {action}")
         pre, post = row.get("pre"), row.get("post")
