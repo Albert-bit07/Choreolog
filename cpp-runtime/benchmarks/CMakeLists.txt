@@ -20,3 +20,6 @@ choreoos_add_benchmark(choreoos-bench-replay bench_replay.cpp)
 choreoos_add_benchmark(choreoos-bench-snapshot bench_snapshot.cpp)
 choreoos_add_benchmark(choreoos-bench-cluster bench_cluster.cpp)
 choreoos_add_benchmark(choreoos-bench-recovery bench_recovery.cpp)
+
+# Audit-only benchmark of real TCP committed response latency.
+choreoos_add_benchmark(choreoos-bench-real-tcp bench_real_tcp.cpp)
