@@ -2,7 +2,7 @@
 
 Status: **active; not yet Raft-verified**. The deployed runtime is still
 Raft-like. PRs #7–#9 merged bounded TLA+ election, replication and unified
-asynchronous models; PR #10 introduces a separate, experimental C++ pure
+asynchronous models; merged PR #10 introduces a separate, experimental C++ pure
 transition core. Neither model-to-code refinement nor a machine-checked C++
 proof has been established.
 
@@ -45,7 +45,7 @@ crash model form a trusted/assumed boundary unless covered separately.
 - `cpp-runtime/src/state/machine.cpp`: deterministic domain state
   transitions and state hashing; must not decide Raft commitment.
 
-**Refactor status (PR #10 draft):** a new `cpp-runtime/src/raft/transition.cpp`
+**Refactor status (merged PR #10):** a new `cpp-runtime/src/raft/transition.cpp`
 implements a pure `step(Config, Node, Input)` with persistence, messaging and
 application effect intents and corresponding GoogleTests. It is compiled
 separately from the deployed `replication::Replica` and does **not** replace
@@ -114,7 +114,7 @@ security. Each future addition extends the specification before code.
 ### V2 — Make the implementation auditable
 - [x] Introduce an **experimental** pure transition core with explicit
       persistence and send effects alongside the existing `Replica`
-      (PR #10 draft; not integrated).
+      (PR #10 merged; not integrated).
 - [ ] Add protocol trace events with term, role, log indices, message cause
       and durable completion boundaries.
 - [ ] Build a model/implementation trace comparer; check that observable
