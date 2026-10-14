@@ -95,6 +95,10 @@ class Replica {
   // `committed` is true only when a majority has the entry and this node applied it.
   choreoos::state::Result<EnqueueResult> enqueue(const choreoos::state::Command& command);
   void handle(const choreoos::protocol::Frame& frame);
+  // Authenticated transport identity must agree with the message's claimed
+  // origin. The old overload remains available for deterministic simulation.
+  void handle(const choreoos::protocol::Frame& frame, const std::string& transport_peer);
+  [[nodiscard]] bool halted() const noexcept { return halted_; }
   // One logical tick. Leaders replicate. Followers and candidates may campaign.
   void tick();
   void heartbeat();
@@ -153,6 +157,8 @@ class Replica {
   void start_election();
   void become_leader();
   bool step_down(std::uint64_t term);
+  void halt_after_storage_failure();
+  [[nodiscard]] bool is_configured_peer(const std::string& id) const;
   [[nodiscard]] choreoos::state::Result<void> persist_vote();
   [[nodiscard]] bool log_is_up_to_date(std::uint64_t last_term, std::uint64_t last_index) const;
   [[nodiscard]] int draw_timeout();
@@ -177,6 +183,7 @@ class Replica {
   std::function<void()> commit_hook_;
   std::uint64_t next_correlation_ = 1;
   Role role_ = Role::Follower;
+  bool halted_ = false;  // Requires filesystem recovery and a fresh Replica::open.
   choreoos::state::Term current_term_ = choreoos::state::Term::initial();
   std::optional<std::string> voted_for_;
   std::vector<std::string> votes_from_;
