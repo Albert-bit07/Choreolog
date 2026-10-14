@@ -95,6 +95,10 @@ class Replica {
   // `committed` is true only when a majority has the entry and this node applied it.
   choreoos::state::Result<EnqueueResult> enqueue(const choreoos::state::Command& command);
   void handle(const choreoos::protocol::Frame& frame);
+  // Established transport identity must agree with the message's claimed
+  // origin. The old overload remains available for deterministic simulation.
+  void handle(const choreoos::protocol::Frame& frame, const std::string& transport_peer);
+  [[nodiscard]] bool halted() const noexcept { return halted_; }
   // One logical tick. Leaders replicate. Followers and candidates may campaign.
   void tick();
   void heartbeat();
@@ -112,6 +116,13 @@ class Replica {
   Replica(ReplicaConfig config, choreoos::state::FileEngine store,
           choreoos::state::ChoreographyState speculative);
 
+  struct Probe {
+    choreoos::protocol::Frame frame;
+    std::uint64_t term = 0;
+    std::uint64_t index = 0;   // Last append index or installed snapshot index.
+    std::uint64_t offset = 0;  // End of the snapshot chunk being acknowledged.
+  };
+
   struct Peer {
     std::string id;
     std::uint64_t next_index = 1;
@@ -119,6 +130,7 @@ class Replica {
     std::uint64_t snapshot_index = 0;   // snapshot currently being sent
     std::uint64_t snapshot_offset = 0;  // next payload byte the peer needs
     std::uint64_t snapshot_sent_tick = UINT64_MAX;
+    std::optional<Probe> probe = std::nullopt;
   };
 
   // A snapshot being assembled from chunks. Nothing is applied until the final
@@ -137,11 +149,13 @@ class Replica {
   void send_snapshot_chunk(Peer& peer, const choreoos::storage::Snapshot& snapshot, bool force);
   void replicate_all();
   void on_append(const choreoos::protocol::AppendEntries& message, std::uint64_t correlation);
-  void on_append_response(const choreoos::protocol::AppendEntriesResponse& message);
+  void on_append_response(const choreoos::protocol::AppendEntriesResponse& message,
+                          std::uint64_t correlation);
   void on_vote(const choreoos::protocol::RequestVote& message, std::uint64_t correlation);
   void on_vote_response(const choreoos::protocol::RequestVoteResponse& message);
   void on_install(const choreoos::protocol::InstallSnapshot& message, std::uint64_t correlation);
-  void on_install_response(const choreoos::protocol::InstallSnapshotResponse& message);
+  void on_install_response(const choreoos::protocol::InstallSnapshotResponse& message,
+                           std::uint64_t correlation);
   void advance_commit();
   void rebuild_speculative();
   void reply_install(const std::string& leader, std::uint64_t correlation, bool success,
@@ -153,6 +167,8 @@ class Replica {
   void start_election();
   void become_leader();
   bool step_down(std::uint64_t term);
+  void halt_after_storage_failure();
+  [[nodiscard]] bool is_configured_peer(const std::string& id) const;
   [[nodiscard]] choreoos::state::Result<void> persist_vote();
   [[nodiscard]] bool log_is_up_to_date(std::uint64_t last_term, std::uint64_t last_index) const;
   [[nodiscard]] int draw_timeout();
@@ -177,6 +193,7 @@ class Replica {
   std::function<void()> commit_hook_;
   std::uint64_t next_correlation_ = 1;
   Role role_ = Role::Follower;
+  bool halted_ = false;  // Requires filesystem recovery and a fresh Replica::open.
   choreoos::state::Term current_term_ = choreoos::state::Term::initial();
   std::optional<std::string> voted_for_;
   std::vector<std::string> votes_from_;

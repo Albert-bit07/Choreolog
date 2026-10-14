@@ -20,18 +20,18 @@ decode; noncanonical or ambiguous encodings are rejected rather than being
 silently normalized. It explicitly handles all event types through the
 existing canonical event parser (including `NoOp`).
 
-`audit_domain_store()` reads metadata directly with
-`storage::load_metadata` because the legacy
-`FileEngine::consensus_metadata()` accessor returns default metadata on a
-disk-read failure. Silently using an initial term/vote after a corrupt
-metadata read would invalidate Raft vote durability.
+`audit_domain_store()` propagates the checked
+`FileEngine::consensus_metadata()` result. Neither the projection nor the
+production replica substitutes an initial term/vote after a metadata read
+failure; that would invalidate Raft vote durability.
 
 ## Replay and applied-state correspondence
 
 For a **complete, uncompacted** log beginning at index 1:
 
-1. Verify every WAL index is contiguous, each event term is no newer than
-   the recovered metadata term and all typed entries round-trip canonically.
+1. Verify every WAL index is contiguous, event terms never decrease and are
+   no newer than the recovered metadata term, and all typed entries round-trip
+   canonically. This includes the uncommitted suffix.
 2. Check the metadata commit index equals the engine commit index and the
    recovered choreography `last_applied` index.
 3. Reconstruct the deterministic applied choreography state by replaying only

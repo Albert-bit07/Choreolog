@@ -10,6 +10,7 @@ add_executable(
   unit/durability_test.cpp
   unit/protocol_test.cpp
   unit/replication_test.cpp
+  unit/consensus_hardening_test.cpp
   unit/raft_transition_test.cpp
   unit/raft_domain_bridge_test.cpp
   unit/raft_durable_test.cpp

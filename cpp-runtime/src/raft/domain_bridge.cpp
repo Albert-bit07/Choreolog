@@ -5,8 +5,6 @@
 #include <utility>
 #include <vector>
 
-#include "choreoos/storage/metadata.hpp"
-
 namespace choreoos::raft {
 namespace {
 
@@ -50,11 +48,13 @@ state::Result<state::ChoreographyState> replay_domain_committed(const Durable& d
   }
   std::vector<state::Event> committed;
   committed.reserve(static_cast<std::size_t>(durable.commit));
+  std::uint64_t previous_term = 0;
   for (std::uint64_t index = 1; index <= durable.log.size(); ++index) {
     const auto& entry = durable.log[static_cast<std::size_t>(index - 1)];
-    if (entry.term > durable.term) {
-      return bridge_error("Raft domain entry term exceeds the current term");
+    if (entry.term < previous_term || entry.term > durable.term) {
+      return bridge_error("Raft domain entry terms decrease or exceed the current term");
     }
+    previous_term = entry.term;
     auto decoded = decode_domain_entry(entry, index);
     if (!decoded) return decoded.error();
     if (index <= durable.commit) committed.push_back(std::move(decoded.value()));
@@ -63,9 +63,8 @@ state::Result<state::ChoreographyState> replay_domain_committed(const Durable& d
 }
 
 state::Result<DomainProjection> audit_domain_store(const state::FileEngine& store) {
-  // Do not use FileEngine::consensus_metadata() here: its legacy API returns
-  // default metadata on a read error, which would mask a corrupted vote/term.
-  auto metadata = storage::load_metadata(store.directory() / "meta.bin");
+  // Propagate read failures; never substitute an initial term or empty vote.
+  auto metadata = store.consensus_metadata();
   if (!metadata) return metadata.error();
 
   const auto& events = store.log_events();
