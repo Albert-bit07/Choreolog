@@ -90,7 +90,7 @@ A separate loopback-only management gRPC gateway and generated C# client are imp
 
 **Formal verification status:** `formal/raft/Election.tla`, `Replication.tla`, and `ChoreoRaft.tla` contain separate and unified protocol models. The unified model has three completed, scoped CI profiles: 5,090-state core election/replication/commit, 88,966-state recovery, and 46,897-state two-term election. These results do **not** establish exhaustive multi-term replication under combined network/disk faults or C++ code conformance. See [the unified model report](formal/raft/ChoreoRaft-README.md) and [storage correspondence audit](docs/raft-storage-audit.md).
 
-**C++ transition migration:** PR #10 adds a testable `choreoos::raft::step` API with explicit persistence effects; the production `replication::Replica` remains the current implementation and no trace-refinement claim has been made.
+**C++ transition migration:** PR #10 adds a testable `choreoos::raft::step` API with explicit persistence effects; the production `replication::Replica` remains the current implementation and no trace-refinement claim has been made. The [transition-core contract](docs/raft-transition-core.md) documents outstanding persistence, application checkpoint and recovery assumptions.
 
 Milestone 0 also provides:
 
