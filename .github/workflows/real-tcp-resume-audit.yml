@@ -1,0 +1,49 @@
+name: Real TCP resume metric validation (isolated)
+on:
+  push:
+    branches:
+      - audit/real-tcp-metrics-20261014
+    paths:
+      - ".github/workflows/real-tcp-resume-audit.yml"
+      - "cpp-runtime/**"
+      - "scripts/audit_real_tcp.py"
+permissions:
+  contents: read
+jobs:
+  tcp-ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned vcpkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/vcpkg"
+          git -C "$RUNNER_TEMP/vcpkg" remote add origin https://github.com/microsoft/vcpkg.git
+          git -C "$RUNNER_TEMP/vcpkg" fetch --depth 1 origin 6e856794aebd1ee877acb74c9264d9552903c6fe
+          git -C "$RUNNER_TEMP/vcpkg" checkout FETCH_HEAD
+          "$RUNNER_TEMP/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$RUNNER_TEMP/vcpkg" >> "$GITHUB_ENV"
+      - name: Configure Release benchmark build
+        shell: bash
+        run: |
+          cmake -S . -B build/real-tcp-audit -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DCHOREOOS_BUILD_BENCHMARKS=ON -DCHOREOOS_BUILD_TESTS=ON \
+            -DCHOREOOS_WARNINGS_AS_ERRORS=ON
+      - name: Build real TCP harness and nodes
+        run: |
+          cmake --build build/real-tcp-audit --parallel 2 --target choreoos-node choreoos-bench-real-tcp choreoos-tests
+      - name: Run comprehensive correctness tests
+        run: ctest --test-dir build/real-tcp-audit --output-on-failure --timeout 180
+      - name: Compare real TCP latency with and without redundant fsync
+        run: |
+          python3 scripts/audit_real_tcp.py
+      - name: Upload raw data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-tcp-resume-audit-results
+          path: real_tcp_audit_results.json
