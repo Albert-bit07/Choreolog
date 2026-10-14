@@ -10,6 +10,12 @@ namespace {
 
 std::size_t quorum(const Config& config) { return (config.peers.size() + 1) / 2 + 1; }
 
+// The transport must authenticate peer identity; the core additionally refuses
+// protocol input attributed to a non-member of this fixed cluster.
+bool known_peer(const Node& state, const std::string& id) {
+  return state.volatile_state.peers.count(id) != 0;
+}
+
 std::uint64_t last_term(const Durable& state) {
   return state.log.empty() ? 0 : state.log.back().term;
 }
@@ -166,6 +172,9 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
 
   if (const auto* request = std::get_if<RecvRequestVote>(&input)) {
     const auto& m = request->message;
+    if (!known_peer(state, m.candidate)) {
+      return {std::move(state), std::move(effects)};
+    }
     if (m.term < state.durable.term) {
       effects.send_now.push_back(
           Outbound{m.candidate, VoteReply{state.durable.term, config.self, false, m.request_id}});
@@ -193,6 +202,9 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
 
   if (const auto* response = std::get_if<RecvVoteReply>(&input)) {
     const auto& m = response->message;
+    if (!known_peer(state, m.voter)) {
+      return {std::move(state), std::move(effects)};
+    }
     if (m.term > state.durable.term) {
       Durable target = state.durable;
       target.term = m.term;
@@ -236,6 +248,9 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
 
   if (const auto* incoming = std::get_if<RecvAppend>(&input)) {
     const auto& m = incoming->message;
+    if (!known_peer(state, m.leader)) {
+      return {std::move(state), std::move(effects)};
+    }
     if (m.term < state.durable.term) {
       effects.send_now.push_back(Outbound{
           m.leader,
@@ -295,6 +310,9 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
 
   if (const auto* incoming = std::get_if<RecvAppendReply>(&input)) {
     const auto& m = incoming->message;
+    if (!known_peer(state, m.follower)) {
+      return {std::move(state), std::move(effects)};
+    }
     if (m.term > state.durable.term) {
       Durable target = state.durable;
       target.term = m.term;
