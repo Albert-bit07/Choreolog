@@ -237,6 +237,7 @@ jobs:
           clang-tidy-18 -p build/api-audit \
             --checks='-*,bugprone-*,performance-*,-performance-enum-size,-bugprone-easily-swappable-parameters' \
             cpp-runtime/src/protocol/codec.cpp \
+            cpp-runtime/src/raft/domain_bridge.cpp \
             cpp-runtime/src/runtime/config.cpp \
             cpp-runtime/src/network/node_server.cpp \
             --warnings-as-errors='bugprone-*,performance-*'

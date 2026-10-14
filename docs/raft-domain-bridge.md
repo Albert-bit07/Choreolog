@@ -47,6 +47,11 @@ applied progress, so **do not write this projection into that checkpoint**.
 
 ## Explicit exclusions / remaining gates
 
+A separate [snapshot-aware recovery projection](raft-recovery-projection.md)
+now checks compacted production stores without manufacturing a full
+`raft::Durable` log. The exclusions below continue to apply to this original
+full-WAL API and to production migration.
+
 - **Compacted logs and snapshots are rejected.** The projection cannot
   manufacture missing entries from a snapshot. The next production bridge
   needs a `lastIncludedIndex`/`lastIncludedTerm` offset model, snapshot

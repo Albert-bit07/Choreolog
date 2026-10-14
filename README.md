@@ -8,6 +8,8 @@ See [PLAN.md](PLAN.md) for the architecture and [TASKS.md](TASKS.md) for the ord
 
 The C++ TCP node supports [optional peer mutual TLS](docs/peer-tls.md), with TLS 1.3, certificate-bound node IDs and a separate peer listener. Plaintext remains the default; certificate issuance and rolling rotation are operator responsibilities.
 
+A read-only [snapshot-aware recovery projection](docs/raft-recovery-projection.md) checks compacted production storage against committed replay, including retry receipts. It is a prerequisite for production refinement, not a model-to-code proof.
+
 A [scoped Raft verification program](docs/raft-verification.md) is underway. PRs #7–#9 added separate election and replication models and a unified asynchronous model with **explicitly bounded**, completed TLC profiles. The broader combined-failure model remains incomplete. PR #10 introduces an experimental pure C++ transition core **alongside**, not inside, the deployed `Replica`. Formal verification or model-to-code refinement of the deployed C++ implementation has **not** been established.
 
 ## Responsibility boundaries
