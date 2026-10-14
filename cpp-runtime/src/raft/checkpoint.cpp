@@ -193,8 +193,15 @@ Result<Durable> read_checkpoint(const std::filesystem::path& path) {
 state::Result<CheckpointStore> CheckpointStore::open(std::filesystem::path directory,
                                                      CheckpointOptions options) {
   std::error_code ec;
-  std::filesystem::create_directories(directory, ec);
+  const bool created = std::filesystem::create_directories(directory, ec);
   if (ec) return invalid("Raft checkpoint directory creation failed: " + ec.message());
+  if (created) {
+    // When the checkpoint directory itself is new, first sync its parent's
+    // directory entry so a successful checkpoint cannot disappear by losing
+    // the newly created directory after an otherwise successful file sync.
+    auto synced_parent = storage::sync_directory(directory.parent_path());
+    if (!synced_parent) return synced_parent.error();
+  }
   auto snapshot = read_checkpoint(directory / "raft-core-v1.bin");
   if (!snapshot) return snapshot.error();
   return CheckpointStore{directory / "raft-core-v1.bin", options, std::move(snapshot.value())};
