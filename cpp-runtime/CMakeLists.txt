@@ -25,6 +25,7 @@ target_sources(
     src/protocol/command_codec.cpp
     src/protocol/client.cpp
     src/raft/transition.cpp
+    src/raft/domain_bridge.cpp
     src/raft/checkpoint.cpp
     src/raft/durable_node.cpp
     src/raft/trace.cpp
