@@ -12,6 +12,7 @@
 #include <sstream>
 #include <utility>
 
+#include "choreoos/network/peer_tls.hpp"
 #include "choreoos/protocol/codec.hpp"
 #include "choreoos/protocol/command_codec.hpp"
 #include "choreoos/protocol/frame.hpp"
@@ -23,6 +24,7 @@ namespace {
 
 using boost::asio::ip::tcp;
 constexpr std::size_t kMaxQueuedFrames = 64;
+constexpr std::size_t kMaxTlsModeSessions = 128;
 
 choreoos::protocol::ClientResponse response_from(const choreoos::state::Error& error,
                                                  const std::string& leader) {
@@ -51,11 +53,14 @@ choreoos::protocol::ClientResponse response_from(const choreoos::replication::En
 struct NodeServer::Impl {
   struct Session;
 
-  Impl(choreoos::runtime::NodeConfig node_config, choreoos::replication::Replica opened_replica)
+  Impl(choreoos::runtime::NodeConfig node_config, choreoos::replication::Replica opened_replica,
+       std::unique_ptr<boost::asio::ssl::context> context)
       : config(std::move(node_config)),
         replica(std::move(opened_replica)),
+        tls_context(std::move(context)),
         strand(boost::asio::make_strand(io)),
         acceptor(io),
+        peer_acceptor(io),
         heartbeat(io),
         reconnect(io) {}
 
@@ -66,6 +71,15 @@ struct NodeServer::Impl {
     acceptor.bind(endpoint);
     acceptor.listen();
     bound_port = acceptor.local_endpoint().port();
+    if (config.peer_tls) {
+      const auto& tls = *config.peer_tls;
+      tcp::endpoint peer_endpoint{boost::asio::ip::make_address(tls.host), tls.port};
+      peer_acceptor.open(peer_endpoint.protocol());
+      peer_acceptor.set_option(tcp::acceptor::reuse_address(true));
+      peer_acceptor.bind(peer_endpoint);
+      peer_acceptor.listen();
+      accept_peer();
+    }
     replica.set_sender([this](const std::string& peer, const choreoos::protocol::Frame& frame) {
       send_to(peer, frame);
     });
@@ -78,6 +92,7 @@ struct NodeServer::Impl {
 
   void send_to(const std::string& peer, const choreoos::protocol::Frame& frame);
   void accept_next();
+  void accept_peer();
   void dial_missing();
   void schedule_heartbeat();
   [[nodiscard]] std::string leader_contact() const;
@@ -94,9 +109,11 @@ struct NodeServer::Impl {
 
   choreoos::runtime::NodeConfig config;
   choreoos::replication::Replica replica;
+  std::unique_ptr<boost::asio::ssl::context> tls_context;
   boost::asio::io_context io;
   boost::asio::strand<boost::asio::io_context::executor_type> strand;
   tcp::acceptor acceptor;
+  tcp::acceptor peer_acceptor;
   boost::asio::steady_timer heartbeat;
   boost::asio::steady_timer reconnect;
   std::uint16_t bound_port = 0;
@@ -119,27 +136,115 @@ struct NodeServer::Impl {
 };
 
 struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
-  Session(tcp::socket accepted, Impl* owner, std::string remote_id)
-      : socket(std::move(accepted)), node(owner), peer_id(std::move(remote_id)) {}
+  Session(tcp::socket accepted, Impl* owner, std::string remote_id, bool encrypted = false)
+      : socket(std::move(accepted)),
+        node(owner),
+        peer_id(encrypted ? "" : remote_id),
+        expected_peer(std::move(remote_id)),
+        deadline(node->io) {
+    if (encrypted) {
+      tls = std::make_unique<boost::asio::ssl::stream<tcp::socket>>(std::move(socket),
+                                                                    *node->tls_context);
+      dial_pending = !expected_peer.empty();
+    }
+  }
 
-  void start() { read_header(); }
+  void send_hello() {
+    choreoos::protocol::Frame frame;
+    frame.type = choreoos::protocol::MessageType::Handshake;
+    auto payload = choreoos::protocol::encode(choreoos::protocol::Handshake{
+        node->config.id, choreoos::protocol::kProtocolMajor, choreoos::protocol::kProtocolMinor});
+    if (!payload) {
+      retire();
+      return;
+    }
+    frame.payload = std::move(payload.value());
+    auto bytes = choreoos::protocol::encode_frame(frame);
+    if (!bytes) {
+      retire();
+      return;
+    }
+    send(std::move(bytes.value()));
+  }
+
+  void start(bool outbound = false) {
+    if (!tls) {
+      ready = true;
+      read_header();
+      if (outbound) send_hello();
+      return;
+    }
+    auto self = shared_from_this();
+    std::weak_ptr<Session> weak = self;
+    tls->set_verify_callback([weak](bool preverified, boost::asio::ssl::verify_context& context) {
+      const auto live = weak.lock();
+      return live && verify_peer_certificate(preverified, context, live->node->config,
+                                             live->expected_peer, live->verified_peer);
+    });
+    deadline.expires_after(std::chrono::seconds(5));
+    deadline.async_wait(
+        boost::asio::bind_executor(node->strand, [self](const boost::system::error_code& error) {
+          if (!error) {
+            ++self->node->transport_metrics.rejected;
+            self->retire();
+          }
+        }));
+    tls->async_handshake(
+        outbound ? boost::asio::ssl::stream_base::client : boost::asio::ssl::stream_base::server,
+        boost::asio::bind_executor(node->strand, [self](const boost::system::error_code& error) {
+          if (self->closed) return;
+          if (error || self->verified_peer.empty()) {
+            ++self->node->transport_metrics.rejected;
+            self->retire();
+            return;
+          }
+          self->deadline.cancel();
+          self->peer_id = self->verified_peer;
+          self->ready = true;
+          if (self->dial_pending) {
+            self->node->dialing.erase(self->expected_peer);
+            self->dial_pending = false;
+          }
+          self->read_header();
+          self->send_hello();
+        }));
+  }
+
+  tcp::socket& lowest_layer() { return tls ? tls->next_layer() : socket; }
+
+  template <class Buffer, class Handler>
+  void read(const Buffer& buffer, Handler handler) {
+    if (tls)
+      boost::asio::async_read(*tls, buffer, std::move(handler));
+    else
+      boost::asio::async_read(socket, buffer, std::move(handler));
+  }
+
+  template <class Buffer, class Handler>
+  void write(const Buffer& buffer, Handler handler) {
+    if (tls)
+      boost::asio::async_write(*tls, buffer, std::move(handler));
+    else
+      boost::asio::async_write(socket, buffer, std::move(handler));
+  }
 
   void assign_peer(std::string id) { peer_id = std::move(id); }
 
   void send(std::string bytes) {
-    if (outgoing.size() >= kMaxQueuedFrames) {
+    if (closed || outgoing.size() >= kMaxQueuedFrames) {
       ++node->transport_metrics.dropped;
       return;
     }
     outgoing.push_back(std::move(bytes));
-    if (!writing) {
+    if (ready && !writing) {
       write_next();
     }
   }
 
   void close() {
     boost::system::error_code error;
-    const auto result = socket.close(error);
+    deadline.cancel();
+    const auto result = lowest_layer().close(error);
     if (error || result) {
       ++node->transport_metrics.dropped;
     }
@@ -148,54 +253,60 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
   tcp::socket socket;
   Impl* node;
   std::string peer_id;
+  std::string expected_peer;
+  std::string verified_peer;
+  std::unique_ptr<boost::asio::ssl::stream<tcp::socket>> tls;
+  boost::asio::steady_timer deadline;
   std::array<std::uint8_t, choreoos::protocol::kFrameHeaderBytes> header{};
   std::vector<std::uint8_t> body;
   std::deque<std::string> outgoing;
   bool writing = false;
+  bool ready = false;
+  bool closed = false;
+  bool dial_pending = false;
 
   void read_header() {
+    if (closed) return;
     auto self = shared_from_this();
-    boost::asio::async_read(
-        socket, boost::asio::buffer(header),
-        boost::asio::bind_executor(node->strand, [self](const boost::system::error_code& error,
-                                                        std::size_t) {
-          if (error) {
-            self->retire();
-            return;
-          }
-          auto peeked = choreoos::protocol::peek_header(self->header.data(), self->header.size());
-          if (!peeked) {
-            ++self->node->transport_metrics.malformed;
-            self->retire();
-            return;
-          }
-          self->body.assign(peeked.value().payload_length + 4, 0);
-          self->read_body();
-        }));
+    read(boost::asio::buffer(header),
+         boost::asio::bind_executor(node->strand, [self](const boost::system::error_code& error,
+                                                         std::size_t) {
+           if (error) {
+             self->retire();
+             return;
+           }
+           auto peeked = choreoos::protocol::peek_header(self->header.data(), self->header.size());
+           if (!peeked) {
+             ++self->node->transport_metrics.malformed;
+             self->retire();
+             return;
+           }
+           self->body.assign(peeked.value().payload_length + 4, 0);
+           self->read_body();
+         }));
   }
 
   void read_body() {
     auto self = shared_from_this();
-    boost::asio::async_read(
-        socket, boost::asio::buffer(body),
-        boost::asio::bind_executor(
-            node->strand, [self](const boost::system::error_code& error, std::size_t) {
-              if (error) {
-                self->retire();
-                return;
-              }
-              std::vector<std::uint8_t> bytes(self->header.begin(), self->header.end());
-              bytes.insert(bytes.end(), self->body.begin(), self->body.end());
-              auto frame = choreoos::protocol::decode_frame(bytes.data(), bytes.size());
-              if (!frame) {
-                ++self->node->transport_metrics.malformed;
-                self->retire();
-                return;
-              }
-              ++self->node->transport_metrics.frames_received;
-              self->node->dispatch(self, frame.value());
-              self->read_header();
-            }));
+    read(boost::asio::buffer(body),
+         boost::asio::bind_executor(
+             node->strand, [self](const boost::system::error_code& error, std::size_t) {
+               if (error) {
+                 self->retire();
+                 return;
+               }
+               std::vector<std::uint8_t> bytes(self->header.begin(), self->header.end());
+               bytes.insert(bytes.end(), self->body.begin(), self->body.end());
+               auto frame = choreoos::protocol::decode_frame(bytes.data(), bytes.size());
+               if (!frame) {
+                 ++self->node->transport_metrics.malformed;
+                 self->retire();
+                 return;
+               }
+               ++self->node->transport_metrics.frames_received;
+               self->node->dispatch(self, frame.value());
+               self->read_header();
+             }));
   }
 
   void write_next() {
@@ -205,21 +316,26 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
     }
     writing = true;
     auto self = shared_from_this();
-    boost::asio::async_write(
-        socket, boost::asio::buffer(outgoing.front()),
-        boost::asio::bind_executor(node->strand,
-                                   [self](const boost::system::error_code& error, std::size_t) {
-                                     if (error) {
-                                       self->retire();
-                                       return;
-                                     }
-                                     ++self->node->transport_metrics.frames_sent;
-                                     self->outgoing.pop_front();
-                                     self->write_next();
-                                   }));
+    write(boost::asio::buffer(outgoing.front()),
+          boost::asio::bind_executor(node->strand,
+                                     [self](const boost::system::error_code& error, std::size_t) {
+                                       if (error) {
+                                         self->retire();
+                                         return;
+                                       }
+                                       ++self->node->transport_metrics.frames_sent;
+                                       self->outgoing.pop_front();
+                                       self->write_next();
+                                     }));
   }
 
   void retire() {
+    if (closed) return;
+    closed = true;
+    if (dial_pending) {
+      node->dialing.erase(expected_peer);
+      dial_pending = false;
+    }
     auto& live = node->sessions;
     live.erase(std::remove(live.begin(), live.end(), shared_from_this()), live.end());
     close();
@@ -242,7 +358,7 @@ void NodeServer::Impl::send_to(const std::string& peer, const choreoos::protocol
       return;
     }
     for (const auto& session : sessions) {
-      if (session->peer_id == peer) {
+      if (session->ready && !session->closed && session->peer_id == peer) {
         session->send(bytes);
         return;
       }
@@ -268,6 +384,12 @@ void NodeServer::Impl::accept_next() {
   acceptor.async_accept(boost::asio::bind_executor(
       strand, [this](const boost::system::error_code& error, tcp::socket socket) {
         if (!error) {
+          if (config.peer_tls && sessions.size() >= kMaxTlsModeSessions) {
+            ++transport_metrics.rejected;
+            socket.close();
+            accept_next();
+            return;
+          }
           auto session = std::make_shared<Session>(std::move(socket), this, "");
           sessions.push_back(session);
           session->start();
@@ -278,8 +400,25 @@ void NodeServer::Impl::accept_next() {
       }));
 }
 
+void NodeServer::Impl::accept_peer() {
+  peer_acceptor.async_accept(boost::asio::bind_executor(
+      strand, [this](const boost::system::error_code& error, tcp::socket socket) {
+        if (!error) {
+          if (sessions.size() >= kMaxTlsModeSessions) {
+            ++transport_metrics.rejected;
+            socket.close();
+          } else {
+            auto session = std::make_shared<Session>(std::move(socket), this, "", true);
+            sessions.push_back(session);
+            session->start();
+          }
+        }
+        if (peer_acceptor.is_open()) accept_peer();
+      }));
+}
+
 void NodeServer::Impl::dial_missing() {
-  for (const auto& peer : config.peers) {
+  for (const auto& peer : config.peer_tls ? config.peer_tls->peers : config.peers) {
     bool connected = false;
     for (const auto& session : sessions) {
       if (session->peer_id == peer.id) {
@@ -295,30 +434,27 @@ void NodeServer::Impl::dial_missing() {
     dialing.insert(peer.id);
     auto socket = std::make_shared<tcp::socket>(io);
     tcp::endpoint endpoint{boost::asio::ip::make_address(peer.host), peer.port};
-    socket->async_connect(
-        endpoint, boost::asio::bind_executor(
-                      strand, [this, socket, peer](const boost::system::error_code& error) {
-                        dialing.erase(peer.id);
-                        if (error) {
-                          return;
-                        }
-                        ++transport_metrics.reconnects;
-                        auto session = std::make_shared<Session>(std::move(*socket), this, peer.id);
-                        sessions.push_back(session);
-                        session->start();
-                        choreoos::protocol::Handshake hello;
-                        hello.node_id = config.id;
-                        hello.major = choreoos::protocol::kProtocolMajor;
-                        hello.minor = choreoos::protocol::kProtocolMinor;
-                        if (auto payload = choreoos::protocol::encode(hello)) {
-                          choreoos::protocol::Frame frame;
-                          frame.type = choreoos::protocol::MessageType::Handshake;
-                          frame.payload = payload.value();
-                          if (auto bytes = choreoos::protocol::encode_frame(frame)) {
-                            session->send(bytes.value());
-                          }
-                        }
-                      }));
+    socket->async_connect(endpoint,
+                          boost::asio::bind_executor(
+                              strand, [this, socket, peer](const boost::system::error_code& error) {
+                                if (error) {
+                                  dialing.erase(peer.id);
+                                  return;
+                                }
+                                if (config.peer_tls && sessions.size() >= kMaxTlsModeSessions) {
+                                  dialing.erase(peer.id);
+                                  ++transport_metrics.rejected;
+                                  boost::system::error_code ignored;
+                                  socket->close(ignored);
+                                  return;
+                                }
+                                ++transport_metrics.reconnects;
+                                auto session = std::make_shared<Session>(
+                                    std::move(*socket), this, peer.id, config.peer_tls.has_value());
+                                sessions.push_back(session);
+                                if (!config.peer_tls) dialing.erase(peer.id);
+                                session->start(true);
+                              }));
   }
 }
 
@@ -502,7 +638,7 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
   choreoos::protocol::ManagementReply reply;
   auto request = choreoos::protocol::decode_management_query(frame.payload);
   boost::system::error_code endpoint_error;
-  const auto endpoint = session->socket.remote_endpoint(endpoint_error);
+  const auto endpoint = session->lowest_layer().remote_endpoint(endpoint_error);
   const bool local = !endpoint_error && endpoint.address().is_loopback();
   if (!local) {
     reply.error_code = "PermissionDenied";
@@ -625,18 +761,26 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
 
 void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
                                 const choreoos::protocol::Frame& frame) {
+  const bool client_frame = frame.type == choreoos::protocol::MessageType::ManagementQuery ||
+                            frame.type == choreoos::protocol::MessageType::ClientCommand ||
+                            frame.type == choreoos::protocol::MessageType::StatusQuery;
+  if ((config.peer_tls && !session->tls && !client_frame) || (session->tls && client_frame)) {
+    ++transport_metrics.rejected;
+    session->retire();
+    return;
+  }
   if (frame.type == choreoos::protocol::MessageType::Handshake) {
     auto hello = choreoos::protocol::decode_handshake(frame.payload);
     if (!hello) {
       ++transport_metrics.malformed;
       return;
     }
-    // Only configured peers may claim a peer identity. This is a gate against
-    // strangers, not authentication: a process that knows a peer id can still
-    // claim it, so real deployments need a shared secret or mTLS on top.
+    // TLS sessions already have a certificate-bound identity. Legacy mode has
+    // only a configured-name gate and is not authenticated transport.
     if (!is_configured_peer(hello.value().node_id) ||
         (!session->peer_id.empty() && session->peer_id != hello.value().node_id)) {
       ++transport_metrics.rejected;
+      session->retire();
       return;
     }
     session->assign_peer(hello.value().node_id);
@@ -668,6 +812,10 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
 choreoos::state::Result<std::unique_ptr<NodeServer>> NodeServer::open(
     const choreoos::runtime::NodeConfig& config) {
   try {
+    if (auto valid = choreoos::runtime::validate_peer_tls_config(config); !valid)
+      return valid.error();
+    auto context = make_peer_tls_context(config);
+    if (!context) return context.error();
     choreoos::replication::ReplicaConfig replica_config;
     replica_config.id = config.id;
     replica_config.leader_id = config.leader_id;
@@ -683,7 +831,8 @@ choreoos::state::Result<std::unique_ptr<NodeServer>> NodeServer::open(
     if (!replica) {
       return replica.error();
     }
-    auto impl = std::make_unique<Impl>(config, std::move(replica.value()));
+    auto impl =
+        std::make_unique<Impl>(config, std::move(replica.value()), std::move(context.value()));
     impl->start();
     return std::unique_ptr<NodeServer>(new NodeServer(std::move(impl)));
   } catch (const std::exception& error) {

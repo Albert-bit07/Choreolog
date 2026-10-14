@@ -6,7 +6,8 @@
   "dependencies": [
     "boost-asio",
     "gtest",
-    "benchmark"
+    "benchmark",
+    "openssl"
   ],
   "features": {
     "management-grpc": {

@@ -66,5 +66,21 @@ TEST(ConfigTest, ElectionWindowMustNotBeInverted) {
   EXPECT_TRUE(load("election_timeout_min: 4\nelection_timeout_max: 4\n"));
 }
 
+TEST(ConfigTest, PeerTlsMustBeCompleteAndCannotExposePlaintextPeerTraffic) {
+  const std::string tls =
+      "peer_tls_listen: 0.0.0.0:8101\npeer_tls_ca: ca.pem\n"
+      "peer_tls_certificate: node.pem\npeer_tls_key: node.key\n"
+      "peer: node-2@127.0.0.1:7102\npeer_tls_peer: node-2@127.0.0.1:8102\n";
+  EXPECT_TRUE(load("listen: 127.0.0.1:7101\n" + tls));
+  EXPECT_FALSE(load("listen: 0.0.0.0:7101\n" + tls));
+  EXPECT_FALSE(load("peer_tls_ca: ca.pem\n"));
+  EXPECT_FALSE(load(tls + "peer_tls_key:\n"));
+  EXPECT_FALSE(load(tls + "peer_tls_peer: node-2@127.0.0.1:8102\n"));
+  EXPECT_FALSE(load(tls + "peer_tls_peer: stranger@127.0.0.1:8103\n"));
+  EXPECT_FALSE(load(tls + "peer: node-3@127.0.0.1:7103\n"));
+  EXPECT_FALSE(load(tls + "peer_tls_disable: true\n"));
+  EXPECT_FALSE(load("listen: 127.0.0.1:8101\n" + tls));
+}
+
 }  // namespace
 }  // namespace choreoos::runtime

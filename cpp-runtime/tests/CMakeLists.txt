@@ -24,6 +24,7 @@ add_executable(
   unit/workload.cpp
   unit/property_test.cpp
   integration/cluster_test.cpp
+  integration/peer_tls_test.cpp
 )
 target_link_libraries(
   choreoos-unit-tests

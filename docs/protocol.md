@@ -23,7 +23,15 @@ Stopping one follower of three still leaves a majority. Those commands remain co
 
 A catch-up `AppendEntries` is bounded by entry count and bytes (`max_append_entries`, `max_append_bytes`), so it always fits in one frame. After each acknowledgement the leader sends the next batch immediately instead of waiting a heartbeat. A replica never emits a message over the frame limit; it counts it in `messages_dropped_oversize` instead of failing silently.
 
+## Peer transport
+
+Peer transport can use [optional mutual TLS](peer-tls.md) with certificate-bound
+node identities and a separate listener. In that mode the loopback client plane
+rejects peer frames, and the peer listener rejects client/management frames.
+The default plaintext mode does not cryptographically authenticate peer IDs.
+
 ## Snapshots
+
 
 When a follower is behind the leader's compacted log, the leader sends its snapshot with `InstallSnapshot`. The payload is split into chunks of at most `max_snapshot_chunk_bytes`. Each chunk carries its `offset` and a `more` flag; the follower acknowledges with `next_offset`, the offset it expects next, and the leader continues from there. A chunk the follower already holds is acknowledged again without effect, an out-of-order or mismatched chunk answers `next_offset = 0` so the leader restarts, and a newer snapshot on the leader restarts the transfer. Nothing is applied until the final chunk arrives and the whole payload verifies against the snapshot's state hash. A message with offset 0 and `more` false carries the entire payload.
 
