@@ -209,5 +209,56 @@ TEST(RaftTransitionTest, OldTermEntriesAreNotDirectlyQuorumCommitted) {
   EXPECT_EQ(after.durable.commit, 0u);
 }
 
+TEST(RaftTransitionTest, NonMemberMessagesCannotChangeTermOrLog) {
+  const auto c = cluster("a");
+  auto node = initial(c);
+  node.durable.term = 2;
+  node.durable.log = {{2, "existing"}};
+
+  auto [after_vote, vote] = run(c, node,
+      RecvRequestVote{RequestVote{99, "intruder", 1, 2, 9}});
+  EXPECT_EQ(after_vote.durable, node.durable);
+  EXPECT_FALSE(vote.persist);
+  EXPECT_TRUE(vote.send_now.empty());
+
+  auto [after_append, append] = run(c, after_vote,
+      RecvAppend{AppendEntries{99, "intruder", 0, 0,
+                               {{99, "replace"}}, 1, 10}});
+  EXPECT_EQ(after_append.durable, node.durable);
+  EXPECT_FALSE(append.persist);
+  EXPECT_TRUE(append.send_now.empty());
+
+  auto [after_vote_reply, vote_reply] = run(c, after_append,
+      RecvVoteReply{VoteReply{99, "intruder", true, 11}});
+  EXPECT_EQ(after_vote_reply.durable.term, 2u);
+  EXPECT_FALSE(vote_reply.persist);
+
+  auto [after_append_reply, append_reply] = run(c, after_vote_reply,
+      RecvAppendReply{AppendReply{99, "intruder", true, 999, 12}});
+  EXPECT_EQ(after_append_reply.durable, node.durable);
+  EXPECT_FALSE(append_reply.persist);
+}
+
+TEST(RaftTransitionTest, StalePersistenceTokenCannotReleaseDependentEffects) {
+  const auto c = cluster("a");
+  auto [staged, effects] = run(c, initial(c), ElectionTimeout{});
+  ASSERT_TRUE(effects.persist);
+  const auto token = effects.persist->token;
+  auto [same, wrong] = run(c, staged, PersistCompleted{token + 1});
+  EXPECT_EQ(same.durable.term, 0u);
+  EXPECT_TRUE(same.pending.has_value());
+  EXPECT_TRUE(wrong.send_now.empty());
+
+  auto [completed, released] = run(c, same, PersistCompleted{token});
+  EXPECT_EQ(completed.durable.term, 1u);
+  EXPECT_FALSE(completed.pending);
+  EXPECT_EQ(released.send_now.size(), 2u);
+
+  auto [unchanged, replay] = run(c, completed, PersistCompleted{token});
+  EXPECT_EQ(unchanged.durable.term, 1u);
+  EXPECT_TRUE(replay.send_now.empty());
+  EXPECT_FALSE(replay.persist);
+}
+
 }  // namespace
 }  // namespace choreoos::raft
