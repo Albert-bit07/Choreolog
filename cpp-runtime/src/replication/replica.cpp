@@ -382,6 +382,7 @@ void Replica::replicate_all() {
 
 void Replica::on_append(const choreoos::protocol::AppendEntries& message,
                         std::uint64_t correlation) {
+  if (!is_configured_peer(message.leader_id)) return;
   choreoos::protocol::AppendEntriesResponse response;
   response.term = current_term_.value();
   response.follower_id = config_.id;
@@ -450,8 +451,8 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
       if (existing != nullptr) {
         auto truncated = store_.truncate_after(LogIndex::parse(entry.index.value() - 1).value());
         if (!truncated) {
-          response.success = false;
-          break;
+          halt_after_storage_failure();
+          return;
         }
         rebuild_command_index();
         speculative_dirty_ = true;
@@ -461,8 +462,8 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
         break;
       }
       if (auto written = store_.append_event(entry); !written) {
-        response.success = false;
-        break;
+        halt_after_storage_failure();
+        return;
       }
       command_index_[entry.command_id.value()] = entry.index.value();
       speculative_dirty_ = true;
@@ -473,7 +474,8 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
       if (covered > store_.commit_index().value()) {
         auto committed = store_.commit_through(LogIndex::parse(covered).value());
         if (!committed) {
-          response.success = false;
+          halt_after_storage_failure();
+          return;
         } else if (commit_hook_) {
           commit_hook_();
         }
@@ -493,6 +495,7 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
 }
 
 void Replica::on_append_response(const choreoos::protocol::AppendEntriesResponse& message) {
+  if (!is_configured_peer(message.follower_id)) return;
   if (config_.elections && message.term > current_term_.value()) {
     step_down(message.term);
     return;
@@ -599,6 +602,7 @@ void Replica::on_vote_response(const choreoos::protocol::RequestVoteResponse& me
 
 void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
                          std::uint64_t correlation) {
+  if (!is_configured_peer(message.leader_id)) return;
   choreoos::protocol::InstallSnapshotResponse response;
   response.follower_id = config_.id;
   response.success = false;
@@ -700,6 +704,7 @@ void Replica::reply_install(const std::string& leader, std::uint64_t correlation
 }
 
 void Replica::on_install_response(const choreoos::protocol::InstallSnapshotResponse& message) {
+  if (!is_configured_peer(message.follower_id)) return;
   if (config_.elections && message.term > current_term_.value()) {
     step_down(message.term);
     return;
@@ -757,12 +762,14 @@ void Replica::advance_commit() {
     }
     if (copies >= majority()) {
       auto committed = store_.commit_through(LogIndex::parse(index).value());
-      if (committed) {
-        if (commit_hook_) {
-          commit_hook_();
-        }
-        replicate_all();
+      if (!committed) {
+        halt_after_storage_failure();
+        return;
       }
+      if (commit_hook_) {
+        commit_hook_();
+      }
+      replicate_all();
       return;
     }
   }
