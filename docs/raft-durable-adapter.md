@@ -24,6 +24,10 @@ verified mapping of operation IDs, terms, indexes, payloads and snapshot offsets
 - `CheckpointStore::persist` rejects term/commit regressions, vote changes
   in the same term, and any truncation or replacement of previously committed
   log entries.
+- Newly created checkpoint directories request a sync of the parent directory
+  before their first acknowledged write. The test host refuses recovery of a
+  vote ID outside its fixed configured membership; the host must also protect
+  against node-directory reuse and unauthenticated senders.
 - On **every write failure** (including an injected failure after a successful
   durable replacement), storage enters an uncertain state and refuses further
   writes until recovery rereads the actual disk image.
