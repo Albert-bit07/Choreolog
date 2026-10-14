@@ -1,6 +1,15 @@
 # ChoreoRaft persistence correspondence audit (PR #9)
 
 Status: **design review only, not a verified refinement of the deployed C++ runtime.**
+
+Historical baseline: the table below records the PR #9 implementation. Later
+merged PR #14 stages application state and persists commit metadata before
+publication; PR #15 installs snapshots using a recovery-atomic redo journal;
+PR #16 adds optional authenticated peer transport. The new
+[snapshot-aware recovery projection](raft-recovery-projection.md) checks
+recovered application/receipt correspondence. These changes supersede the
+old operation ordering in the table, but do not establish a formal refinement
+of `Torn` or exhaustive power-loss behavior.
 Reviewed the `main` implementations of `storage/{metadata,wal,file_util}.cpp`
 and `state/store.cpp` on 2026-10-13. This does **not** establish that all
 reachable failures, operating systems or filesystems implement the model.

@@ -3,7 +3,9 @@
 // Strict, read-only correspondence between the experimental Raft log entries
 // and the existing typed choreography WAL. No production writes or migration.
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "choreoos/raft/transition.hpp"
 #include "choreoos/state/store.hpp"
@@ -14,6 +16,29 @@ struct DomainProjection {
   Durable raft;
   std::string applied_state_hash;
 };
+
+// Recovery correspondence with absolute indexes. This is NOT raft::Durable:
+// the experimental transition core cannot interpret a compacted log yet.
+struct RecoveredDomainProjection {
+  std::uint64_t term = 0;
+  std::optional<std::string> voted_for;
+  std::optional<storage::Snapshot> snapshot;
+  std::vector<Entry> suffix;  // First entry is snapshot.index + 1, or 1.
+  std::uint64_t commit = 0;
+  std::uint64_t applied = 0;
+  std::string applied_state_hash;
+  std::string applied_state_payload;  // Includes compact retry receipts.
+};
+
+// Validate all suffix entries, replay only committed ones, and compare the
+// complete applied checkpoint (including receipts) with the observed state.
+[[nodiscard]] state::Result<state::ChoreographyState> replay_recovered_domain(
+    const RecoveredDomainProjection& projection);
+
+// Read-only, quiescent/externally synchronized FileEngine audit. Validates the
+// retained WAL, snapshot boundary and recovered application correspondence.
+[[nodiscard]] state::Result<RecoveredDomainProjection> audit_recovered_domain_store(
+    const state::FileEngine& store);
 
 // Canonical typed event -> one opaque Raft entry. Never fabricates term/index.
 [[nodiscard]] state::Result<Entry> encode_domain_event(const state::Event& event);
