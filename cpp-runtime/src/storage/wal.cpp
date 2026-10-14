@@ -113,23 +113,22 @@ Result<void> WriteAheadLog::rewrite(const std::vector<choreoos::state::Event>& e
   // replace. The old file stays intact until the new one is durable, so a
   // crash at any point leaves either the complete old log or the complete new
   // one. (Removing the file first, as before, could lose the log entirely.)
+  auto bytes = encode_wal(events);
+  if (!bytes) return bytes.error();
+  if (auto replaced = write_atomic(path_, bytes.value(), true); !replaced) return replaced.error();
+  return load();
+}
+
+Result<std::string> encode_wal(const std::vector<choreoos::state::Event>& events) {
   std::string bytes = wal_file_header();
-  std::vector<std::uint64_t> ends;
-  ends.reserve(events.size());
   for (const auto& event : events) {
     auto record = encode_record(event);
     if (!record) {
       return record.error();
     }
     bytes += record.value();
-    ends.push_back(bytes.size());
   }
-  if (auto replaced = write_atomic(path_, bytes, true); !replaced) {
-    return replaced.error();
-  }
-  events_ = events;
-  record_ends_ = std::move(ends);
-  return {};
+  return bytes;
 }
 
 Result<choreoos::state::Event> WriteAheadLog::at(choreoos::state::LogIndex index) const {

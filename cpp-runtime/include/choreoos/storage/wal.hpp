@@ -30,6 +30,9 @@ struct WalScan {
   WalStats stats;
 };
 
+[[nodiscard]] choreoos::state::Result<std::string> encode_wal(
+    const std::vector<choreoos::state::Event>& events);
+
 class WriteAheadLog {
  public:
   // Create wal.bin if needed, drop a torn tail, and load every valid record.

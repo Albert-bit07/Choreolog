@@ -48,8 +48,10 @@ also sync the directory entry after atomic replacement.
 Production replicas halt after ambiguous WAL, metadata or validated snapshot
 installation failures. They stop peer replies, campaigns and new client work;
 reopen from disk to recover. Malformed snapshots are rejected before installation
-and do not halt a healthy node. This is ordered recovery across separate files,
-not an atomic transaction spanning WAL, metadata and snapshots.
+and do not halt a healthy node. Snapshot installation now uses a durable redo
+transaction spanning the replacement snapshot, metadata and WAL; recovery
+completes it before opening the store. Other operations retain their separate
+persistence boundaries. See [the transaction contract](persistence.md#recovery-atomic-snapshot-installation).
 
 See [the PR #14 audit ledger](consensus-hardening-audit.md) for regression
 coverage and remaining architectural limitations.

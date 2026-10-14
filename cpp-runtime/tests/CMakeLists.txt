@@ -18,6 +18,7 @@ add_executable(
   unit/catchup_test.cpp
   unit/config_test.cpp
   unit/crash_ordering_test.cpp
+  unit/snapshot_transaction_test.cpp
   unit/snapshot_compaction_test.cpp
   unit/faults_test.cpp
   unit/workload.cpp

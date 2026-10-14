@@ -186,8 +186,9 @@ TEST(ConsensusHardeningTest, InvalidSnapshotIsRejectedButStorageFailuresHalt) {
     std::filesystem::remove_all(path / blocked);
     auto reopened = Replica::open(safety_config(path));
     ASSERT_TRUE(reopened) << blocked;
-    const auto expected = std::string(blocked) == "wal.bin.tmp" ? 1u : 0u;
-    EXPECT_EQ(reopened.value().store().commit_index().value(), expected);
+    // The durable redo journal now owns completion even if metadata was not
+    // installed before failure. Recovery completes all three file images.
+    EXPECT_EQ(reopened.value().store().commit_index().value(), 1u);
     std::filesystem::remove_all(path);
   }
 }

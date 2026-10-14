@@ -239,6 +239,11 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
     return Error{ErrorCode::StoreError, "unable to create store directory"};
   }
   FileEngine store{std::move(directory), options};
+  // Resolve a committed install before scanning/truncating the old WAL or
+  // choosing snapshots using potentially intermediate metadata.
+  if (auto recovered = storage::recover_snapshot_transaction(store.directory_); !recovered) {
+    return recovered.error();
+  }
   auto wal = storage::WriteAheadLog::open(event_log_path(store.directory_));
   if (!wal) {
     return wal.error();
@@ -341,6 +346,7 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
 
 Result<SubmitResult> FileEngine::submit(Command command) {
   std::lock_guard<std::mutex> lock(*mutex_);
+  if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   const auto seen = engine_.state().applied_commands.find(command.id.value());
   if (seen != engine_.state().applied_commands.end()) {
     auto receipt = resolve_receipt(engine_.state(), command);
@@ -422,6 +428,7 @@ std::optional<std::uint64_t> FileEngine::log_term_at(std::uint64_t index) const 
 
 Result<void> FileEngine::append_event(const Event& event) {
   std::lock_guard<std::mutex> lock(*mutex_);
+  if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   const std::uint64_t expected = wal_->events().empty()
                                      ? engine_.state().last_applied.value() + 1
                                      : wal_->events().back().index.next().value();
@@ -446,6 +453,23 @@ Result<void> FileEngine::arm_storage_fault(StorageFault fault) {
   return {};
 }
 
+Result<void> FileEngine::require_writable_unlocked() const {
+  if (recovery_required_) {
+    return Error{ErrorCode::StoreError,
+                 "snapshot transaction requires reopen before further writes"};
+  }
+  return {};
+}
+
+Result<void> FileEngine::arm_snapshot_install_fault(storage::InstallFault fault) {
+  std::lock_guard<std::mutex> lock(*mutex_);
+  if (!options_.test_mode) {
+    return Error{ErrorCode::StoreError, "snapshot install faults require test mode"};
+  }
+  install_fault_ = fault;
+  return {};
+}
+
 Result<void> FileEngine::fail_before_flush_unlocked() {
   if (fault_ != StorageFault::FailBeforeFlush) {
     return {};
@@ -464,6 +488,7 @@ Result<void> FileEngine::fail_after_flush_unlocked() {
 
 Result<void> FileEngine::truncate_after(LogIndex index) {
   std::lock_guard<std::mutex> lock(*mutex_);
+  if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   if (index < commit_index_) {
     return Error{ErrorCode::StoreError, "committed log prefix cannot be truncated"};
   }
@@ -472,6 +497,7 @@ Result<void> FileEngine::truncate_after(LogIndex index) {
 
 Result<void> FileEngine::commit_through(LogIndex index) {
   std::lock_guard<std::mutex> lock(*mutex_);
+  if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   if (index < commit_index_) {
     return {};
   }
@@ -566,6 +592,7 @@ Result<storage::NodeMetadata> FileEngine::consensus_metadata() const {
 
 Result<void> FileEngine::persist_consensus(Term term, std::optional<NodeId> voted_for) {
   std::lock_guard<std::mutex> lock(*mutex_);
+  if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   auto metadata = storage::load_metadata(directory_ / "meta.bin");
   if (!metadata) {
     return metadata.error();
@@ -582,6 +609,7 @@ Result<void> FileEngine::persist_consensus(Term term, std::optional<NodeId> vote
 
 Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
   std::lock_guard<std::mutex> lock(*mutex_);
+  if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   if (snapshot.index <= commit_index_) {
     return {};
   }
@@ -617,18 +645,9 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
     }
   }
 
-  // Crash-safe order. Each step leaves a state open() can reconcile:
-  //   1. snapshot file durable      -> ignored on restart until meta covers it
-  //   2. metadata commit durable    -> restart restores from the snapshot, and
-  //                                    WAL records at or below it are skipped
-  //   3. WAL prefix dropped (atomic replace, never remove-then-write)
-  //   4. in-memory swap
-  // The old order rewrote the WAL first, so a crash before the snapshot was
-  // saved lost the committed prefix with nothing to restore it from.
-  const bool sync = options_.durability == storage::Durability::Sync;
-  if (auto saved = storage::save_snapshot(directory_, replacement.state(), sync); !saved) {
-    return saved.error();
-  }
+  // Encode every replacement before committing the redo decision. Recovery
+  // owns completion once that journal is durable, regardless of which files
+  // were replaced before the process stopped.
   auto metadata = storage::load_metadata(directory_ / "meta.bin");
   if (!metadata) {
     return metadata.error();
@@ -638,12 +657,28 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
   if (updated.term.value() < replacement.state().term.value()) {
     updated.term = replacement.state().term;
   }
-  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
-    return stored.error();
+  auto snapshot_bytes = storage::encode_snapshot(replacement.state());
+  if (!snapshot_bytes) return snapshot_bytes.error();
+  auto metadata_bytes = storage::encode_metadata(updated);
+  if (!metadata_bytes) return metadata_bytes.error();
+  auto wal_bytes = storage::encode_wal(suffix);
+  if (!wal_bytes) return wal_bytes.error();
+  storage::SnapshotTransaction transaction{
+      snapshot.index.value(), std::move(snapshot_bytes.value()), std::move(metadata_bytes.value()),
+      std::move(wal_bytes.value())};
+  const auto fault = install_fault_;
+  install_fault_ = storage::InstallFault::None;
+  auto committed = storage::commit_snapshot_transaction(directory_, transaction, fault);
+  if (!committed) {
+    recovery_required_ = true;
+    return committed.error();
   }
-  if (auto replaced = wal_->rewrite(suffix); !replaced) {
-    return replaced.error();
+  auto refreshed = storage::WriteAheadLog::open(event_log_path(directory_));
+  if (!refreshed) {
+    recovery_required_ = true;
+    return refreshed.error();
   }
+  *wal_ = std::move(refreshed.value());
 
   engine_ = std::move(replacement);
   commit_index_ = snapshot.index;
@@ -661,6 +696,7 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
 
 Result<void> FileEngine::discard_compacted_prefix() {
   std::lock_guard<std::mutex> lock(*mutex_);
+  if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   if (!snapshot_) {
     return Error{ErrorCode::StoreError, "no snapshot to compact against"};
   }
@@ -669,6 +705,7 @@ Result<void> FileEngine::discard_compacted_prefix() {
 
 Result<void> FileEngine::checkpoint() {
   std::lock_guard<std::mutex> lock(*mutex_);
+  if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   if (engine_.state().last_applied.value() == 0) {
     return {};
   }
