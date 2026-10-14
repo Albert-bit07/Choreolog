@@ -117,6 +117,7 @@ void Replica::set_election_bounds(int min_ticks, int max_ticks) {
 }
 
 bool Replica::is_leader() const noexcept {
+  if (halted_) return false;
   if (config_.elections) {
     return role_ == Role::Leader;
   }
@@ -124,6 +125,9 @@ bool Replica::is_leader() const noexcept {
 }
 
 choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::Command& command) {
+  if (halted_) {
+    return Error{ErrorCode::StoreError, "replica halted after storage failure; reopen from disk"};
+  }
   if (!is_leader()) {
     return Error{ErrorCode::NotLeader, "leader is " + config_.leader_id};
   }
@@ -183,6 +187,7 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
     proposed = std::move(restamped);
   }
   if (auto written = store_.append_event(proposed.value()); !written) {
+    halt_after_storage_failure();
     return written.error();
   }
   command_index_[proposed.value().command_id.value()] = proposed.value().index.value();
@@ -201,47 +206,51 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
                        config_.leader_id};
 }
 
-void Replica::handle(const choreoos::protocol::Frame& frame) {
+void Replica::handle(const choreoos::protocol::Frame& frame) { handle(frame, {}); }
+
+void Replica::handle(const choreoos::protocol::Frame& frame,
+                     const std::string& transport_peer) {
+  if (halted_ || (!transport_peer.empty() && !is_configured_peer(transport_peer))) return;
   using choreoos::protocol::MessageType;
   switch (frame.type) {
     case MessageType::AppendEntries: {
       auto message = choreoos::protocol::decode_append_entries(frame.payload);
-      if (message) {
+      if (message && (transport_peer.empty() || message.value().leader_id == transport_peer)) {
         on_append(message.value(), frame.correlation);
       }
       break;
     }
     case MessageType::AppendEntriesResponse: {
       auto message = choreoos::protocol::decode_append_response(frame.payload);
-      if (message) {
+      if (message && (transport_peer.empty() || message.value().follower_id == transport_peer)) {
         on_append_response(message.value());
       }
       break;
     }
     case MessageType::RequestVote: {
       auto request = choreoos::protocol::decode_request_vote(frame.payload);
-      if (request) {
+      if (request && (transport_peer.empty() || request.value().candidate_id == transport_peer)) {
         on_vote(request.value(), frame.correlation);
       }
       break;
     }
     case MessageType::RequestVoteResponse: {
       auto response = choreoos::protocol::decode_vote_response(frame.payload);
-      if (response) {
+      if (response && (transport_peer.empty() || response.value().voter_id == transport_peer)) {
         on_vote_response(response.value());
       }
       break;
     }
     case MessageType::InstallSnapshot: {
       auto request = choreoos::protocol::decode_install_snapshot(frame.payload);
-      if (request) {
+      if (request && (transport_peer.empty() || request.value().leader_id == transport_peer)) {
         on_install(request.value(), frame.correlation);
       }
       break;
     }
     case MessageType::InstallSnapshotResponse: {
       auto response = choreoos::protocol::decode_snapshot_response(frame.payload);
-      if (response) {
+      if (response && (transport_peer.empty() || response.value().follower_id == transport_peer)) {
         on_install_response(response.value());
       }
       break;
@@ -252,6 +261,7 @@ void Replica::handle(const choreoos::protocol::Frame& frame) {
 }
 
 void Replica::tick() {
+  if (halted_) return;
   ++ticks_;
   if (!config_.elections) {
     if (is_leader()) {
@@ -384,8 +394,8 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
       }
       return;
     }
-    if (message.term > current_term_.value()) {
-      step_down(message.term);
+    if (message.term > current_term_.value() && !step_down(message.term)) {
+      return;  // Failed persistence: never process or acknowledge this request.
     }
     if (role_ != Role::Follower) {
       role_ = Role::Follower;
@@ -515,6 +525,7 @@ void Replica::on_append_response(const choreoos::protocol::AppendEntriesResponse
     }
     return;
   }
+  if (message.match_index > last_index()) return;
   if (message.match_index > peer->match_index) {
     peer->match_index = message.match_index;
   }
@@ -528,6 +539,7 @@ void Replica::on_append_response(const choreoos::protocol::AppendEntriesResponse
 }
 
 void Replica::on_vote(const choreoos::protocol::RequestVote& message, std::uint64_t correlation) {
+  if (!is_configured_peer(message.candidate_id)) return;
   choreoos::protocol::RequestVoteResponse response;
   response.voter_id = config_.id;
   response.vote_granted = false;
@@ -539,9 +551,7 @@ void Replica::on_vote(const choreoos::protocol::RequestVote& message, std::uint6
     }
     return;
   }
-  if (message.term > current_term_.value()) {
-    step_down(message.term);
-  }
+  if (message.term > current_term_.value() && !step_down(message.term)) return;
   response.term = current_term_.value();
   const bool current = message.term == current_term_.value();
   const bool vote_free = !voted_for_ || *voted_for_ == message.candidate_id;
@@ -554,9 +564,10 @@ void Replica::on_vote(const choreoos::protocol::RequestVote& message, std::uint6
       election_elapsed_ = 0;
       ++metrics_.votes_granted;
     } else {
-      // The vote is not durable, so it was not cast. Forget it, or this node
-      // would refuse every other candidate this term for a vote it never sent.
+      // The write outcome is ambiguous: disk recovery, not a retry, decides.
       voted_for_ = previous_vote;
+      halt_after_storage_failure();
+      return;
     }
   }
   if (auto payload = choreoos::protocol::encode(response)) {
@@ -566,6 +577,7 @@ void Replica::on_vote(const choreoos::protocol::RequestVote& message, std::uint6
 }
 
 void Replica::on_vote_response(const choreoos::protocol::RequestVoteResponse& message) {
+  if (!is_configured_peer(message.voter_id)) return;
   if (!config_.elections) {
     return;
   }
@@ -598,9 +610,8 @@ void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
     }
     return;
   }
-  if (config_.elections && message.term > current_term_.value()) {
-    step_down(message.term);
-  }
+  if (config_.elections && message.term > current_term_.value() &&
+      !step_down(message.term)) return;
   if (config_.elections) {
     config_.leader_id = message.leader_id;
     if (role_ != Role::Follower) {
@@ -798,6 +809,7 @@ void Replica::start_election() {
     return;
   }
   if (auto stored = store_.persist_consensus(next.value(), self.value()); !stored) {
+    halt_after_storage_failure();
     return;
   }
   const Role previous = role_;
@@ -872,7 +884,7 @@ void Replica::become_leader() {
           choreography.value(), choreoos::state::StageBounds::from_mm(1, 1).value(),
           choreoos::state::OverlapPolicy::Forbidden, 0}};
   if (auto written = store_.append_event(noop); !written) {
-    role_ = Role::Candidate;
+    halt_after_storage_failure();
     return;
   }
   command_index_[noop.command_id.value()] = noop.index.value();
@@ -882,6 +894,19 @@ void Replica::become_leader() {
   }
   replicate_all();
   advance_commit();
+}
+
+bool Replica::is_configured_peer(const std::string& id) const {
+  return std::any_of(peers_.begin(), peers_.end(),
+                     [&](const Peer& peer) { return peer.id == id; });
+}
+
+void Replica::halt_after_storage_failure() {
+  // A failed write may already be on disk. Recovery must reload term/vote.
+  halted_ = true;
+  role_ = Role::Follower;
+  votes_from_.clear();
+  config_.leader_id.clear();
 }
 
 bool Replica::step_down(std::uint64_t term) {
@@ -902,6 +927,7 @@ bool Replica::step_down(std::uint64_t term) {
     return false;
   }
   if (auto stored = store_.persist_consensus(parsed.value(), std::nullopt); !stored) {
+    halt_after_storage_failure();
     return false;
   }
   current_term_ = parsed.value();
@@ -958,7 +984,7 @@ std::uint64_t Replica::next_random() {
 
 void Replica::send(const std::string& peer, choreoos::protocol::MessageType type,
                    std::uint64_t correlation, std::string payload) {
-  if (!sender_) {
+  if (halted_ || !sender_) {
     return;
   }
   if (payload.size() > choreoos::protocol::kMaxFramePayload) {
@@ -983,6 +1009,7 @@ std::uint64_t Replica::last_term() const { return store_.log_term_at(last_index(
 int Replica::majority() const { return static_cast<int>(peers_.size() + 1) / 2 + 1; }
 
 const char* Replica::role_name() const noexcept {
+  if (halted_) return "halted";
   if (!config_.elections) {
     return is_leader() ? "leader" : "follower";
   }
