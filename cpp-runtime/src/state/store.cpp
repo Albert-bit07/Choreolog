@@ -9,6 +9,7 @@
 #include <sstream>
 #include <system_error>
 
+#include "choreoos/storage/file_util.hpp"
 #include "choreoos/storage/metadata.hpp"
 #include "choreoos/storage/snapshot.hpp"
 
