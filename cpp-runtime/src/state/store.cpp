@@ -321,11 +321,13 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
   const auto commit =
       options.commit_on_append ? store.engine_.state().last_applied : metadata.value().commit_index;
   store.commit_index_ = commit;
-  if (options.commit_on_append && (metadata.value().commit_index < commit ||
-                                   metadata.value().term != store.engine_.state().term)) {
+  if (options.commit_on_append &&
+      (metadata.value().commit_index < commit ||
+       metadata.value().term.value() < store.engine_.state().term.value())) {
     storage::NodeMetadata updated = metadata.value();
     updated.commit_index = commit;
-    updated.term = store.engine_.state().term;
+    if (updated.term.value() < store.engine_.state().term.value())
+      updated.term = store.engine_.state().term;
     if (auto stored = storage::store_metadata(store.directory_ / "meta.bin", updated,
                                               options.durability == storage::Durability::Sync);
         !stored) {
@@ -362,13 +364,18 @@ Result<SubmitResult> FileEngine::submit(Command command) {
   if (auto after = fail_after_flush_unlocked(); !after) {
     return after.error();
   }
+  // propose() already validated this event against the unchanged engine.
+  // Publish it only after metadata is durable, without copying full history.
+  auto metadata = storage::load_metadata(directory_ / "meta.bin");
+  if (!metadata) return metadata.error();
+  auto updated = metadata.value();
+  updated.commit_index = proposed.value().index;
+  if (updated.term.value() < proposed.value().term.value()) updated.term = proposed.value().term;
+  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
+    return stored.error();
+  }
   if (auto applied = engine_.apply_committed(proposed.value()); !applied) {
     return applied.error();
-  }
-  storage::NodeMetadata metadata{engine_.state().term, engine_.state().last_applied, std::nullopt};
-  if (auto stored = storage::store_metadata(directory_ / "meta.bin", metadata, sync, false);
-      !stored) {
-    return stored.error();
   }
   recovery_.commit_index = engine_.state().last_applied.value();
   recovery_.state_hash = state_hash(engine_.state());
@@ -468,16 +475,19 @@ Result<void> FileEngine::commit_through(LogIndex index) {
   if (index < commit_index_) {
     return {};
   }
+  // Validate the complete batch without exposing state or retry receipts.
+  // A failed metadata write may be ambiguous; only recovery decides what won.
+  Engine replacement = engine_;
   for (std::uint64_t next = commit_index_.value() + 1; next <= index.value(); ++next) {
     const Event* event = log_entry(next);
     if (event == nullptr) {
       break;
     }
-    if (auto applied = engine_.apply_committed(*event); !applied) {
+    if (auto applied = replacement.apply_committed(*event); !applied) {
       return applied.error();
     }
   }
-  if (engine_.state().last_applied != index) {
+  if (replacement.state().last_applied != index) {
     return Error{ErrorCode::IndexGap, "commit index is not present in the log"};
   }
   auto metadata = storage::load_metadata(directory_ / "meta.bin");
@@ -487,16 +497,14 @@ Result<void> FileEngine::commit_through(LogIndex index) {
   storage::NodeMetadata updated = metadata.value();
   updated.commit_index = index;
   // The election term can be ahead of the last applied event. Never roll it back.
-  if (updated.term.value() < engine_.state().term.value()) {
-    updated.term = engine_.state().term;
+  if (updated.term.value() < replacement.state().term.value()) {
+    updated.term = replacement.state().term;
   }
   const bool sync = options_.durability == storage::Durability::Sync;
-  // Only the commit index changes here, so an older durable copy is acceptable
-  // and the extra directory fsync is skipped.
-  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync, false);
-      !stored) {
+  if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
     return stored.error();
   }
+  engine_ = std::move(replacement);
   commit_index_ = index;
   recovery_.commit_index = index.value();
   recovery_.state_hash = state_hash(engine_.state());

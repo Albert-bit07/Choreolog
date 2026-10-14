@@ -222,7 +222,7 @@ void Replica::handle(const choreoos::protocol::Frame& frame, const std::string& 
     case MessageType::AppendEntriesResponse: {
       auto message = choreoos::protocol::decode_append_response(frame.payload);
       if (message && (transport_peer.empty() || message.value().follower_id == transport_peer)) {
-        on_append_response(message.value());
+        on_append_response(message.value(), frame.correlation);
       }
       break;
     }
@@ -250,7 +250,7 @@ void Replica::handle(const choreoos::protocol::Frame& frame, const std::string& 
     case MessageType::InstallSnapshotResponse: {
       auto response = choreoos::protocol::decode_snapshot_response(frame.payload);
       if (response && (transport_peer.empty() || response.value().follower_id == transport_peer)) {
-        on_install_response(response.value());
+        on_install_response(response.value(), frame.correlation);
       }
       break;
     }
@@ -299,11 +299,18 @@ void Replica::send_snapshot_chunk(Peer& peer, const choreoos::storage::Snapshot&
     // The leader took a newer snapshot mid-transfer; start that one over.
     peer.snapshot_index = snapshot.index.value();
     peer.snapshot_offset = 0;
+    peer.probe.reset();
   }
   if (!force && peer.snapshot_sent_tick == ticks_) {
     return;
   }
   peer.snapshot_sent_tick = ticks_;
+  if (peer.probe && peer.probe->term == current_term_.value() &&
+      peer.probe->frame.type == choreoos::protocol::MessageType::InstallSnapshot) {
+    const auto request = peer.probe->frame;
+    send(peer.id, request.type, request.correlation, request.payload);
+    return;
+  }
   ++metrics_.snapshot_chunks_sent;
   const std::string& data = snapshot.state_payload;
   const std::size_t offset = std::min<std::size_t>(peer.snapshot_offset, data.size());
@@ -319,12 +326,25 @@ void Replica::send_snapshot_chunk(Peer& peer, const choreoos::storage::Snapshot&
   message.offset = offset;
   message.more = offset + length < data.size();
   if (auto payload = choreoos::protocol::encode(message)) {
-    send(peer.id, choreoos::protocol::MessageType::InstallSnapshot, next_correlation_++,
-         payload.value());
+    const auto correlation = next_correlation_++;
+    peer.probe =
+        Probe{{choreoos::protocol::MessageType::InstallSnapshot, correlation, payload.value()},
+              current_term_.value(),
+              snapshot.index.value(),
+              offset + length};
+    send(peer.id, choreoos::protocol::MessageType::InstallSnapshot, correlation, payload.value());
   }
 }
 
 void Replica::replicate(Peer& peer, bool force) {
+  // Keep one request in flight per peer. Retry its exact frame and correlation
+  // so RTTs longer than a heartbeat do not invalidate every delayed response.
+  if (peer.probe && peer.probe->term == current_term_.value()) {
+    const auto request = peer.probe->frame;
+    send(peer.id, request.type, request.correlation, request.payload);
+    return;
+  }
+  peer.probe.reset();
   const std::uint64_t previous_index = peer.next_index == 0 ? 0 : peer.next_index - 1;
   // The log can serve this peer when it still holds (or can name the term of)
   // the entry just before next_index. After compaction, a peer behind that
@@ -368,8 +388,15 @@ void Replica::replicate(Peer& peer, bool force) {
     message.entries.push_back(*entry);
   }
   if (auto payload = choreoos::protocol::encode(message)) {
-    send(peer.id, choreoos::protocol::MessageType::AppendEntries, next_correlation_++,
-         payload.value());
+    const auto correlation = next_correlation_++;
+    const auto covered =
+        message.entries.empty() ? message.prev_log_index : message.entries.back().index.value();
+    peer.probe =
+        Probe{{choreoos::protocol::MessageType::AppendEntries, correlation, payload.value()},
+              current_term_.value(),
+              covered,
+              0};
+    send(peer.id, choreoos::protocol::MessageType::AppendEntries, correlation, payload.value());
   }
 }
 
@@ -382,6 +409,17 @@ void Replica::replicate_all() {
 void Replica::on_append(const choreoos::protocol::AppendEntries& message,
                         std::uint64_t correlation) {
   if (!is_configured_peer(message.leader_id)) return;
+  auto previous_index = message.prev_log_index;
+  auto previous_term = message.prev_log_term;
+  if ((previous_index == 0) != (previous_term == 0) || previous_term > message.term) return;
+  for (const auto& entry : message.entries) {
+    if (previous_index == UINT64_MAX || entry.index.value() != previous_index + 1 ||
+        entry.term.value() < previous_term || entry.term.value() > message.term) {
+      return;
+    }
+    previous_index = entry.index.value();
+    previous_term = entry.term.value();
+  }
   choreoos::protocol::AppendEntriesResponse response;
   response.term = current_term_.value();
   response.follower_id = config_.id;
@@ -468,8 +506,9 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
       speculative_dirty_ = true;
     }
     if (response.success) {
-      const std::uint64_t covered =
-          message.leader_commit < last_index() ? message.leader_commit : last_index();
+      const auto matched =
+          message.entries.empty() ? message.prev_log_index : message.entries.back().index.value();
+      const std::uint64_t covered = std::min(message.leader_commit, matched);
       if (covered > store_.commit_index().value()) {
         auto committed = store_.commit_through(LogIndex::parse(covered).value());
         if (!committed) {
@@ -493,7 +532,8 @@ void Replica::on_append(const choreoos::protocol::AppendEntries& message,
   }
 }
 
-void Replica::on_append_response(const choreoos::protocol::AppendEntriesResponse& message) {
+void Replica::on_append_response(const choreoos::protocol::AppendEntriesResponse& message,
+                                 std::uint64_t correlation) {
   if (!is_configured_peer(message.follower_id)) return;
   if (config_.elections && message.term > current_term_.value()) {
     step_down(message.term);
@@ -514,9 +554,15 @@ void Replica::on_append_response(const choreoos::protocol::AppendEntriesResponse
   if (peer == nullptr) {
     return;
   }
+  if (!peer->probe || peer->probe->frame.type != choreoos::protocol::MessageType::AppendEntries ||
+      peer->probe->frame.correlation != correlation || peer->probe->term != message.term) {
+    return;
+  }
+  if (message.success && message.match_index != peer->probe->index) return;
+  peer->probe.reset();
   if (!message.success) {
     const std::uint64_t before = peer->next_index;
-    const std::uint64_t hinted = message.hint_index + 1;
+    const std::uint64_t hinted = std::min(message.hint_index, last_index()) + 1;
     if (hinted < peer->next_index) {
       peer->next_index = hinted == 0 ? 1 : hinted;
     } else if (peer->next_index > 1) {
@@ -631,7 +677,8 @@ void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
 
   auto index = LogIndex::parse(message.last_included_index);
   auto term = choreoos::state::Term::parse(message.last_included_term);
-  if (!index || !term || message.state_hash.size() != 16) {
+  if (!index || !term || message.last_included_term > message.term ||
+      message.state_hash.size() != 16) {
     incoming_snapshot_ = {};
     reply_install(message.leader_id, correlation, false, 0);
     return;
@@ -676,6 +723,12 @@ void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
   snapshot.state_payload = std::move(incoming_snapshot_.data);
   const std::size_t total = snapshot.state_payload.size();
   incoming_snapshot_ = {};
+  // Invalid peer input must not halt a healthy node. After validation, an
+  // installation failure may follow durable writes and requires disk recovery.
+  if (!choreoos::storage::verify_snapshot(snapshot)) {
+    reply_install(message.leader_id, correlation, false, 0);
+    return;
+  }
   if (auto installed = store_.install_snapshot(snapshot); installed) {
     rebuild_command_index();
     rebuild_speculative();
@@ -685,7 +738,7 @@ void Replica::on_install(const choreoos::protocol::InstallSnapshot& message,
     reply_install(message.leader_id, correlation, true, total);
     return;
   }
-  reply_install(message.leader_id, correlation, false, 0);
+  halt_after_storage_failure();
 }
 
 void Replica::reply_install(const std::string& leader, std::uint64_t correlation, bool success,
@@ -701,7 +754,8 @@ void Replica::reply_install(const std::string& leader, std::uint64_t correlation
   }
 }
 
-void Replica::on_install_response(const choreoos::protocol::InstallSnapshotResponse& message) {
+void Replica::on_install_response(const choreoos::protocol::InstallSnapshotResponse& message,
+                                  std::uint64_t correlation) {
   if (!is_configured_peer(message.follower_id)) return;
   if (config_.elections && message.term > current_term_.value()) {
     step_down(message.term);
@@ -714,6 +768,12 @@ void Replica::on_install_response(const choreoos::protocol::InstallSnapshotRespo
     if (peer.id != message.follower_id) {
       continue;
     }
+    if (!peer.probe || peer.probe->frame.type != choreoos::protocol::MessageType::InstallSnapshot ||
+        peer.probe->frame.correlation != correlation || peer.probe->term != message.term) {
+      return;
+    }
+    if (message.success && message.next_offset != peer.probe->offset) return;
+    peer.probe.reset();
     if (!message.success) {
       peer.snapshot_offset = 0;  // restart from the first chunk on the next heartbeat
       return;
@@ -860,6 +920,7 @@ void Replica::become_leader() {
     peer.next_index = next_index;
     peer.match_index = 0;
     peer.snapshot_index = 0;
+    peer.probe.reset();
   }
 
   const std::string serial =

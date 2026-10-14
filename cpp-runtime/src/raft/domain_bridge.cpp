@@ -5,8 +5,6 @@
 #include <utility>
 #include <vector>
 
-#include "choreoos/storage/metadata.hpp"
-
 namespace choreoos::raft {
 namespace {
 
@@ -65,9 +63,8 @@ state::Result<state::ChoreographyState> replay_domain_committed(const Durable& d
 }
 
 state::Result<DomainProjection> audit_domain_store(const state::FileEngine& store) {
-  // Do not use FileEngine::consensus_metadata() here: its legacy API returns
-  // default metadata on a read error, which would mask a corrupted vote/term.
-  auto metadata = storage::load_metadata(store.directory() / "meta.bin");
+  // Propagate read failures; never substitute an initial term or empty vote.
+  auto metadata = store.consensus_metadata();
   if (!metadata) return metadata.error();
 
   const auto& events = store.log_events();

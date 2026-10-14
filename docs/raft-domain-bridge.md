@@ -20,11 +20,10 @@ decode; noncanonical or ambiguous encodings are rejected rather than being
 silently normalized. It explicitly handles all event types through the
 existing canonical event parser (including `NoOp`).
 
-`audit_domain_store()` reads metadata directly with
-`storage::load_metadata` because the legacy
-`FileEngine::consensus_metadata()` accessor returns default metadata on a
-disk-read failure. Silently using an initial term/vote after a corrupt
-metadata read would invalidate Raft vote durability.
+`audit_domain_store()` propagates the checked
+`FileEngine::consensus_metadata()` result. Neither the projection nor the
+production replica substitutes an initial term/vote after a metadata read
+failure; that would invalidate Raft vote durability.
 
 ## Replay and applied-state correspondence
 

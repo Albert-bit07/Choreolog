@@ -4,7 +4,18 @@ By default (`elections: false`), the configured leader copies its log to the oth
 
 A client may send a command to any node. A follower answers `NotLeader` and names the leader. The leader appends the command to its log and sends `AppendEntries` to the followers. The entry commits only after a majority has stored it. Only then does every node apply it to the choreography state. The client receives success after that commit.
 
-An empty `AppendEntries` is a heartbeat. It carries the leader's commit index so a follower that already has the entries can apply them.
+An empty `AppendEntries` is a heartbeat. A follower advances commit only through
+the prefix this request proves matches (`prev_log_index` for an empty request,
+otherwise the last entry in the batch), bounded by the leader's commit index.
+An unmatched local suffix is never committed by an earlier heartbeat.
+
+The leader keeps one append or snapshot request outstanding per peer and uses
+the existing frame correlation ID to match its response. Heartbeats retry the
+same frame and ID until answered, including when RTT exceeds one heartbeat.
+An append success must acknowledge exactly the request's last index; a snapshot
+success must acknowledge exactly the transmitted chunk's end offset. Duplicate,
+stale, wrong-term and out-of-range responses do not advance progress. A known
+peer's higher term still causes step-down and durable term persistence.
 
 If a follower is missing earlier entries, or has a different uncommitted suffix, the leader retries from an earlier index. The follower deletes only the uncommitted suffix, then stores the leader's entries. A committed prefix is never deleted.
 
@@ -24,6 +35,24 @@ Election attempts durably record the new term and self-vote before RequestVote m
 The C++ runtime in `cpp-runtime/src/replication/replica.cpp` currently owns election decisions, disk operations and send effects. PR #10's standalone `choreoos::raft::step` is **experimental** and is not called by the production TCP node. Formal model checking applies to scoped TLA+ configurations, not to the deployed C++ implementation; see [verification status](raft-verification.md).
 
 The TCP peer-config gate is not cryptographic peer authentication. Do not assume the protocol resists spoofing or Byzantine participants.
+
+## Storage failures
+
+Metadata read errors fail recovery rather than resetting the term and vote.
+Commit batches are validated in staged application state; metadata is persisted
+before publishing state or retry receipts. A single-node submission uses its
+already-validated proposal, persists metadata, then applies it. Existing higher
+terms and votes survive submission and recovery. Sync-mode metadata updates
+also sync the directory entry after atomic replacement.
+
+Production replicas halt after ambiguous WAL, metadata or validated snapshot
+installation failures. They stop peer replies, campaigns and new client work;
+reopen from disk to recover. Malformed snapshots are rejected before installation
+and do not halt a healthy node. This is ordered recovery across separate files,
+not an atomic transaction spanning WAL, metadata and snapshots.
+
+See [the PR #14 audit ledger](consensus-hardening-audit.md) for regression
+coverage and remaining architectural limitations.
 
 
 ## Frame
