@@ -3,6 +3,7 @@
 #include "choreoos/state/store.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -496,6 +497,13 @@ Result<void> FileEngine::commit_through(LogIndex index) {
   if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync, false);
       !stored) {
     return stored.error();
+  }
+  // Audit-only A/B: add a second, unnecessary metadata-file fsync.
+  // This recreates extra sync work, NOT a confirmed historical revision.
+  if (sync && std::getenv("CHOREOOS_BENCH_EXTRA_META_FSYNC") != nullptr) {
+    if (auto extra = storage::sync_file(directory_ / "meta.bin"); !extra) {
+      return extra.error();
+    }
   }
   commit_index_ = index;
   recovery_.commit_index = index.value();
