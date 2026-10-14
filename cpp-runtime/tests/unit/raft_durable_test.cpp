@@ -238,5 +238,18 @@ TEST(RaftDurableTest, FaultsNeedExplicitTestMode) {
   std::filesystem::remove_all(path);
 }
 
+TEST(RaftDurableTest, DiskVoteCannotBeLoadedUnderUnrelatedMembership) {
+  const auto path = fresh("membership");
+  auto node = DurableNode::open(cfg("a"), path);
+  ASSERT_TRUE(node);
+  ASSERT_FALSE(node.value().dispatch(ElectionTimeout{}).error);
+  auto incompatible = DurableNode::open(Config{"d", {"e", "f"}}, path);
+  EXPECT_FALSE(incompatible);
+  auto compatible = DurableNode::open(cfg("a"), path);
+  ASSERT_TRUE(compatible);
+  EXPECT_EQ(compatible.value().disk().voted_for, std::optional<std::string>{"a"});
+  std::filesystem::remove_all(path);
+}
+
 }  // namespace
 }  // namespace choreoos::raft
