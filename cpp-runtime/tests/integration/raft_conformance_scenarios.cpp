@@ -166,21 +166,20 @@ void log_conflict() {
   h.nodes["b"].durable.log = {{1, "committed"}, {2, "uncommitted"}};
   h.nodes["b"].durable.commit = 1;
   auto shorter = h.advance("b", RecvAppend{AppendEntries{2, "a", 0, 0, {}, 0, 100}});
-  require(shorter.send_now.size() == 1 &&
-          std::get<AppendReply>(shorter.send_now[0].message).success,
-          "short heartbeat refused");
+  require(
+      shorter.send_now.size() == 1 && std::get<AppendReply>(shorter.send_now[0].message).success,
+      "short heartbeat refused");
   require(h.nodes["b"].durable.log.size() == 2, "short heartbeat truncated suffix");
 
-  auto conflict = h.advance("b", RecvAppend{
-      AppendEntries{2, "a", 0, 0, {{2, "conflict"}}, 0, 101}});
-  require(conflict.send_now.size() == 1 &&
-          !std::get<AppendReply>(conflict.send_now[0].message).success,
-          "committed prefix overwritten");
+  auto conflict =
+      h.advance("b", RecvAppend{AppendEntries{2, "a", 0, 0, {{2, "conflict"}}, 0, 101}});
+  require(
+      conflict.send_now.size() == 1 && !std::get<AppendReply>(conflict.send_now[0].message).success,
+      "committed prefix overwritten");
   require(h.nodes["b"].durable.log.front().command == "committed", "committed prefix lost");
 
   auto stale = h.advance("b", RecvRequestVote{RequestVote{1, "a", 0, 0, 102}});
-  require(stale.send_now.size() == 1 &&
-          !std::get<VoteReply>(stale.send_now[0].message).granted,
+  require(stale.send_now.size() == 1 && !std::get<VoteReply>(stale.send_now[0].message).granted,
           "stale term received vote");
 }
 
@@ -198,8 +197,8 @@ void stale_ack() {
   require(second.send_now.size() == 2, "missing replacement probes");
   const auto second_msg = std::get<AppendEntries>(second.send_now[0].message);
   require(first_msg.request_id != second_msg.request_id, "probe request ID reused");
-  auto stale = h.advance("a", RecvAppendReply{
-      AppendReply{3, first_msg.leader == "a" ? "b" : "b", true, 999, first_msg.request_id}});
+  auto stale = h.advance("a", RecvAppendReply{AppendReply{3, first_msg.leader == "a" ? "b" : "b",
+                                                          true, 999, first_msg.request_id}});
   require(stale.send_now.empty() && h.nodes["a"].volatile_state.peers.at("b").match == 0,
           "stale response inflated match");
   h.advance("a", RecvAppendReply{AppendReply{3, "b", true, 999, second_msg.request_id}});
