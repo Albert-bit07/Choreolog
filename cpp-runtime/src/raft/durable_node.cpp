@@ -18,6 +18,15 @@ bool valid_config(const Config& config) {
   return true;
 }
 
+bool acceptable_durable_vote(const Config& config, const Durable& durable) {
+  if (!durable.voted_for) return true;
+  if (*durable.voted_for == config.self) return true;
+  for (const auto& peer : config.peers) {
+    if (peer == *durable.voted_for) return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 state::Result<DurableNode> DurableNode::open(Config config, std::filesystem::path directory,
@@ -25,6 +34,9 @@ state::Result<DurableNode> DurableNode::open(Config config, std::filesystem::pat
   if (!valid_config(config)) return error("Raft durable driver has invalid cluster IDs");
   auto checkpoint = CheckpointStore::open(std::move(directory), options);
   if (!checkpoint) return checkpoint.error();
+  if (!acceptable_durable_vote(config, checkpoint.value().current())) {
+    return error("Recovered Raft vote does not belong to configured cluster");
+  }
   auto node = initial(config);
   node.durable = checkpoint.value().current();
   return DurableNode{std::move(config), std::move(checkpoint.value()), std::move(node)};
@@ -34,6 +46,13 @@ DriveResult DurableNode::dispatch(const Input& input) {
   DriveResult result;
   if (std::holds_alternative<Restart>(input)) {
     auto recovered = checkpoint_.recover();
+    if (recovered && !acceptable_durable_vote(config_, recovered.value())) {
+      node_.pending.reset();
+      node_.halted = true;
+      result.effects.halt = true;
+      result.error = error("Recovered Raft vote does not belong to configured cluster");
+      return result;
+    }
     if (!recovered) {
       node_.pending.reset();
       node_.halted = true;
