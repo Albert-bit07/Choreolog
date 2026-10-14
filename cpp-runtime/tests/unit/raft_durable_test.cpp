@@ -78,8 +78,10 @@ TEST(RaftDurableTest, ReplicationAndQuorumCommitReachDiskBeforeReopen) {
   auto follower_ack = b.value().dispatch(RecvAppend{message});
   ASSERT_EQ(follower_ack.effects.send_now.size(), 1u);
   EXPECT_TRUE(std::get<AppendReply>(follower_ack.effects.send_now.front().message).success);
-  a.value().dispatch(
+  auto acknowledged = a.value().dispatch(
       RecvAppendReply{std::get<AppendReply>(follower_ack.effects.send_now.front().message)});
+  EXPECT_FALSE(acknowledged.error);
+  EXPECT_TRUE(acknowledged.effects.send_now.empty());
   auto committed = a.value().dispatch(AdvanceCommit{});
   EXPECT_FALSE(committed.error);
   EXPECT_EQ(a.value().disk().commit, 1u);
