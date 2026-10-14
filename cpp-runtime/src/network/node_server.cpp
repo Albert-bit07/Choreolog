@@ -444,8 +444,11 @@ void NodeServer::Impl::dial_missing() {
                                 if (config.peer_tls && sessions.size() >= kMaxTlsModeSessions) {
                                   dialing.erase(peer.id);
                                   ++transport_metrics.rejected;
-                                  boost::system::error_code ignored;
-                                  socket->close(ignored);
+                                  boost::system::error_code close_error;
+                                  const auto result = socket->close(close_error);
+                                  if (close_error || result) {
+                                    ++transport_metrics.dropped;
+                                  }
                                   return;
                                 }
                                 ++transport_metrics.reconnects;
