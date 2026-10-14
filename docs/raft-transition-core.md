@@ -51,9 +51,11 @@ tests are `cpp-runtime/tests/unit/raft_transition_test.cpp`.
    contract but do not mechanically replay `ChoreoRaft.tla` behaviors. The
    model's larger multi-term replication failure space is also not exhaustively
    verified.
-5. **No authentication or Byzantine defense.** Logical peers and message
-   structs are trusted by the pure core; the real host must implement identity
-   and transport checking.
+5. **No authentication or Byzantine defense.** The core now rejects
+   message identities outside the configured peer set before updating terms or
+   processing log data. This is only a membership check on a **claimed** ID;
+   the real host must authenticate the transport sender and bind that identity
+   to the decoded message. A member spoofing another member is out of scope.
 6. **No liveness guarantee.** ElectionTimeout and HeartbeatTimeout are supplied
    by the driver. The core intentionally has no fairness or clock assumptions.
 
