@@ -78,6 +78,11 @@ def validate(rows: list[dict], schema: dict) -> dict[str, int]:
         before_token, after_token = row.get("pending_before"), row.get("pending_after")
         demand(before_token is None or uint(before_token), "invalid previous token")
         demand(after_token is None or uint(after_token), "invalid following token")
+        input_token = row.get("input_token")
+        if action in ("PersistCompleted", "PersistFailed"):
+            demand(uint(input_token), "persist callback missing input token")
+        else:
+            demand(input_token is None, "unexpected persistence callback token")
         effects = row.get("effects")
         demand(isinstance(effects, dict), "missing effects")
         persist, sends, applied, halt = (effects.get("persist"),
@@ -126,15 +131,25 @@ def validate(rows: list[dict], schema: dict) -> dict[str, int]:
                    "disk state changed before write completion")
             demand(not sends and applied == 0, "dependent effect escaped before fsync")
         elif action == "PersistCompleted":
-            demand(after_token is None, "write not retired on completion")
-            demand(before_token is None or post["durable"]["term"] >= pre["durable"]["term"],
-                   "completion regressed durable state")
+            if before_token == input_token:
+                demand(after_token is None, "matched durable write was not retired")
+                demand(post["durable"]["term"] >= pre["durable"]["term"],
+                       "completion regressed durable state")
+            else:
+                demand(after_token == before_token and post == pre and
+                       not sends and applied == 0,
+                       "stale persistence completion changed state or released effects")
         else:
             demand(pre["durable"] == post["durable"],
                    f"durable state changed without PersistCompleted ({action})")
-        if action == "PersistFailed" and before_token is not None:
-            demand(post["alive"] is False and halt and not sends and applied == 0,
-                   "write failure did not fail-stop")
+        if action == "PersistFailed" and before_token == input_token:
+            demand(before_token is not None and post["alive"] is False and
+                   halt and not sends and applied == 0 and after_token is None,
+                   "matched write failure did not fail-stop")
+        elif action == "PersistFailed":
+            demand(post == pre and before_token == after_token and not sends and
+                   persist is None and applied == 0 and not halt,
+                   "stale write failure changed state")
         else:
             demand(not halt, "spurious halt effect")
         if applied:
