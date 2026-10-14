@@ -18,8 +18,9 @@ struct DriveResult {
 
 class DurableNode {
  public:
-  [[nodiscard]] static state::Result<DurableNode> open(
-      Config config, std::filesystem::path directory, CheckpointOptions options = {});
+  [[nodiscard]] static state::Result<DurableNode> open(Config config,
+                                                       std::filesystem::path directory,
+                                                       CheckpointOptions options = {});
 
   // PersistEffects are executed synchronously. Effects returned to a caller
   // are safe to send only after the required checkpoint has completed.

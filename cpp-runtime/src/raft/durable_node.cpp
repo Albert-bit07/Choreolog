@@ -21,7 +21,7 @@ bool valid_config(const Config& config) {
 }  // namespace
 
 state::Result<DurableNode> DurableNode::open(Config config, std::filesystem::path directory,
-                                            CheckpointOptions options) {
+                                             CheckpointOptions options) {
   if (!valid_config(config)) return error("Raft durable driver has invalid cluster IDs");
   auto checkpoint = CheckpointStore::open(std::move(directory), options);
   if (!checkpoint) return checkpoint.error();

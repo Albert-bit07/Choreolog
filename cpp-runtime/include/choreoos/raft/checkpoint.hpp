@@ -18,7 +18,7 @@ struct CheckpointOptions {
 class CheckpointStore {
  public:
   [[nodiscard]] static state::Result<CheckpointStore> open(std::filesystem::path directory,
-                                                          CheckpointOptions options = {});
+                                                           CheckpointOptions options = {});
 
   [[nodiscard]] const Durable& current() const noexcept { return current_; }
   [[nodiscard]] bool uncertain() const noexcept { return uncertain_; }

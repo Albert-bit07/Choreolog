@@ -38,8 +38,7 @@ TEST(RaftDurableTest, SelfVoteAndGrantedVoteSurviveRealDiskReopen) {
   EXPECT_EQ(reopened.value().node().durable.term, 1u);
   EXPECT_EQ(reopened.value().node().durable.voted_for, std::optional<std::string>{"a"});
   EXPECT_EQ(reopened.value().node().volatile_state.role, Role::Follower);
-  auto blocked = reopened.value().dispatch(
-      RecvRequestVote{RequestVote{1, "b", 0, 0, 9}});
+  auto blocked = reopened.value().dispatch(RecvRequestVote{RequestVote{1, "b", 0, 0, 9}});
   EXPECT_FALSE(blocked.error);
   ASSERT_EQ(blocked.effects.send_now.size(), 1u);
   EXPECT_FALSE(std::get<VoteReply>(blocked.effects.send_now.front().message).granted);
@@ -104,8 +103,7 @@ TEST(RaftDurableTest, InjectedFailureBeforeReplaceNeverReleasesVote) {
   auto opened = DurableNode::open(cfg("b"), path, {.test_mode = true});
   ASSERT_TRUE(opened);
   ASSERT_TRUE(opened.value().inject_next_fault_for_test(CheckpointFault::BeforeReplace));
-  const auto first = opened.value().dispatch(
-      RecvRequestVote{RequestVote{3, "a", 0, 0, 31}});
+  const auto first = opened.value().dispatch(RecvRequestVote{RequestVote{3, "a", 0, 0, 31}});
   EXPECT_TRUE(first.error);
   EXPECT_TRUE(first.effects.halt);
   EXPECT_TRUE(first.effects.send_now.empty());
@@ -126,8 +124,7 @@ TEST(RaftDurableTest, FailureAfterReplaceIsAmbiguousButRecoveryUsesDisk) {
   auto opened = DurableNode::open(cfg("b"), path, {.test_mode = true});
   ASSERT_TRUE(opened);
   ASSERT_TRUE(opened.value().inject_next_fault_for_test(CheckpointFault::AfterReplace));
-  auto failed = opened.value().dispatch(
-      RecvRequestVote{RequestVote{3, "a", 0, 0, 35}});
+  auto failed = opened.value().dispatch(RecvRequestVote{RequestVote{3, "a", 0, 0, 35}});
   ASSERT_TRUE(failed.error);
   EXPECT_TRUE(failed.effects.halt);
   EXPECT_TRUE(failed.effects.send_now.empty());

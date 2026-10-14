@@ -69,7 +69,8 @@ Result<void> valid_state(const Durable& value) {
   // PR #12 intentionally lacks an atomic choreography application checkpoint.
   // An applied index must not be marked durable ahead of durable state.
   if (value.applied != 0) {
-    return invalid("Raft checkpoint cannot persist applied progress without state-machine snapshot");
+    return invalid(
+        "Raft checkpoint cannot persist applied progress without state-machine snapshot");
   }
   if (value.voted_for && value.voted_for->size() > 64) {
     return invalid("Raft checkpoint vote ID too large");
@@ -136,8 +137,7 @@ Result<Durable> decode(const std::vector<std::uint8_t>& bytes) {
     return invalid("Raft checkpoint has invalid file size");
   }
   if (std::string(bytes.begin(), bytes.begin() + 8) != "CHRAFT01" ||
-      storage::read_u32(bytes, 8) != 1 ||
-      storage::read_u32(bytes, 12) != bytes.size() - 20) {
+      storage::read_u32(bytes, 8) != 1 || storage::read_u32(bytes, 12) != bytes.size() - 20) {
     return invalid("Raft checkpoint magic, version, or length invalid");
   }
   if (storage::crc32(bytes.data(), bytes.size() - 4) !=
@@ -164,8 +164,8 @@ Result<Durable> decode(const std::vector<std::uint8_t>& bytes) {
   for (std::uint32_t index = 0; index < count; ++index) {
     Entry entry;
     std::uint32_t length = 0;
-    if (!reader.take_u64(entry.term) || !reader.take_u32(length) ||
-        length > kMaximumCommandBytes || !reader.take_string(length, entry.command)) {
+    if (!reader.take_u64(entry.term) || !reader.take_u32(length) || length > kMaximumCommandBytes ||
+        !reader.take_string(length, entry.command)) {
       return invalid("Raft checkpoint log entry malformed");
     }
     value.log.push_back(std::move(entry));
@@ -191,7 +191,7 @@ Result<Durable> read_checkpoint(const std::filesystem::path& path) {
 }  // namespace
 
 state::Result<CheckpointStore> CheckpointStore::open(std::filesystem::path directory,
-                                                    CheckpointOptions options) {
+                                                     CheckpointOptions options) {
   std::error_code ec;
   std::filesystem::create_directories(directory, ec);
   if (ec) return invalid("Raft checkpoint directory creation failed: " + ec.message());
