@@ -1,0 +1,26 @@
+name: Format PR10 traces once
+on:
+  push:
+    branches: ['raft/pure-transition-core-v1']
+    paths: ['.github/workflows/raft-trace-format-once.yml']
+permissions:
+  contents: write
+jobs:
+  format-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: raft/pure-transition-core-v1
+          persist-credentials: true
+      - name: Format new trace implementation and tests
+        run: |
+          set -euo pipefail
+          clang-format -i cpp-runtime/include/choreoos/raft/trace.hpp cpp-runtime/src/raft/trace.cpp cpp-runtime/tests/unit/raft_trace_test.cpp
+          if ! git diff --quiet -- cpp-runtime/include/choreoos/raft/trace.hpp cpp-runtime/src/raft/trace.cpp cpp-runtime/tests/unit/raft_trace_test.cpp; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add cpp-runtime/include/choreoos/raft/trace.hpp cpp-runtime/src/raft/trace.cpp cpp-runtime/tests/unit/raft_trace_test.cpp
+            git commit -m 'style: clang-format deterministic Raft trace files'
+            git push origin HEAD:raft/pure-transition-core-v1
+          fi
