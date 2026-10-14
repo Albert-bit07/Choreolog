@@ -64,9 +64,12 @@ tests are `cpp-runtime/tests/unit/raft_transition_test.cpp`.
 Linux and Windows builds/tests, formatting, sanitizers/static analysis, and
 existing model checks passed on PR #10 before merge. Merging phase A means only that an
 **experimental** component and its characterization tests are available; it
-does not activate the new Raft behavior. A future PR must implement storage
-phase coordination, trace projection, conformance testing and staged migration
-of production `Replica`. See [verification scope](raft-verification.md) and
+does not activate the new Raft behavior. Merged PR #11 adds bounded
+trace-contract tests, and merged PR #12 adds an isolated atomic checkpoint
+adapter with real filesystem recovery tests. Neither is wired to the
+production `Replica` or proves TLA+ refinement; real WAL/event mapping,
+atomic choreography application checkpoints and the staged runtime migration
+remain outstanding. See [verification scope](raft-verification.md) and
 [storage correspondence audit](raft-storage-audit.md).
 
 ## Deterministic trace projection (first PR #10 conformance prerequisite)
