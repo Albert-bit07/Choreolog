@@ -607,8 +607,11 @@ Exit criterion: demonstrations clearly identify whether recovery came from C++ r
 - Rich choreography editing
 - Production authentication and authorization
 
-## Start here
+## Current implementation status (October 2026)
 
-Milestones 0–3 are on main. Milestone 3 is fixed-leader replication, not consensus. Milestone 4 election code is on main and is Raft-like, not production Raft; a Step 27 box (every two-versus-one process partition) is still open. Multi-chunk snapshots are done. Milestone 5 seeded fault injection and property tests now pass locally. A green seed is evidence, not a proof.
+- Milestones 0–5 provide a tested C++ state machine, WAL/snapshots, three-node replication, Raft-like elections, deterministic simulation and fault/property tests. PR #3 added coverage for all three two-versus-one partitions, superseding the older Step 27 note below. Green seeds and CI jobs are bounded evidence, not formal proofs.
+- Milestone 7 has a loopback C++ gRPC management gateway and generated C# client. The Avalonia dashboard is not yet complete. Temporal orchestration and cross-layer tests are planned, not implemented end-to-end.
+- Formal Raft verification is tracked separately in [docs/raft-verification.md](docs/raft-verification.md). Merged PR #9 provides three completed **scoped** TLC configurations, but not exhaustive combined multi-term replication under network and disk faults, nor C++ model refinement.
+- PR #10 (draft) introduces a pure C++ Raft transition core alongside, **not yet replacing**, the production `replication::Replica`. Persistence adapters, snapshot effects, trace-to-model conformance and the actual migration remain outstanding.
 
-The next implementation session should begin Milestone 6 at Step 31: benchmark harnesses. Do not start the dashboard or Temporal workflows until the C++ management API and C# client can return retry-safe committed results.
+**Next correctness work:** validate PR #10 in Windows/Linux CI, expand characterization and trace tests, audit persistence and message-response ordering, and only then migrate the deployed `Replica` incrementally. The benchmark, dashboard and Temporal workstreams remain on the project roadmap; the old “start Milestone 6 next” instruction is no longer the active correctness task.

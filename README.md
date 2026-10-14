@@ -6,7 +6,7 @@ This is not an operating-system kernel or a production-grade consensus product. 
 
 See [PLAN.md](PLAN.md) for the architecture and [TASKS.md](TASKS.md) for the ordered implementation checklist.
 
-The next correctness initiative is a [scoped Raft verification program](docs/raft-verification.md), progressing from protocol conformance and bounded model checking to implementation-level proof. Formal verification of the C++ implementation has **not** been established.
+A [scoped Raft verification program](docs/raft-verification.md) is underway. PRs #7–#9 added separate election and replication models and a unified asynchronous model with **explicitly bounded**, completed TLC profiles. The broader combined-failure model remains incomplete. PR #10 introduces an experimental pure C++ transition core **alongside**, not inside, the deployed `Replica`. Formal verification or model-to-code refinement of the deployed C++ implementation has **not** been established.
 
 ## Responsibility boundaries
 
@@ -25,9 +25,9 @@ The C++ runtime owns:
 
 Only committed C++ runtime state is authoritative choreography state.
 
-### C#/.NET — control plane and workflow workers
+### C#/.NET — control plane and workflow workers (planned)
 
-The .NET solution owns:
+The C++ gRPC management gateway and generated C# client exist. The planned Avalonia dashboard and Temporal Worker will own:
 
 - Avalonia desktop dashboard
 - Typed clients for the C++ management API
@@ -37,9 +37,9 @@ The .NET solution owns:
 
 The dashboard and worker do not implement consensus or independently derive authoritative choreography state.
 
-### Temporal — durable orchestration
+### Temporal — durable orchestration (planned)
 
-Temporal coordinates long-running workflows above ChoreoOS, including:
+When the worker and integration are implemented, Temporal will coordinate long-running workflows above ChoreoOS, including:
 
 - `RehearsalWorkflow`
 - `PerformanceWorkflow`
@@ -57,11 +57,11 @@ Python supports benchmark orchestration, statistical analysis, plotting, and rep
 ## Independent failure domains
 
 - A ChoreoOS node crash is recovered through the C++ replicated log, consensus, and snapshot mechanisms.
-- A Temporal Worker crash is recovered through Temporal workflow history and another or restarted .NET worker.
-- A Temporal outage pauses workflows but does not stop a healthy ChoreoOS cluster.
+- Planned: a Temporal Worker crash will be recovered through Temporal workflow history and another or restarted .NET worker.
+- Planned: a Temporal outage will pause workflows without stopping a healthy ChoreoOS cluster.
 - ChoreoOS quorum loss prevents authoritative writes while Temporal retains workflow progress and retries safely.
 
-Cross-layer tests deliberately exercise these failures independently and together.
+Cross-layer Temporal/ChoreoOS failure tests remain planned; they are not included in the current C++ consensus verification results.
 
 ## Development order
 
@@ -86,6 +86,12 @@ Milestone 2 remains underneath: a checksummed write-ahead log (`wal.bin`), atomi
 Milestone 1 remains the deterministic state machine underneath that log. Two
 independent replays of the same store still produce the same hash.
 
+A separate loopback-only management gRPC gateway and generated C# client are implemented. The Avalonia dashboard and Temporal Worker are not yet implemented.
+
+**Formal verification status:** `formal/raft/Election.tla`, `Replication.tla`, and `ChoreoRaft.tla` contain separate and unified protocol models. The unified model has three completed, scoped CI profiles: 5,090-state core election/replication/commit, 88,966-state recovery, and 46,897-state two-term election. These results do **not** establish exhaustive multi-term replication under combined network/disk faults or C++ code conformance. See [the unified model report](formal/raft/ChoreoRaft-README.md) and [storage correspondence audit](docs/raft-storage-audit.md).
+
+**C++ transition migration:** PR #10 adds a testable `choreoos::raft::step` API with explicit persistence effects; the production `replication::Replica` remains the current implementation and no trace-refinement claim has been made. The [transition-core contract](docs/raft-transition-core.md) documents outstanding persistence, application checkpoint and recovery assumptions.
+
 Milestone 0 also provides:
 
 - A C++20 CMake project
@@ -104,8 +110,7 @@ Configure, build, and test on Windows:
 ```
 
 Temporal Compose files now live under `temporal/` as an independent
-orchestration stack. They do not store authoritative ChoreoOS state. The .NET
-project scaffold is pending installation of a .NET SDK.
+orchestration stack. They do not store authoritative ChoreoOS state. A generated C# management client exists; the remaining Avalonia and Temporal Worker projects are still pending. Historical local .NET SDK setup is documented separately.
 
 See [docs/development.md](docs/development.md) for verified tool versions and
 environment details.

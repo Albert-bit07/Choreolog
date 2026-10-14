@@ -10,6 +10,8 @@ add_executable(
   unit/durability_test.cpp
   unit/protocol_test.cpp
   unit/replication_test.cpp
+  unit/raft_transition_test.cpp
+  unit/raft_trace_test.cpp
   unit/catchup_test.cpp
   unit/config_test.cpp
   unit/crash_ordering_test.cpp
