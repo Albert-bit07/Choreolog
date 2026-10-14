@@ -118,7 +118,7 @@ security. Each future addition extends the specification before code.
 - [ ] Add protocol trace events with term, role, log indices, message cause
       and durable completion boundaries.
 - [x] Add a **bounded C++ trace-contract checker and seeded negative cases**
-      (PR #11 draft), separate from the production `Replica`.
+      (merged PR #11), separate from the production `Replica`.
 - [ ] Build a *TLC behavior-to-C++* trace refinement checker with explicitly
       justified projection and stuttering. The current independent contract
       tests are not a machine-checked refinement proof. See
