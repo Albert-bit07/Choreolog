@@ -96,7 +96,13 @@ def validate(rows: list[dict], schema: dict) -> dict[str, int]:
         previous[(scenario, actor)] = row
         scenarios[scenario].append(row)
 
-        demand(post["term"] >= pre["term"], "term regression")
+        if action in ("PersistFailed", "Restart"):
+            # An unacknowledged in-memory term/log may disappear on recovery.
+            # Durable knowledge and committed history must still be monotone.
+            demand(post["term"] == post["durable"]["term"],
+                   "recovery retained an unacknowledged staged term")
+        else:
+            demand(post["term"] >= pre["term"], "term regression")
         demand(post["durable"]["term"] >= pre["durable"]["term"], "durable term regression")
         demand(post["commit"] >= pre["commit"], "commit index regression")
         demand(post["durable"]["commit"] >= pre["durable"]["commit"],
