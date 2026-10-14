@@ -23,8 +23,7 @@ state::Result<Entry> encode_domain_event(const state::Event& event) {
   }
   const auto encoded = state::canonical_event(event);
   auto decoded = state::parse_event(encoded);
-  if (!decoded || decoded.value().index != event.index ||
-      decoded.value().term != event.term ||
+  if (!decoded || decoded.value().index != event.index || decoded.value().term != event.term ||
       state::canonical_event(decoded.value()) != encoded) {
     return bridge_error("Raft event projection is not a canonical round trip");
   }
@@ -38,17 +37,15 @@ state::Result<state::Event> decode_domain_entry(const Entry& entry, std::uint64_
   auto decoded = state::parse_event(entry.command);
   if (!decoded) return decoded.error();
   const auto& event = decoded.value();
-  if (event.schema_version != state::kCurrentSchemaVersion ||
-      event.index.value() != index || event.term.value() != entry.term ||
-      state::canonical_event(event) != entry.command) {
+  if (event.schema_version != state::kCurrentSchemaVersion || event.index.value() != index ||
+      event.term.value() != entry.term || state::canonical_event(event) != entry.command) {
     return bridge_error("Raft entry has an inconsistent or noncanonical event envelope");
   }
   return decoded.value();
 }
 
 state::Result<state::ChoreographyState> replay_domain_committed(const Durable& durable) {
-  if (durable.commit > durable.log.size() ||
-      durable.applied > durable.commit) {
+  if (durable.commit > durable.log.size() || durable.applied > durable.commit) {
     return bridge_error("Raft domain replay has invalid commit/applied indexes");
   }
   std::vector<state::Event> committed;
@@ -74,12 +71,10 @@ state::Result<DomainProjection> audit_domain_store(const state::FileEngine& stor
   const auto& events = store.log_events();
   const auto commit = store.commit_index().value();
   const auto applied = store.engine().state().last_applied.value();
-  if (commit != metadata.value().commit_index.value() ||
-      applied != commit) {
+  if (commit != metadata.value().commit_index.value() || applied != commit) {
     return bridge_error("Recovered WAL, metadata commit and applied index disagree");
   }
-  if ((!events.empty() && events.front().index.value() != 1) ||
-      commit > events.size()) {
+  if ((!events.empty() && events.front().index.value() != 1) || commit > events.size()) {
     return bridge_error("Raft event bridge requires an uncompacted, complete WAL prefix");
   }
 
@@ -94,8 +89,7 @@ state::Result<DomainProjection> audit_domain_store(const state::FileEngine& stor
 
   for (std::size_t offset = 0; offset < events.size(); ++offset) {
     const auto& event = events[offset];
-    if (event.index.value() != offset + 1 ||
-        event.term.value() > projection.raft.term) {
+    if (event.index.value() != offset + 1 || event.term.value() > projection.raft.term) {
       return bridge_error("Raft event bridge found a WAL index gap or future-term entry");
     }
     auto encoded = encode_domain_event(event);

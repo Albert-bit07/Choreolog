@@ -20,7 +20,7 @@ struct DomainProjection {
 
 // Raft entry -> typed event, validating canonical payload and exact index/term.
 [[nodiscard]] state::Result<state::Event> decode_domain_entry(const Entry& entry,
-                                                               std::uint64_t index);
+                                                              std::uint64_t index);
 
 // Derive authoritative choreography state by replaying exactly the committed
 // prefix. Uncommitted suffixes never affect the returned state.
@@ -30,7 +30,6 @@ struct DomainProjection {
 // Compare real FileEngine WAL, durable metadata, commit index and recovered
 // applied state to the strict Raft projection. Compacted/missing prefixes
 // intentionally fail closed until snapshot-offset mapping is implemented.
-[[nodiscard]] state::Result<DomainProjection> audit_domain_store(
-    const state::FileEngine& store);
+[[nodiscard]] state::Result<DomainProjection> audit_domain_store(const state::FileEngine& store);
 
 }  // namespace choreoos::raft

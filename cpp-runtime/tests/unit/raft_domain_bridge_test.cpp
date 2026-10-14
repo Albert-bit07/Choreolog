@@ -30,13 +30,13 @@ state::Command create_show() {
 
 state::Command add_dancer() {
   using namespace choreoos::state;
-  return Command{CommandId::parse("cmd-alice").value(),
-                 ChoreographyId::parse("opening").value(),
-                 CommandType::AddDancer,
-                 kCurrentSchemaVersion,
-                 MusicalTick::from_count(1).value(),
-                 DancerPayload{DancerId::parse("alice").value(),
-                               Position::from_mm(2000, 1500).value()}};
+  return Command{
+      CommandId::parse("cmd-alice").value(),
+      ChoreographyId::parse("opening").value(),
+      CommandType::AddDancer,
+      kCurrentSchemaVersion,
+      MusicalTick::from_count(1).value(),
+      DancerPayload{DancerId::parse("alice").value(), Position::from_mm(2000, 1500).value()}};
 }
 
 TEST(RaftDomainBridgeTest, ProductionWalRoundTripsAndReplaysAfterDiskRestart) {
