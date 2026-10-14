@@ -215,26 +215,24 @@ TEST(RaftTransitionTest, NonMemberMessagesCannotChangeTermOrLog) {
   node.durable.term = 2;
   node.durable.log = {{2, "existing"}};
 
-  auto [after_vote, vote] = run(c, node,
-      RecvRequestVote{RequestVote{99, "intruder", 1, 2, 9}});
+  auto [after_vote, vote] = run(c, node, RecvRequestVote{RequestVote{99, "intruder", 1, 2, 9}});
   EXPECT_EQ(after_vote.durable, node.durable);
   EXPECT_FALSE(vote.persist);
   EXPECT_TRUE(vote.send_now.empty());
 
-  auto [after_append, append] = run(c, after_vote,
-      RecvAppend{AppendEntries{99, "intruder", 0, 0,
-                               {{99, "replace"}}, 1, 10}});
+  auto [after_append, append] =
+      run(c, after_vote, RecvAppend{AppendEntries{99, "intruder", 0, 0, {{99, "replace"}}, 1, 10}});
   EXPECT_EQ(after_append.durable, node.durable);
   EXPECT_FALSE(append.persist);
   EXPECT_TRUE(append.send_now.empty());
 
-  auto [after_vote_reply, vote_reply] = run(c, after_append,
-      RecvVoteReply{VoteReply{99, "intruder", true, 11}});
+  auto [after_vote_reply, vote_reply] =
+      run(c, after_append, RecvVoteReply{VoteReply{99, "intruder", true, 11}});
   EXPECT_EQ(after_vote_reply.durable.term, 2u);
   EXPECT_FALSE(vote_reply.persist);
 
-  auto [after_append_reply, append_reply] = run(c, after_vote_reply,
-      RecvAppendReply{AppendReply{99, "intruder", true, 999, 12}});
+  auto [after_append_reply, append_reply] =
+      run(c, after_vote_reply, RecvAppendReply{AppendReply{99, "intruder", true, 999, 12}});
   EXPECT_EQ(after_append_reply.durable, node.durable);
   EXPECT_FALSE(append_reply.persist);
 }
