@@ -1,10 +1,8 @@
-# Bounded Raft election model (V1, first slice)
+# Raft formal models: elections, replication and unified asynchronous protocol
 
-This directory begins the verification program in [docs/raft-verification.md](../../docs/raft-verification.md).
-`Election.tla` is an executable **abstraction of elections**, not yet a complete
-Raft model and not a mechanically checked proof of the C++ implementation.
+This directory contains three distinct specifications maintained under the [Raft verification program](../../docs/raft-verification.md). `Election.tla` abstracts voting, `Replication.tla` abstracts bounded log/commit safety, and `ChoreoRaft.tla` combines asynchronous election and AppendEntries with durability modeling. None is a mechanically checked proof of the C++ runtime.
 
-## What this model contains
+## `Election.tla`: what the election-only model contains
 
 - Three nodes with nondeterministic election starts, candidate self-votes, and
   quorum-based leadership.
@@ -30,15 +28,14 @@ before its 240-second CI limit and was not exhaustively checked.
 Both CI configurations are finite-state checks, not proofs for unbounded
 terms, message queues, or executions.
 
-## What this model does NOT contain
+## What `Election.tla` does NOT contain
 
 Log entries, up-to-date-log voting, AppendEntries, quorum **commit**, current-term
 commit restrictions, snapshots, compaction, real disk I/O, networking identity,
 message duplication, dynamic membership, client responses, and state-machine
 application are not modeled here. In particular, this first model cannot
 establish log matching, leader completeness, state-machine safety, or full Raft
-conformance. These are the next specification expansions. The distinction
-between this abstract voting model and deployed C++ is unproved.
+conformance. Those behaviors are modeled only in the separate `Replication.tla` and/or `ChoreoRaft.tla` modules described below. No C++ refinement is established.
 
 ## Run locally
 
@@ -66,10 +63,7 @@ SHA-256 before running TLC. The pinned digest is
 | `Crash / Restart` | `Replica::open` and durable metadata recovery |
 | `Drop` | `SimulatedNetwork` loss/partition behavior |
 
-Next: introduce bounded log contents and log-freshness voting, then
-AppendEntries and current-term majority commitment in `Spec.tla`.
-Add a trace mapping that can distinguish durable writes from messages sent,
-and eventually verify that the C++ transition core refines the model.
+The unified `ChoreoRaft.tla` now covers several of these transitions under separately scoped bounds. PR #10 adds an experimental C++ transition core; implementation trace conformance is still future work. Do not represent a green TLC run as proof of the C++ implementation.
 Do not represent a green TLC run as proof of the C++ implementation.
 
 ## Bounded replication model (next V1 slice)
@@ -98,5 +92,14 @@ compaction, application, client responses, network identity and any
 correspondence to C++ are also out of scope.
 
 A green finite TLC run is only evidence for this bounded abstraction.
-The next step is a **unified asynchronous election/AppendEntries model**
-covering stale leaders and messages, followed by real implementation traces.
+The next step is to strengthen the existing unified asynchronous model's combined failure bounds and connect implementation traces to it.
+
+## Unified asynchronous model (PR #9)
+
+`ChoreoRaft.tla` models elections, vote durability, AppendEntries, delayed/dropped/duplicated messages, crash/restart, and torn-write outcomes. A single exhaustive run of the unrestricted combined model **has not completed**, so passing restricted profiles must not be extrapolated to all failure schedules. See [the model's report](ChoreoRaft-README.md) for the exact configurations, measured state counts, and remaining proof obligations.
+
+The CI workflow successfully exhausted three **separate** finite profiles: election/replication/commit (5,090 distinct states), crash/restart recovery (88,966), and two-term elections **without logs** (46,897). Expected-failure reachability and the non-durable-vote negative test passed. This is *scoped model checking*, not a proof of arbitrary-size Raft or production C++ behavior.
+
+## Experimental C++ transition boundary (PR #10)
+
+`cpp-runtime/include/choreoos/raft/transition.hpp` and `cpp-runtime/src/raft/transition.cpp` introduce a pure, testable state transition interface. The currently deployed runtime is still `replication::Replica`; the new core is not wired into network/storage adapters. Snapshot integration, trace schema replay, combined multi-term replication faults, and implementation conformance remain to be done. See [the persistence audit](../../docs/raft-storage-audit.md).
