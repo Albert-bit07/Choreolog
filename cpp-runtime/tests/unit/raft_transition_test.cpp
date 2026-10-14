@@ -28,8 +28,7 @@ TEST(RaftTransitionTest, ElectionDoesNotEmitVotesBeforeDurableSelfVote) {
   EXPECT_EQ(staged.durable.term, 0u);
   EXPECT_EQ(staged.volatile_state.role, Role::Candidate);
 
-  auto [leader_candidate, completion] =
-      run(c, staged, PersistCompleted{proposal.persist->token});
+  auto [leader_candidate, completion] = run(c, staged, PersistCompleted{proposal.persist->token});
   EXPECT_FALSE(leader_candidate.pending);
   EXPECT_EQ(leader_candidate.durable.term, 1u);
   ASSERT_TRUE(leader_candidate.durable.voted_for);
@@ -38,8 +37,8 @@ TEST(RaftTransitionTest, ElectionDoesNotEmitVotesBeforeDurableSelfVote) {
   EXPECT_TRUE(std::holds_alternative<RequestVote>(completion.send_now[0].message));
   EXPECT_EQ(leader_candidate.volatile_state.votes.count("a"), 1u);
 
-  auto [leader, election_effects] = run(
-      c, leader_candidate, RecvVoteReply{VoteReply{1, "b", true, 100}});
+  auto [leader, election_effects] =
+      run(c, leader_candidate, RecvVoteReply{VoteReply{1, "b", true, 100}});
   EXPECT_EQ(leader.volatile_state.role, Role::Leader);
   EXPECT_EQ(leader.volatile_state.leadership_epoch, 1u);
   EXPECT_EQ(election_effects.send_now.size(), 2u);
@@ -47,8 +46,7 @@ TEST(RaftTransitionTest, ElectionDoesNotEmitVotesBeforeDurableSelfVote) {
 
 TEST(RaftTransitionTest, VoteGrantAndHigherTermWaitForPersistCompletion) {
   const auto c = cluster("b");
-  auto [staged, effects] = run(c, initial(c),
-                               RecvRequestVote{RequestVote{2, "a", 0, 0, 41}});
+  auto [staged, effects] = run(c, initial(c), RecvRequestVote{RequestVote{2, "a", 0, 0, 41}});
   ASSERT_TRUE(effects.persist);
   EXPECT_TRUE(effects.send_now.empty());
   EXPECT_EQ(staged.durable.term, 0u);
@@ -61,8 +59,7 @@ TEST(RaftTransitionTest, VoteGrantAndHigherTermWaitForPersistCompletion) {
   EXPECT_EQ(reply->request_id, 41u);
   EXPECT_EQ(voter.durable.voted_for, std::optional<std::string>{"a"});
 
-  auto [same, duplicate] = run(c, voter,
-      RecvRequestVote{RequestVote{2, "a", 0, 0, 42}});
+  auto [same, duplicate] = run(c, voter, RecvRequestVote{RequestVote{2, "a", 0, 0, 42}});
   EXPECT_FALSE(duplicate.persist);
   ASSERT_EQ(duplicate.send_now.size(), 1u);
   EXPECT_EQ(std::get<VoteReply>(duplicate.send_now[0].message).granted, true);
@@ -71,8 +68,7 @@ TEST(RaftTransitionTest, VoteGrantAndHigherTermWaitForPersistCompletion) {
 
 TEST(RaftTransitionTest, FailedDurableWriteIsFailStopAndNeverReleasesReply) {
   const auto c = cluster("b");
-  auto [staged, effects] = run(c, initial(c),
-                               RecvRequestVote{RequestVote{1, "a", 0, 0, 7}});
+  auto [staged, effects] = run(c, initial(c), RecvRequestVote{RequestVote{1, "a", 0, 0, 7}});
   ASSERT_TRUE(effects.persist);
   auto [halted, failed] = run(c, staged, PersistFailed{effects.persist->token});
   EXPECT_TRUE(halted.halted);
@@ -98,8 +94,7 @@ TEST(RaftTransitionTest, ReplicationAndApplicationEffectsFollowDurability) {
   ASSERT_TRUE(elect.persist);
   auto [ready, vote_messages] = run(ca, candidate, PersistCompleted{elect.persist->token});
   ASSERT_EQ(vote_messages.send_now.size(), 2u);
-  auto [leader, initial_heartbeats] =
-      run(ca, ready, RecvVoteReply{VoteReply{1, "b", true, 10}});
+  auto [leader, initial_heartbeats] = run(ca, ready, RecvVoteReply{VoteReply{1, "b", true, 10}});
   ASSERT_EQ(leader.volatile_state.role, Role::Leader);
   ASSERT_EQ(initial_heartbeats.send_now.size(), 2u);
 
@@ -145,8 +140,7 @@ TEST(RaftTransitionTest, ReplicationAndApplicationEffectsFollowDurability) {
   auto [applying, apply_effect] = run(ca, committed, ApplyCommitted{});
   ASSERT_TRUE(apply_effect.persist);
   EXPECT_TRUE(apply_effect.apply.empty());
-  auto [applied, application] =
-      run(ca, applying, PersistCompleted{apply_effect.persist->token});
+  auto [applied, application] = run(ca, applying, PersistCompleted{apply_effect.persist->token});
   EXPECT_EQ(applied.durable.applied, 1u);
   ASSERT_EQ(application.apply.size(), 1u);
   EXPECT_EQ(application.apply.front().command, "cmd-1");
@@ -157,8 +151,8 @@ TEST(RaftTransitionTest, ShortHeartbeatPreservesMatchingFollowerSuffix) {
   auto follower = initial(config);
   follower.durable.term = 2;
   follower.durable.log = {{1, "already-1"}, {2, "already-2"}};
-  auto [after, effects] = run(config, follower,
-      RecvAppend{AppendEntries{2, "a", 0, 0, {}, 0, 100}});
+  auto [after, effects] =
+      run(config, follower, RecvAppend{AppendEntries{2, "a", 0, 0, {}, 0, 100}});
   EXPECT_FALSE(effects.persist);
   ASSERT_EQ(effects.send_now.size(), 1u);
   EXPECT_TRUE(std::get<AppendReply>(effects.send_now[0].message).success);
@@ -171,8 +165,8 @@ TEST(RaftTransitionTest, CannotTruncateCommittedPrefix) {
   follower.durable.term = 2;
   follower.durable.log = {{1, "committed"}};
   follower.durable.commit = 1;
-  auto [after, effects] = run(config, follower,
-      RecvAppend{AppendEntries{2, "a", 0, 0, {{2, "conflict"}}, 0, 11}});
+  auto [after, effects] =
+      run(config, follower, RecvAppend{AppendEntries{2, "a", 0, 0, {{2, "conflict"}}, 0, 11}});
   EXPECT_FALSE(effects.persist);
   ASSERT_EQ(effects.send_now.size(), 1u);
   EXPECT_FALSE(std::get<AppendReply>(effects.send_now[0].message).success);
@@ -192,12 +186,12 @@ TEST(RaftTransitionTest, OldProbeReplyCannotInflateMatchOrRegressNext) {
   auto [second, effects2] = run(c, first, HeartbeatTimeout{});
   const auto& probe2 = std::get<AppendEntries>(effects2.send_now[0].message);
   ASSERT_NE(probe1.request_id, probe2.request_id);
-  auto [unchanged, stale] = run(c, second,
-      RecvAppendReply{AppendReply{4, "b", true, 1000, probe1.request_id}});
+  auto [unchanged, stale] =
+      run(c, second, RecvAppendReply{AppendReply{4, "b", true, 1000, probe1.request_id}});
   EXPECT_TRUE(stale.send_now.empty());
   EXPECT_EQ(unchanged.volatile_state.peers.at("b").match, 0u);
-  auto [matched, now] = run(c, unchanged,
-      RecvAppendReply{AppendReply{4, "b", true, 1000, probe2.request_id}});
+  auto [matched, now] =
+      run(c, unchanged, RecvAppendReply{AppendReply{4, "b", true, 1000, probe2.request_id}});
   EXPECT_TRUE(now.send_now.empty());
   EXPECT_EQ(matched.volatile_state.peers.at("b").match, 1u);
   EXPECT_EQ(matched.volatile_state.peers.at("b").next, 2u);

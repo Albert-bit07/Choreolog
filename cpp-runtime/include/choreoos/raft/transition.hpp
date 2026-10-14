@@ -113,23 +113,39 @@ struct Config {
 
 struct ElectionTimeout {};
 struct HeartbeatTimeout {};
-struct ClientPropose { std::string command; };
-struct RecvRequestVote { RequestVote message; };
-struct RecvVoteReply { VoteReply message; };
-struct RecvAppend { AppendEntries message; };
-struct RecvAppendReply { AppendReply message; };
+struct ClientPropose {
+  std::string command;
+};
+struct RecvRequestVote {
+  RequestVote message;
+};
+struct RecvVoteReply {
+  VoteReply message;
+};
+struct RecvAppend {
+  AppendEntries message;
+};
+struct RecvAppendReply {
+  AppendReply message;
+};
 struct AdvanceCommit {};
 struct ApplyCommitted {};
-struct PersistCompleted { PersistToken token; };
-struct PersistFailed { PersistToken token; };
+struct PersistCompleted {
+  PersistToken token;
+};
+struct PersistFailed {
+  PersistToken token;
+};
 struct Restart {};
 
-using Input = std::variant<ElectionTimeout, HeartbeatTimeout, ClientPropose,
-                           RecvRequestVote, RecvVoteReply, RecvAppend, RecvAppendReply,
-                           AdvanceCommit, ApplyCommitted, PersistCompleted, PersistFailed,
-                           Restart>;
+using Input = std::variant<ElectionTimeout, HeartbeatTimeout, ClientPropose, RecvRequestVote,
+                           RecvVoteReply, RecvAppend, RecvAppendReply, AdvanceCommit,
+                           ApplyCommitted, PersistCompleted, PersistFailed, Restart>;
 
-struct PersistRequest { PersistToken token; Durable target; };
+struct PersistRequest {
+  PersistToken token;
+  Durable target;
+};
 struct Effects {
   std::optional<PersistRequest> persist;
   std::vector<Outbound> send_now;
@@ -138,7 +154,6 @@ struct Effects {
 };
 
 [[nodiscard]] Node initial(const Config& config);
-[[nodiscard]] std::pair<Node, Effects> step(const Config& config, Node state,
-                                             const Input& input);
+[[nodiscard]] std::pair<Node, Effects> step(const Config& config, Node state, const Input& input);
 
 }  // namespace choreoos::raft

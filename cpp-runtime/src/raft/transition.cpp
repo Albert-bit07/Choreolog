@@ -23,12 +23,12 @@ void begin_write(Node& state, Effects& effects, Durable target, std::vector<Outb
                  std::vector<Entry> apply_after = {}, bool self_vote = false) {
   const auto token = state.next_token++;
   effects.persist = PersistRequest{token, target};
-  state.pending = PendingWrite{token, std::move(target), std::move(after),
-                               std::move(apply_after), self_vote};
+  state.pending =
+      PendingWrite{token, std::move(target), std::move(after), std::move(apply_after), self_vote};
 }
 
-void send_append(const Config& config, Node& state, const Durable& log,
-                 const std::string& peer, std::vector<Outbound>& out) {
+void send_append(const Config& config, Node& state, const Durable& log, const std::string& peer,
+                 std::vector<Outbound>& out) {
   auto it = state.volatile_state.peers.find(peer);
   if (it == state.volatile_state.peers.end() || it->second.in_flight) {
     return;
@@ -46,9 +46,13 @@ void send_append(const Config& config, Node& state, const Durable& log,
   }
   const auto id = state.next_request_id++;
   progress.in_flight = Probe{id, log.term, prev, entries.size()};
-  AppendEntries message{log.term, config.self, prev,
+  AppendEntries message{log.term,
+                        config.self,
+                        prev,
                         prev == 0 ? 0 : log.log[static_cast<std::size_t>(prev - 1)].term,
-                        std::move(entries), log.commit, id};
+                        std::move(entries),
+                        log.commit,
+                        id};
   out.push_back(Outbound{peer, std::move(message)});
 }
 
@@ -151,10 +155,9 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       state.volatile_state.role = Role::Candidate;
       std::vector<Outbound> after;
       for (const auto& peer : config.peers) {
-        after.push_back(Outbound{
-            peer, RequestVote{target.term, config.self,
-                              static_cast<std::uint64_t>(target.log.size()), last_term(target),
-                              state.next_request_id++}});
+        after.push_back(Outbound{peer, RequestVote{target.term, config.self,
+                                                   static_cast<std::uint64_t>(target.log.size()),
+                                                   last_term(target), state.next_request_id++}});
       }
       begin_write(state, effects, std::move(target), std::move(after), {}, true);
     }
@@ -164,8 +167,8 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
   if (const auto* request = std::get_if<RecvRequestVote>(&input)) {
     const auto& m = request->message;
     if (m.term < state.durable.term) {
-      effects.send_now.push_back(Outbound{
-          m.candidate, VoteReply{state.durable.term, config.self, false, m.request_id}});
+      effects.send_now.push_back(
+          Outbound{m.candidate, VoteReply{state.durable.term, config.self, false, m.request_id}});
       return {std::move(state), std::move(effects)};
     }
     Durable target = state.durable;
@@ -234,10 +237,10 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
   if (const auto* incoming = std::get_if<RecvAppend>(&input)) {
     const auto& m = incoming->message;
     if (m.term < state.durable.term) {
-      effects.send_now.push_back(
-          Outbound{m.leader, AppendReply{state.durable.term, config.self, false,
-                                        static_cast<std::uint64_t>(state.durable.log.size()),
-                                        m.request_id}});
+      effects.send_now.push_back(Outbound{
+          m.leader,
+          AppendReply{state.durable.term, config.self, false,
+                      static_cast<std::uint64_t>(state.durable.log.size()), m.request_id}});
       return {std::move(state), std::move(effects)};
     }
     Durable target = state.durable;
@@ -246,16 +249,17 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       target.voted_for.reset();
     }
     step_down(state);
-    const bool prev_ok = m.prev_index <= target.log.size() &&
-                         (m.prev_index == 0 ||
-                          target.log[static_cast<std::size_t>(m.prev_index - 1)].term ==
-                              m.prev_term);
+    const bool prev_ok =
+        m.prev_index <= target.log.size() &&
+        (m.prev_index == 0 ||
+         target.log[static_cast<std::size_t>(m.prev_index - 1)].term == m.prev_term);
     bool success = prev_ok;
     std::uint64_t hint = static_cast<std::uint64_t>(target.log.size());
     if (prev_ok) {
       for (std::size_t k = 0; k < m.entries.size(); ++k) {
         const auto index = m.prev_index + static_cast<std::uint64_t>(k);
-        if (index < target.log.size() && target.log[static_cast<std::size_t>(index)] != m.entries[k]) {
+        if (index < target.log.size() &&
+            target.log[static_cast<std::size_t>(index)] != m.entries[k]) {
           if (index < target.commit) {
             success = false;
             hint = target.commit;
@@ -280,8 +284,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       target.log = state.durable.log;
       target.commit = state.durable.commit;
     }
-    Outbound reply{m.leader,
-                   AppendReply{target.term, config.self, success, hint, m.request_id}};
+    Outbound reply{m.leader, AppendReply{target.term, config.self, success, hint, m.request_id}};
     if (target != state.durable) {
       begin_write(state, effects, std::move(target), {std::move(reply)});
     } else {
@@ -313,12 +316,10 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
         } else {
           // Only the current probe may change next; never regress below match.
           const auto previous = progress.next;
-          const auto hint_next = m.hint == std::numeric_limits<std::uint64_t>::max()
-                                     ? previous
-                                     : m.hint + 1;
+          const auto hint_next =
+              m.hint == std::numeric_limits<std::uint64_t>::max() ? previous : m.hint + 1;
           if (previous > 1) {
-            progress.next = std::max(progress.match + 1,
-                                     std::min(previous - 1, hint_next));
+            progress.next = std::max(progress.match + 1, std::min(previous - 1, hint_next));
           }
         }
       }
