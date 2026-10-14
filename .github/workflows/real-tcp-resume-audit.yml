@@ -35,7 +35,7 @@ jobs:
             -DCHOREOOS_WARNINGS_AS_ERRORS=ON
       - name: Build real TCP harness and nodes
         run: |
-          cmake --build build/real-tcp-audit --parallel 2 --target choreoos-node choreoos-bench-real-tcp choreoos-tests
+          cmake --build build/real-tcp-audit --parallel 2 --target choreoos-node choreoos-bench-real-tcp choreoos-unit-tests
       - name: Run comprehensive correctness tests
         run: ctest --test-dir build/real-tcp-audit --output-on-failure --timeout 180
       - name: Compare real TCP latency with and without redundant fsync
