@@ -65,6 +65,6 @@ Run the current CLI foundation:
 
 CI independently builds with Ninja on current Windows and Ubuntu runners.
 
-## Current Raft development (PR #10 draft)
+## Current Raft development (merged PR #10)
 
-The pure transition core is in `cpp-runtime/include/choreoos/raft/transition.hpp` and `cpp-runtime/src/raft/transition.cpp`, with focused GoogleTests in `cpp-runtime/tests/unit/raft_transition_test.cpp`. It is an **experimental** library component: existing CLI, TCP nodes and gRPC gateway still use `replication::Replica`. The new core is built by the ordinary CMake targets and must pass formatting, Windows/Linux tests and sanitizer CI before review. The bounded TLA+ models and their scope limitations are in [`formal/raft/README.md`](../formal/raft/README.md).
+The pure transition core is in `cpp-runtime/include/choreoos/raft/transition.hpp` and `cpp-runtime/src/raft/transition.cpp`, with focused GoogleTests in `cpp-runtime/tests/unit/raft_transition_test.cpp`. It is an **experimental** library component: existing CLI, TCP nodes and gRPC gateway still use `replication::Replica`. The new core is built by the ordinary CMake targets and passed formatting, Windows/Linux tests and sanitizer CI in PR #10 before merge. The bounded TLA+ models and their scope limitations are in [`formal/raft/README.md`](../formal/raft/README.md).
