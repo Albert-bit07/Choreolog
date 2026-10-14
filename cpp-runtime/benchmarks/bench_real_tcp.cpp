@@ -47,10 +47,10 @@ Command move_command(int n) {
                         Position::from_mm(1000, 1000).value()}};
 }
 double percentile(const std::vector<double>& values, double p) {
-  const double pos = (values.size() - 1) * p;
+  const double pos = static_cast<double>(values.size() - 1) * p;
   const auto lo = static_cast<std::size_t>(std::floor(pos));
   const auto hi = static_cast<std::size_t>(std::ceil(pos));
-  return values[lo] + (values[hi] - values[lo]) * (pos - lo);
+  return values[lo] + (values[hi] - values[lo]) * (pos - static_cast<double>(lo));
 }
 int main(int argc, char** argv) {
   if (argc != 3) {
@@ -93,7 +93,7 @@ int main(int argc, char** argv) {
   }
   const auto total_end = std::chrono::steady_clock::now();
   std::sort(times.begin(), times.end());
-  const double mean = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+  const double mean = std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size());
   const double seconds = std::chrono::duration<double>(total_end - total_start).count();
   std::cout << "{\"samples\":" << samples << ",\"warmup\":" << warmup
             << ",\"p50_ms\":" << percentile(times, 0.5)
