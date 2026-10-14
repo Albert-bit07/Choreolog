@@ -634,7 +634,8 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
     // Only configured peers may claim a peer identity. This is a gate against
     // strangers, not authentication: a process that knows a peer id can still
     // claim it, so real deployments need a shared secret or mTLS on top.
-    if (!is_configured_peer(hello.value().node_id)) {
+    if (!is_configured_peer(hello.value().node_id) ||
+        (!session->peer_id.empty() && session->peer_id != hello.value().node_id)) {
       ++transport_metrics.rejected;
       return;
     }
@@ -661,7 +662,7 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
     ++transport_metrics.dropped;
     return;
   }
-  replica.handle(frame);
+  replica.handle(frame, session->peer_id);
 }
 
 choreoos::state::Result<std::unique_ptr<NodeServer>> NodeServer::open(
