@@ -30,6 +30,19 @@ using choreoos::state::StageBounds;
 using choreoos::state::StoreOptions;
 
 constexpr int kDancers = 20;
+constexpr int kLargeBacklogMoves = 4400;
+
+std::string choreography_id() {
+  std::string id = "opening";
+  id.resize(choreoos::state::kMaxIdLength, 'x');
+  return id;
+}
+
+std::string dancer_id(int index) {
+  std::string id = "w" + std::to_string(index);
+  id.resize(choreoos::state::kMaxIdLength, 'x');
+  return id;
+}
 
 std::filesystem::path fresh(const std::string& name) {
   auto dir = std::filesystem::temp_directory_path() / name;
@@ -39,20 +52,20 @@ std::filesystem::path fresh(const std::string& name) {
 
 Command create_command() {
   return Command{CommandId::parse("c-create").value(),
-                 ChoreographyId::parse("opening").value(),
+                 ChoreographyId::parse(choreography_id()).value(),
                  CommandType::CreateChoreography,
                  kCurrentSchemaVersion,
                  MusicalTick::from_count(0).value(),
-                 CreateChoreographyPayload{ChoreographyId::parse("opening").value(),
+                 CreateChoreographyPayload{ChoreographyId::parse(choreography_id()).value(),
                                            StageBounds::from_mm(100000, 100000).value(),
                                            OverlapPolicy::Allowed, 5000}};
 }
 
 Command add_command(int i) {
-  const std::string id = "w" + std::to_string(i);
+  const std::string id = dancer_id(i);
   return Command{
-      CommandId::parse("add-" + id).value(),
-      ChoreographyId::parse("opening").value(),
+      CommandId::parse("add-w" + std::to_string(i)).value(),
+      ChoreographyId::parse(choreography_id()).value(),
       CommandType::AddDancer,
       kCurrentSchemaVersion,
       MusicalTick::from_count(1).value(),
@@ -60,11 +73,11 @@ Command add_command(int i) {
 }
 
 Command move_command(int i) {
-  const std::string id = "w" + std::to_string(i % kDancers);
+  const std::string id = dancer_id(i % kDancers);
   std::string operation_id = "mv-" + std::to_string(i);
   operation_id.resize(64, 'x');
   return Command{CommandId::parse(operation_id).value(),
-                 ChoreographyId::parse("opening").value(),
+                 ChoreographyId::parse(choreography_id()).value(),
                  CommandType::MoveDancer,
                  kCurrentSchemaVersion,
                  MusicalTick::from_count(1).value(),
@@ -105,11 +118,11 @@ bool converge(SimulatedNetwork& net, Replica& leader, Replica& a, Replica& b, in
 }
 
 TEST(CatchUpTest, BacklogLargerThanOneFrameStillConverges) {
-  // Use maximal legal command IDs so 6,500 events exceed a 1 MiB
-  // payload without the quadratic Debug-build cost of 12,000 short IDs.
-  // The wire-limit invariant is asserted below, not assumed from the count.
+  // Maximal legal choreography, dancer and command IDs keep the backlog
+  // above a 1 MiB wire frame with fewer Debug-build submissions. The actual
+  // serialized byte count is checked below: the size is NOT assumed.
   const auto leader_dir = fresh("choreoos-catchup-leader");
-  prebuild_leader_log(leader_dir, 6500);
+  prebuild_leader_log(leader_dir, kLargeBacklogMoves);
 
   SimulatedNetwork net{11};
   auto leader = Replica::open(ReplicaConfig{"node-1", "node-1", {"node-2", "node-3"}, leader_dir});
@@ -124,7 +137,7 @@ TEST(CatchUpTest, BacklogLargerThanOneFrameStillConverges) {
   net.attach(a.value());
   net.attach(b.value());
 
-  ASSERT_GT(leader.value().status().commit_index, 6500u);
+  ASSERT_GT(leader.value().status().commit_index, static_cast<std::uint64_t>(kLargeBacklogMoves));
   std::size_t backlog_bytes = 0;
   for (const auto& event : leader.value().store().log_events()) {
     backlog_bytes += choreoos::state::canonical_event(event).size();
