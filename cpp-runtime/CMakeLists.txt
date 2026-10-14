@@ -25,6 +25,7 @@ target_sources(
     src/protocol/command_codec.cpp
     src/protocol/client.cpp
     src/raft/transition.cpp
+    src/raft/trace.cpp
     src/replication/replica.cpp
     src/replication/simulator.cpp
     src/runtime/config.cpp
