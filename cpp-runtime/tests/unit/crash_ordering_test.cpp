@@ -126,6 +126,8 @@ TEST(CrashOrderingTest, MetadataCoveringSnapshotRestoresFromIt) {
   ASSERT_TRUE(reopened) << reopened.error().to_string();
   EXPECT_TRUE(reopened.value().recovery().used_snapshot);
   EXPECT_EQ(reopened.value().commit_index().value(), 10u);
+  EXPECT_EQ(reopened.value().last_log_index(), 10u);
+  EXPECT_TRUE(reopened.value().log_events().empty());
   EXPECT_EQ(state_hash(reopened.value().engine().state()), hash_through(leader.events, 10));
 }
 

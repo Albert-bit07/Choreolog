@@ -19,6 +19,7 @@ add_executable(
   unit/raft_durable_test.cpp
   unit/raft_trace_test.cpp
   unit/catchup_test.cpp
+  unit/network_capacity_test.cpp
   unit/config_test.cpp
   unit/crash_ordering_test.cpp
   unit/snapshot_transaction_test.cpp

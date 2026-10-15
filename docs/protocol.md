@@ -70,3 +70,38 @@ coverage and remaining architectural limitations.
 Every TCP message is one frame: magic `CHOS`, protocol version 1.0, message type, correlation id, payload length, protobuf payload, and a CRC-32. A payload larger than 1 MiB is rejected. A bad checksum closes the connection.
 
 Message layouts are declared in `proto/internal/choreoos.proto`. The runtime writes that protobuf wire format itself, so the node does not link a separate protobuf library. Zero-valued proto3 fields are omitted.
+
+## Status, state pages and capacity
+
+Status responses contain node/leader identity, role, term, indexes and the hash
+cached at the last commit. The legacy `canonical_state` field is empty. Full
+state is available through the loopback-only management query `operation=state`:
+`after_index` is a byte offset and `page_size` is KiB (default/max64). The reply
+contains `state_chunk`, `state_size`, `next_after_index`, `has_more`, the applied
+index in `snapshot_index`, and the current hash in `snapshot_state_hash`.
+Continuation requests must supply `expected_state_hash`; a changed state returns
+`StateChanged` and the reader restarts. These remain local observations without
+a quorum read barrier. CLI `show` and unary gRPC `GetState` assemble these pages
+with an overall timeout and a3MiB limit; larger readers use pages directly.
+An oversized outgoing response returns a bounded `ProtocolError` instead of
+silently withholding a reply.
+
+Both plaintext and TLS transports admit at most128 sessions, including outbound
+connect attempts; at most96 sessions can be admitted as clients. Peer dial
+attempts use the remaining capacity. Each session has at most64 queued frames
+and2MiB of queued payload, including its active write. An active write keeps
+its global byte reservation after session retirement until its final buffer
+reference is released by the completion/cancellation handler. The process queue budget
+is32MiB, with at most24MiB used by clients. Delayed test sends use that same
+budget and are coalesced by peer/type/correlation. Append/snapshot retransmits
+already in an outgoing queue are coalesced by type/correlation. Exceeding an
+outgoing budget retires the slow session; an ambiguous command outcome still
+requires retrying the same operation ID. Frame reads/writes expire after10s,
+connections/TLS handshakes after5s. Incoming frame buffers and application state
+are separate from these outgoing-byte limits.
+
+At most1024 command waiters exist globally and64 per client session. Admission
+failure returns `Unavailable` before enqueueing new work. Each waiter owns its
+request ID, timer and2s deadline; duplicate operation IDs retain independent
+deadlines. Commit processing selects waiters through the new commit index.
+Retiring a session cancels its remaining waiters.

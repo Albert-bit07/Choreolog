@@ -27,12 +27,8 @@ bool valid_durable(const Durable& state) {
       last_index(state) == maximum || state.applied < state.snapshot_index ||
       state.applied > state.commit || state.commit > last_index(state))
     return false;
-  auto previous = state.snapshot_term;
-  for (const auto& entry : state.log) {
-    if (entry.term == 0 || entry.term < previous || entry.term > state.term) return false;
-    previous = entry.term;
-  }
-  return true;
+  return state.log.size() <= EntryLog::kMaximumEntries &&
+         state.log.valid_terms(state.snapshot_term, state.term);
 }
 
 std::optional<std::uint64_t> term_at(const Durable& state, std::uint64_t index) {
@@ -84,9 +80,9 @@ void send_append(const Config& config, Node& state, const Durable& log, const st
     entries.push_back(log.log[static_cast<std::size_t>(next - log.snapshot_index - 1)]);
   }
   const auto id = state.next_request_id++;
-  progress.in_flight = Probe{id, log.term, prev, entries.size()};
   AppendEntries message{log.term,           config.self, prev, *prev_term,
                         std::move(entries), log.commit,  id};
+  progress.in_flight = Probe{id, log.term, prev, message.entries.size(), message};
   out.push_back(Outbound{peer, std::move(message)});
 }
 
@@ -261,6 +257,11 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
   }
 
   if (const auto* proposal = std::get_if<ClientPropose>(&input)) {
+    if (state.volatile_state.role == Role::Leader &&
+        state.durable.log.size() >= EntryLog::kMaximumEntries) {
+      effects.capacity_exhausted = true;
+      return {std::move(state), std::move(effects)};
+    }
     if (state.volatile_state.role == Role::Leader && !proposal->command.empty() &&
         last_index(state.durable) < std::numeric_limits<std::uint64_t>::max() - 1) {
       Durable target = state.durable;
@@ -279,9 +280,15 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
   if (std::holds_alternative<HeartbeatTimeout>(input)) {
     if (state.volatile_state.role == Role::Leader) {
       for (auto& [peer, progress] : state.volatile_state.peers) {
-        // Supersede a lost probe. Late replies to the old ID are ignored.
-        progress.in_flight.reset();
-        send_append(config, state, state.durable, peer, effects.send_now, effects.snapshot_needed);
+        // Preserve the request and its ID until answered. Replacing it each
+        // tick starves followers whose round trip exceeds one heartbeat.
+        if (progress.in_flight) {
+          if (progress.in_flight->request)
+            effects.send_now.push_back(Outbound{peer, *progress.in_flight->request});
+        } else {
+          send_append(config, state, state.durable, peer, effects.send_now,
+                      effects.snapshot_needed);
+        }
       }
     }
     return {std::move(state), std::move(effects)};
@@ -319,6 +326,21 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
     bool success = prev_ok;
     std::uint64_t hint =
         m.prev_index < target.snapshot_index ? target.snapshot_index : last_index(target);
+    if (prev_ok &&
+        m.prev_index + m.entries.size() - target.snapshot_index > EntryLog::kMaximumEntries) {
+      // Do not stage a log the host cannot persist. The matched prefix can
+      // still commit, allowing application/checkpoint maintenance to free the
+      // window before this exact request is retried.
+      effects.capacity_exhausted = true;
+      target.commit = std::max(target.commit, std::min(m.leader_commit, m.prev_index));
+      Outbound reply{
+          m.leader, AppendReply{target.term, config.self, false, last_index(target), m.request_id}};
+      if (target != state.durable)
+        begin_write(state, effects, std::move(target), {std::move(reply)});
+      else
+        effects.send_now.push_back(std::move(reply));
+      return {std::move(state), std::move(effects)};
+    }
     if (prev_ok) {
       for (std::size_t k = 0; k < m.entries.size(); ++k) {
         const auto index = m.prev_index + static_cast<std::uint64_t>(k) + 1;

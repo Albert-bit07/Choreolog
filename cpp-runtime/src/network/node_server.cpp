@@ -10,9 +10,12 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <tuple>
 #include <utility>
 
+#include "choreoos/network/outbound_queue.hpp"
 #include "choreoos/network/peer_tls.hpp"
+#include "choreoos/network/pending_requests.hpp"
 #include "choreoos/protocol/codec.hpp"
 #include "choreoos/protocol/command_codec.hpp"
 #include "choreoos/protocol/frame.hpp"
@@ -23,8 +26,9 @@ namespace choreoos::network {
 namespace {
 
 using boost::asio::ip::tcp;
-constexpr std::size_t kMaxQueuedFrames = 64;
-constexpr std::size_t kMaxTlsModeSessions = 128;
+constexpr std::size_t kMaxSessions = 128;
+constexpr std::size_t kMaxClientSessions = 96;
+constexpr std::size_t kMaxSessionWaiters = 64;
 
 choreoos::protocol::ClientResponse response_from(const choreoos::state::Error& error,
                                                  const std::string& leader) {
@@ -118,11 +122,16 @@ struct NodeServer::Impl {
   boost::asio::steady_timer reconnect;
   std::uint16_t bound_port = 0;
   TransportMetrics transport_metrics;
+  std::shared_ptr<QueueBudget> queue_budget = std::make_shared<QueueBudget>();
   std::vector<std::shared_ptr<Session>> sessions;
   std::set<std::string> dialing;  // peers with a connect attempt in flight
   std::set<std::string> blocked_peers;
   std::map<std::string, std::uint32_t> delayed_peers;
+  using DelayedKey = std::tuple<std::string, std::uint16_t, std::uint64_t>;
+  std::map<DelayedKey, std::shared_ptr<boost::asio::steady_timer>> delayed_sends;
   bool paused = false;
+  std::string cached_state_hash;
+  std::string cached_state;
 
   struct Pending {
     std::string command_id;
@@ -132,7 +141,7 @@ struct NodeServer::Impl {
     std::uint64_t correlation = 0;
     std::shared_ptr<boost::asio::steady_timer> timer;
   };
-  std::vector<Pending> pending;
+  PendingRequests<Pending> pending;
 };
 
 struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
@@ -141,7 +150,10 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
         node(owner),
         peer_id(encrypted ? "" : remote_id),
         expected_peer(std::move(remote_id)),
-        deadline(node->io) {
+        deadline(node->io),
+        read_deadline(node->io),
+        write_deadline(node->io),
+        outgoing(node->queue_budget) {
     if (encrypted) {
       tls = std::make_unique<boost::asio::ssl::stream<tcp::socket>>(std::move(socket),
                                                                     *node->tls_context);
@@ -230,20 +242,59 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
 
   void assign_peer(std::string id) { peer_id = std::move(id); }
 
-  void send(std::string bytes) {
-    if (closed || outgoing.size() >= kMaxQueuedFrames) {
+  void send(std::string bytes) { send(std::make_shared<const std::string>(std::move(bytes))); }
+
+  void send(OutboundQueue::Buffer buffer) {
+    std::optional<OutboundQueue::RetryKey> key;
+    auto parsed_header = choreoos::protocol::peek_header(
+        reinterpret_cast<const std::uint8_t*>(buffer->data()), buffer->size());
+    if (parsed_header &&
+        (parsed_header.value().type == choreoos::protocol::MessageType::AppendEntries ||
+         parsed_header.value().type == choreoos::protocol::MessageType::InstallSnapshot))
+      key = {static_cast<std::uint16_t>(parsed_header.value().type),
+             parsed_header.value().correlation};
+    if (closed) return;
+    if (!outgoing.push(std::move(buffer), !peer_id.empty() || tls != nullptr, key)) {
       ++node->transport_metrics.dropped;
+      retire();
       return;
     }
-    outgoing.push_back(std::move(bytes));
-    if (ready && !writing) {
-      write_next();
+    if (ready && !writing) write_next();
+  }
+
+  void send_frame(choreoos::protocol::Frame frame) {
+    auto bytes = choreoos::protocol::encode_frame(frame);
+    if (!bytes) {
+      frame.type = choreoos::protocol::MessageType::ProtocolError;
+      auto error = choreoos::protocol::encode(choreoos::protocol::ProtocolError{
+          "ResponseTooLarge", "response exceeds frame limit; use a paginated query"});
+      if (!error) {
+        retire();
+        return;
+      }
+      frame.payload = std::move(error.value());
+      bytes = choreoos::protocol::encode_frame(frame);
     }
+    if (bytes)
+      send(std::move(bytes.value()));
+    else
+      retire();
+  }
+
+  void arm_deadline(boost::asio::steady_timer& timer) {
+    timer.expires_after(std::chrono::seconds(10));
+    auto self = shared_from_this();
+    timer.async_wait(
+        boost::asio::bind_executor(node->strand, [self](const boost::system::error_code& error) {
+          if (!error) self->retire();
+        }));
   }
 
   void close() {
     boost::system::error_code error;
     deadline.cancel();
+    read_deadline.cancel();
+    write_deadline.cancel();
     const auto result = lowest_layer().close(error);
     if (error || result) {
       ++node->transport_metrics.dropped;
@@ -257,9 +308,13 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
   std::string verified_peer;
   std::unique_ptr<boost::asio::ssl::stream<tcp::socket>> tls;
   boost::asio::steady_timer deadline;
+  boost::asio::steady_timer read_deadline;
+  boost::asio::steady_timer write_deadline;
+  std::size_t waiters = 0;
+  bool client_admitted = false;
   std::array<std::uint8_t, choreoos::protocol::kFrameHeaderBytes> header{};
   std::vector<std::uint8_t> body;
-  std::deque<std::string> outgoing;
+  OutboundQueue outgoing;
   bool writing = false;
   bool ready = false;
   bool closed = false;
@@ -268,6 +323,7 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
   void read_header() {
     if (closed) return;
     auto self = shared_from_this();
+    arm_deadline(read_deadline);
     read(boost::asio::buffer(header),
          boost::asio::bind_executor(node->strand, [self](const boost::system::error_code& error,
                                                          std::size_t) {
@@ -275,6 +331,7 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
              self->retire();
              return;
            }
+           self->read_deadline.cancel();
            auto peeked = choreoos::protocol::peek_header(self->header.data(), self->header.size());
            if (!peeked) {
              ++self->node->transport_metrics.malformed;
@@ -288,6 +345,7 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
 
   void read_body() {
     auto self = shared_from_this();
+    arm_deadline(read_deadline);
     read(boost::asio::buffer(body),
          boost::asio::bind_executor(
              node->strand, [self](const boost::system::error_code& error, std::size_t) {
@@ -295,6 +353,7 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
                  self->retire();
                  return;
                }
+               self->read_deadline.cancel();
                std::vector<std::uint8_t> bytes(self->header.begin(), self->header.end());
                bytes.insert(bytes.end(), self->body.begin(), self->body.end());
                auto frame = choreoos::protocol::decode_frame(bytes.data(), bytes.size());
@@ -316,22 +375,31 @@ struct NodeServer::Impl::Session : std::enable_shared_from_this<Session> {
     }
     writing = true;
     auto self = shared_from_this();
-    write(boost::asio::buffer(outgoing.front()),
-          boost::asio::bind_executor(node->strand,
-                                     [self](const boost::system::error_code& error, std::size_t) {
-                                       if (error) {
-                                         self->retire();
-                                         return;
-                                       }
-                                       ++self->node->transport_metrics.frames_sent;
-                                       self->outgoing.pop_front();
-                                       self->write_next();
-                                     }));
+    auto bytes = outgoing.front();
+    arm_deadline(write_deadline);
+    write(boost::asio::buffer(*bytes),
+          boost::asio::bind_executor(
+              node->strand, [self, bytes](const boost::system::error_code& error, std::size_t) {
+                self->write_deadline.cancel();
+                if (self->closed) return;
+                if (error) {
+                  self->retire();
+                  return;
+                }
+                ++self->node->transport_metrics.frames_sent;
+                self->outgoing.pop();
+                self->write_next();
+              }));
   }
 
   void retire() {
     if (closed) return;
     closed = true;
+    outgoing.clear();
+    auto cancelled = node->pending.remove_if(
+        [this](const Pending& waiter) { return waiter.session.get() == this; });
+    for (auto& waiter : cancelled) waiter.timer->cancel();
+    waiters = 0;
     if (dial_pending) {
       node->dialing.erase(expected_peer);
       dial_pending = false;
@@ -352,7 +420,8 @@ void NodeServer::Impl::send_to(const std::string& peer, const choreoos::protocol
     ++transport_metrics.dropped;
     return;
   }
-  auto send_encoded = [this, peer, bytes = encoded.value()] {
+  auto buffer = std::make_shared<const std::string>(std::move(encoded.value()));
+  auto send_encoded = [this, peer, bytes = buffer] {
     if (paused || blocked_peers.count(peer) != 0) {
       ++transport_metrics.dropped;
       return;
@@ -367,13 +436,21 @@ void NodeServer::Impl::send_to(const std::string& peer, const choreoos::protocol
   };
   const auto delay = delayed_peers.find(peer);
   if (delay != delayed_peers.end() && delay->second != 0) {
+    const DelayedKey key{peer, static_cast<std::uint16_t>(frame.type), frame.correlation};
+    if (delayed_sends.count(key) != 0) return;
+    auto reserved = std::make_shared<OutboundQueue>(queue_budget);
+    if (delayed_sends.size() >= kMaxSessions || !reserved->push(buffer, true)) {
+      ++transport_metrics.dropped;
+      return;
+    }
     auto timer = std::make_shared<boost::asio::steady_timer>(io);
+    delayed_sends.emplace(key, timer);
     timer->expires_after(std::chrono::milliseconds(delay->second));
     timer->async_wait(boost::asio::bind_executor(
-        strand, [timer, send_encoded](const boost::system::error_code& error) {
-          if (!error) {
-            send_encoded();
-          }
+        strand, [this, key, timer, reserved, send_encoded](const boost::system::error_code& error) {
+          delayed_sends.erase(key);
+          reserved->clear();
+          if (!error) send_encoded();
         }));
     return;
   }
@@ -384,7 +461,11 @@ void NodeServer::Impl::accept_next() {
   acceptor.async_accept(boost::asio::bind_executor(
       strand, [this](const boost::system::error_code& error, tcp::socket socket) {
         if (!error) {
-          if (config.peer_tls && sessions.size() >= kMaxTlsModeSessions) {
+          const auto client_plane = std::count_if(
+              sessions.begin(), sessions.end(),
+              [](const auto& item) { return !item->tls && item->expected_peer.empty(); });
+          if (sessions.size() >= kMaxSessions ||
+              (config.peer_tls && static_cast<std::size_t>(client_plane) >= kMaxClientSessions)) {
             ++transport_metrics.rejected;
             socket.close();
             accept_next();
@@ -404,7 +485,7 @@ void NodeServer::Impl::accept_peer() {
   peer_acceptor.async_accept(boost::asio::bind_executor(
       strand, [this](const boost::system::error_code& error, tcp::socket socket) {
         if (!error) {
-          if (sessions.size() >= kMaxTlsModeSessions) {
+          if (sessions.size() >= kMaxSessions) {
             ++transport_metrics.rejected;
             socket.close();
           } else {
@@ -431,33 +512,45 @@ void NodeServer::Impl::dial_missing() {
     if (connected || dialing.count(peer.id) != 0 || blocked_peers.count(peer.id) != 0) {
       continue;
     }
+    if (sessions.size() + dialing.size() >= kMaxSessions) break;
     dialing.insert(peer.id);
     auto socket = std::make_shared<tcp::socket>(io);
     tcp::endpoint endpoint{boost::asio::ip::make_address(peer.host), peer.port};
-    socket->async_connect(endpoint,
-                          boost::asio::bind_executor(
-                              strand, [this, socket, peer](const boost::system::error_code& error) {
-                                if (error) {
-                                  dialing.erase(peer.id);
-                                  return;
-                                }
-                                if (config.peer_tls && sessions.size() >= kMaxTlsModeSessions) {
-                                  dialing.erase(peer.id);
-                                  ++transport_metrics.rejected;
-                                  boost::system::error_code close_error;
-                                  const auto result = socket->close(close_error);
-                                  if (close_error || result) {
-                                    ++transport_metrics.dropped;
-                                  }
-                                  return;
-                                }
-                                ++transport_metrics.reconnects;
-                                auto session = std::make_shared<Session>(
-                                    std::move(*socket), this, peer.id, config.peer_tls.has_value());
-                                sessions.push_back(session);
-                                if (!config.peer_tls) dialing.erase(peer.id);
-                                session->start(true);
-                              }));
+    auto connect_deadline = std::make_shared<boost::asio::steady_timer>(io);
+    connect_deadline->expires_after(std::chrono::seconds(5));
+    connect_deadline->async_wait(boost::asio::bind_executor(
+        strand, [this, socket, connect_deadline](const boost::system::error_code& error) {
+          if (!error) {
+            boost::system::error_code ignored;
+            const auto cancelled = socket->cancel(ignored);
+            if (ignored || cancelled) ++transport_metrics.dropped;
+          }
+        }));
+    socket->async_connect(
+        endpoint, boost::asio::bind_executor(strand, [this, socket, peer, connect_deadline](
+                                                         const boost::system::error_code& error) {
+          connect_deadline->cancel();
+          if (error) {
+            dialing.erase(peer.id);
+            return;
+          }
+          if (sessions.size() >= kMaxSessions) {
+            dialing.erase(peer.id);
+            ++transport_metrics.rejected;
+            boost::system::error_code close_error;
+            const auto result = socket->close(close_error);
+            if (close_error || result) {
+              ++transport_metrics.dropped;
+            }
+            return;
+          }
+          ++transport_metrics.reconnects;
+          auto session = std::make_shared<Session>(std::move(*socket), this, peer.id,
+                                                   config.peer_tls.has_value());
+          sessions.push_back(session);
+          if (!config.peer_tls) dialing.erase(peer.id);
+          session->start(true);
+        }));
   }
 }
 
@@ -504,14 +597,20 @@ void NodeServer::Impl::schedule_reconnect() {
 }
 
 void NodeServer::Impl::complete_waiters() {
-  std::vector<Pending> still;
-  for (auto& waiter : pending) {
+  auto ready = pending.take_through(replica.store().commit_index().value());
+  for (auto& waiter : ready) {
+    if (waiter.session->closed) {
+      waiter.timer->cancel();
+      continue;
+    }
+    --waiter.session->waiters;
+    waiter.timer->cancel();
     const auto& receipts = replica.store().engine().state().receipts;
     const auto receipt = receipts.find(waiter.command_id);
     if (!waiter.event || receipt == receipts.end() ||
         receipt->second.index != waiter.event->index.value() ||
         receipt->second.term != waiter.event->term.value()) {
-      still.push_back(std::move(waiter));
+      waiter.session->retire();
       continue;
     }
     const auto* event = &*waiter.event;
@@ -523,15 +622,12 @@ void NodeServer::Impl::complete_waiters() {
       frame.type = choreoos::protocol::MessageType::ClientResponse;
       frame.correlation = waiter.correlation;
       frame.payload = payload.value();
-      if (auto bytes = choreoos::protocol::encode_frame(frame)) {
-        waiter.session->send(bytes.value());
-      }
+      waiter.session->send_frame(std::move(frame));
     }
     if (waiter.timer) {
       waiter.timer->cancel();
     }
   }
-  pending = std::move(still);
 }
 
 void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
@@ -543,9 +639,7 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
       out.type = choreoos::protocol::MessageType::ClientResponse;
       out.correlation = correlation;
       out.payload = payload.value();
-      if (auto bytes = choreoos::protocol::encode_frame(out)) {
-        session->send(bytes.value());
-      }
+      session->send_frame(std::move(out));
     }
   };
   if (frame.type == choreoos::protocol::MessageType::StatusQuery) {
@@ -564,9 +658,7 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
       out.type = choreoos::protocol::MessageType::StatusResponse;
       out.correlation = frame.correlation;
       out.payload = payload.value();
-      if (auto bytes = choreoos::protocol::encode_frame(out)) {
-        session->send(bytes.value());
-      }
+      session->send_frame(std::move(out));
     }
     return;
   }
@@ -578,6 +670,13 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
   auto command = choreoos::protocol::parse_command(command_message.value().canonical);
   if (!command) {
     reply(response_from(command.error(), config.leader_id));
+    return;
+  }
+  if (pending.full() || session->waiters >= kMaxSessionWaiters) {
+    choreoos::protocol::ClientResponse overloaded;
+    overloaded.error_code = "Unavailable";
+    overloaded.error_message = "pending request capacity reached; retry the same operation ID";
+    reply(overloaded);
     return;
   }
   auto queued = replica.enqueue(command.value());
@@ -604,36 +703,30 @@ void NodeServer::Impl::on_client(const std::shared_ptr<Session>& session,
   waiter.correlation = frame.correlation;
   waiter.timer = std::make_shared<boost::asio::steady_timer>(io);
   waiter.timer->expires_after(std::chrono::seconds(2));
-  const std::string command_id = waiter.command_id;
-  waiter.timer->async_wait(boost::asio::bind_executor(
-      strand, [this, command_id](const boost::system::error_code& error) {
-        if (error) {
-          return;
+  auto timer = waiter.timer;
+  ++session->waiters;
+  const auto index = waiter.event->index.value();
+  const auto id = pending.add(index, std::move(waiter));
+  timer->async_wait(
+      boost::asio::bind_executor(strand, [this, id](const boost::system::error_code& error) {
+        if (error) return;
+        auto removed = pending.take(id);
+        if (!removed) return;
+        auto& item = *removed;
+        --item.session->waiters;
+        item.timer->cancel();
+        choreoos::protocol::ClientResponse response;
+        response.error_code = "Unavailable";
+        response.error_message = "majority did not acknowledge the command; outcome unknown";
+        response.leader_id = replica.leader_id();
+        if (auto payload = choreoos::protocol::encode(response)) {
+          choreoos::protocol::Frame out;
+          out.type = choreoos::protocol::MessageType::ClientResponse;
+          out.correlation = item.correlation;
+          out.payload = std::move(payload.value());
+          item.session->send_frame(std::move(out));
         }
-        std::vector<Pending> still;
-        for (auto& item : pending) {
-          if (item.command_id != command_id) {
-            still.push_back(std::move(item));
-            continue;
-          }
-          choreoos::protocol::ClientResponse response;
-          response.ok = false;
-          response.error_code = "Unavailable";
-          response.error_message = "majority did not acknowledge the command";
-          response.leader_id = config.leader_id;
-          if (auto payload = choreoos::protocol::encode(response)) {
-            choreoos::protocol::Frame out;
-            out.type = choreoos::protocol::MessageType::ClientResponse;
-            out.correlation = item.correlation;
-            out.payload = payload.value();
-            if (auto bytes = choreoos::protocol::encode_frame(out)) {
-              item.session->send(bytes.value());
-            }
-          }
-        }
-        pending = std::move(still);
       }));
-  pending.push_back(std::move(waiter));
 }
 
 void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
@@ -649,6 +742,34 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
   } else if (!request) {
     reply.error_code = "ProtocolError";
     reply.error_message = request.error().message();
+  } else if (request.value().operation == "state") {
+    const auto& hash = replica.committed_state_hash();
+    const auto& query = request.value();
+    if ((query.after_index != 0 && query.expected_state_hash.empty()) ||
+        (!query.expected_state_hash.empty() && query.expected_state_hash != hash)) {
+      reply.error_code = "StateChanged";
+      reply.error_message = "state changed or continuation token missing; restart pagination";
+    } else {
+      if (cached_state_hash != hash) {
+        cached_state = choreoos::state::canonical_state(replica.store().engine().state());
+        cached_state_hash = hash;
+      }
+      reply.snapshot_index = replica.store().commit_index().value();
+      reply.snapshot_state_hash = hash;
+      reply.state_size = cached_state.size();
+      const auto offset = query.after_index;
+      if (offset > cached_state.size()) {
+        reply.error_code = "InvalidCursor";
+        reply.error_message = "state byte cursor exceeds state size";
+      } else {
+        // State page_size is KiB; event page_size remains an event count.
+        const auto kib = query.page_size == 0 ? 64u : std::min(query.page_size, 64u);
+        reply.state_chunk = cached_state.substr(static_cast<std::size_t>(offset),
+                                                static_cast<std::size_t>(kib) * 1024u);
+        reply.next_after_index = offset + reply.state_chunk.size();
+        reply.has_more = reply.next_after_index < cached_state.size();
+      }
+    }
   } else if (request.value().operation == "events") {
     const auto& log = replica.store().log_events();
     const auto committed = replica.store().commit_index().value();
@@ -756,9 +877,7 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
     result.type = choreoos::protocol::MessageType::ManagementReply;
     result.correlation = frame.correlation;
     result.payload = payload.value();
-    if (auto bytes = choreoos::protocol::encode_frame(result)) {
-      session->send(bytes.value());
-    }
+    session->send_frame(std::move(result));
   }
 }
 
@@ -772,7 +891,21 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
     session->retire();
     return;
   }
+  if (client_frame && !session->client_admitted) {
+    const auto clients = std::count_if(sessions.begin(), sessions.end(),
+                                       [](const auto& item) { return item->client_admitted; });
+    if (static_cast<std::size_t>(clients) >= kMaxClientSessions || !session->peer_id.empty()) {
+      ++transport_metrics.rejected;
+      session->retire();
+      return;
+    }
+    session->client_admitted = true;
+  }
   if (frame.type == choreoos::protocol::MessageType::Handshake) {
+    if (session->client_admitted) {
+      session->retire();
+      return;
+    }
     auto hello = choreoos::protocol::decode_handshake(frame.payload);
     if (!hello) {
       ++transport_metrics.malformed;

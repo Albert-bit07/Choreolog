@@ -19,6 +19,81 @@ std::pair<Node, Effects> run(const Config& config, Node node, Input input) {
   return step(config, std::move(node), input);
 }
 
+TEST(RaftTransitionTest, SharedLogCopiesRemainImmutableAndValidateAcrossChunkBoundaries) {
+  EntryLog log;
+  for (int i = 0; i < 1025; ++i) log.push_back({1, "command-" + std::to_string(i)});
+  auto original = log;
+  EXPECT_TRUE(log.shares_storage_with(original));
+  log.set(256, {2, "changed"});
+  EXPECT_FALSE(log.valid_terms(0, 2));  // Term would fall back to1 after the replacement.
+  EXPECT_EQ(original[256].term, 1u);
+  EXPECT_TRUE(original.valid_terms(0, 1));
+  log.resize(257);
+  EXPECT_TRUE(log.valid_terms(0, 2));
+  log.push_back({3, "next"});
+  EXPECT_TRUE(log.valid_terms(0, 3));
+  EXPECT_EQ(original.size(), 1025u);
+  EXPECT_EQ(log.size(), 258u);
+}
+
+TEST(RaftTransitionTest, MetadataOnlyTransitionSharesPayloadHistory) {
+  const auto config = cluster("b");
+  auto node = initial(config);
+  node.durable.term = 1;
+  for (int i = 0; i < 1025; ++i) node.durable.log.push_back({1, "entry"});
+  auto [staged, effects] = run(config, node, RecvRequestVote{RequestVote{2, "a", 1025, 1, 77}});
+  ASSERT_TRUE(effects.persist);
+  EXPECT_TRUE(staged.durable.log.shares_storage_with(node.durable.log));
+  EXPECT_TRUE(effects.persist->target.log.shares_storage_with(node.durable.log));
+  EXPECT_TRUE(staged.pending->target.log.shares_storage_with(node.durable.log));
+}
+
+TEST(RaftTransitionTest, RetainedWindowReturnsExplicitBackpressureWithoutHalting) {
+  const auto config = cluster("a");
+  auto node = initial(config);
+  node.durable.term = 1;
+  node.volatile_state.role = Role::Leader;
+  for (std::size_t i = 0; i < EntryLog::kMaximumEntries; ++i)
+    node.durable.log.push_back({1, "entry"});
+  auto [unchanged, effects] = run(config, node, ClientPropose{"next"});
+  EXPECT_TRUE(effects.capacity_exhausted);
+  EXPECT_FALSE(effects.halt);
+  EXPECT_FALSE(effects.persist);
+  EXPECT_TRUE(unchanged.durable.log.shares_storage_with(node.durable.log));
+}
+
+TEST(RaftTransitionTest, FullFollowerWindowCommitsMatchedPrefixAndReportsCapacity) {
+  const auto config = cluster("b");
+  auto node = initial(config);
+  node.durable.term = 1;
+  for (std::size_t i = 0; i < EntryLog::kMaximumEntries; ++i)
+    node.durable.log.push_back({1, "entry"});
+  const auto boundary = static_cast<std::uint64_t>(node.durable.log.size());
+  auto [staged, effects] = run(
+      config, node, RecvAppend{AppendEntries{2, "a", boundary, 1, {{2, "next"}}, boundary, 77}});
+  EXPECT_TRUE(effects.capacity_exhausted);
+  EXPECT_FALSE(effects.halt);
+  ASSERT_TRUE(effects.persist);
+  EXPECT_TRUE(effects.send_now.empty());
+  EXPECT_EQ(effects.persist->target.term, 2u);
+  EXPECT_EQ(effects.persist->target.commit, boundary);
+  EXPECT_TRUE(effects.persist->target.log.shares_storage_with(node.durable.log));
+  auto [committed, completed] = run(config, staged, PersistCompleted{effects.persist->token});
+  EXPECT_FALSE(committed.halted);
+  EXPECT_EQ(committed.durable.commit, boundary);
+  ASSERT_EQ(completed.send_now.size(), 1u);
+  const auto reply = std::get<AppendReply>(completed.send_now.front().message);
+  EXPECT_FALSE(reply.success);
+  EXPECT_EQ(reply.term, 2u);
+  EXPECT_EQ(reply.request_id, 77u);
+  auto [unchanged, retry] =
+      run(config, committed,
+          RecvAppend{AppendEntries{2, "a", boundary, 1, {{2, "next"}}, boundary, 77}});
+  EXPECT_TRUE(retry.capacity_exhausted);
+  EXPECT_FALSE(retry.persist);
+  EXPECT_FALSE(unchanged.halted);
+}
+
 TEST(RaftTransitionTest, ElectionDoesNotEmitVotesBeforeDurableSelfVote) {
   const auto c = cluster("a");
   auto [staged, proposal] = run(c, initial(c), ElectionTimeout{});
@@ -98,15 +173,19 @@ TEST(RaftTransitionTest, ReplicationAndApplicationEffectsFollowDurability) {
   ASSERT_EQ(leader.volatile_state.role, Role::Leader);
   ASSERT_EQ(initial_heartbeats.send_now.size(), 2u);
 
-  // The initial heartbeats might be lost. Timer input replaces their probes.
+  // The initial heartbeats might be lost. A retry must keep their context.
   auto [new_leader, proposed] = run(ca, leader, ClientPropose{"cmd-1"});
   ASSERT_TRUE(proposed.persist);
   EXPECT_TRUE(proposed.send_now.empty());
   EXPECT_EQ(new_leader.durable.log.size(), 0u);
   auto [written, flush] = run(ca, new_leader, PersistCompleted{proposed.persist->token});
   EXPECT_EQ(written.durable.log.size(), 1u);
-  // Existing heartbeats were in flight; retransmission includes the new entry.
-  auto [sending, heartbeat] = run(ca, written, HeartbeatTimeout{});
+  // First deliver the delayed empty probe, then send the newly durable entry.
+  const auto initial_probe = std::get<AppendEntries>(initial_heartbeats.send_now[0].message);
+  auto [caught_up, empty_ack] =
+      run(ca, written, RecvAppendReply{AppendReply{1, "b", true, 0, initial_probe.request_id}});
+  EXPECT_TRUE(empty_ack.send_now.empty());
+  auto [sending, heartbeat] = run(ca, caught_up, HeartbeatTimeout{});
   ASSERT_EQ(heartbeat.send_now.size(), 2u);
   const auto* append = std::get_if<AppendEntries>(&heartbeat.send_now[0].message);
   ASSERT_NE(append, nullptr);
@@ -183,18 +262,47 @@ TEST(RaftTransitionTest, OldProbeReplyCannotInflateMatchOrRegressNext) {
   leader.volatile_state.peers.at("b").next = 1;
   auto [first, effects] = run(c, leader, HeartbeatTimeout{});
   const auto& probe1 = std::get<AppendEntries>(effects.send_now[0].message);
-  auto [second, effects2] = run(c, first, HeartbeatTimeout{});
+  auto [retrying, retry] = run(c, first, HeartbeatTimeout{});
+  ASSERT_EQ(std::get<AppendEntries>(retry.send_now[0].message).request_id, probe1.request_id);
+  auto [matched, accepted] =
+      run(c, retrying, RecvAppendReply{AppendReply{4, "b", true, 1000, probe1.request_id}});
+  EXPECT_TRUE(accepted.send_now.empty());
+  EXPECT_EQ(matched.volatile_state.peers.at("b").match, 1u);
+  auto [second, effects2] = run(c, matched, HeartbeatTimeout{});
   const auto& probe2 = std::get<AppendEntries>(effects2.send_now[0].message);
   ASSERT_NE(probe1.request_id, probe2.request_id);
   auto [unchanged, stale] =
-      run(c, second, RecvAppendReply{AppendReply{4, "b", true, 1000, probe1.request_id}});
+      run(c, second, RecvAppendReply{AppendReply{4, "b", false, 0, probe1.request_id}});
   EXPECT_TRUE(stale.send_now.empty());
-  EXPECT_EQ(unchanged.volatile_state.peers.at("b").match, 0u);
-  auto [matched, now] =
-      run(c, unchanged, RecvAppendReply{AppendReply{4, "b", true, 1000, probe2.request_id}});
-  EXPECT_TRUE(now.send_now.empty());
+  EXPECT_EQ(unchanged.volatile_state.peers.at("b").match, 1u);
+  EXPECT_EQ(unchanged.volatile_state.peers.at("b").next, 2u);
+}
+
+TEST(RaftTransitionTest, DelayedAndLostRepliesEventuallyCommit) {
+  const auto c = cluster("a");
+  auto leader = initial(c);
+  leader.durable.term = 1;
+  leader.durable.log = {{1, "command"}};
+  leader.volatile_state.role = Role::Leader;
+  auto [sending, sent] = run(c, leader, HeartbeatTimeout{});
+  const auto probe = std::get<AppendEntries>(sent.send_now[0].message);
+  for (int lost = 0; lost < 12; ++lost) {
+    auto [next, retry] = run(c, sending, HeartbeatTimeout{});
+    ASSERT_EQ(retry.send_now.size(), 2u);
+    const auto repeated = std::get<AppendEntries>(retry.send_now[0].message);
+    EXPECT_EQ(repeated.request_id, probe.request_id);
+    EXPECT_EQ(repeated.entries, probe.entries);
+    EXPECT_EQ(repeated.leader_commit, probe.leader_commit);
+    sending = std::move(next);
+  }
+  auto [matched, accepted] =
+      run(c, sending, RecvAppendReply{AppendReply{1, "b", true, 1, probe.request_id}});
   EXPECT_EQ(matched.volatile_state.peers.at("b").match, 1u);
-  EXPECT_EQ(matched.volatile_state.peers.at("b").next, 2u);
+  auto [staged, commit] = run(c, matched, AdvanceCommit{});
+  ASSERT_TRUE(commit.persist);
+  auto [committed, completed] = run(c, staged, PersistCompleted{commit.persist->token});
+  EXPECT_EQ(committed.durable.commit, 1u);
+  EXPECT_FALSE(completed.halt);
 }
 
 TEST(RaftTransitionTest, OldTermEntriesAreNotDirectlyQuorumCommitted) {

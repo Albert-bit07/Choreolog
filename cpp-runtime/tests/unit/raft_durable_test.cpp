@@ -69,6 +69,16 @@ TEST(RaftDurableTest, ReplicationAndQuorumCommitReachDiskBeforeReopen) {
   EXPECT_TRUE(append.effects.send_now.empty());
   EXPECT_EQ(a.value().disk().log.size(), 1u);
 
+  // A proposal cannot replace an unanswered empty heartbeat. Acknowledge it
+  // first, including the schedule in which its original delivery was lost.
+  for (const auto& out : leadership.effects.send_now) {
+    if (out.to == "b") {
+      const auto& probe = std::get<AppendEntries>(out.message);
+      auto ack = a.value().dispatch(
+          RecvAppendReply{AppendReply{probe.term, "b", true, probe.prev_index, probe.request_id}});
+      EXPECT_FALSE(ack.error);
+    }
+  }
   auto sent = a.value().dispatch(HeartbeatTimeout{});
   AppendEntries message{};
   for (const auto& out : sent.effects.send_now) {
@@ -177,7 +187,11 @@ TEST(RaftDurableTest, CommittedPrefixAndSameTermVoteCannotBeOverwritten) {
   ASSERT_TRUE(checkpoint.value().persist(stable));
 
   Durable conflict = stable;
-  conflict.log[0].command = "other";
+  {
+    auto changed = conflict.log[0];
+    changed.command = "other";
+    conflict.log.set(0, std::move(changed));
+  }
   EXPECT_FALSE(checkpoint.value().persist(conflict));
   conflict = stable;
   conflict.log.resize(0);
@@ -193,7 +207,7 @@ TEST(RaftDurableTest, CommittedPrefixAndSameTermVoteCannotBeOverwritten) {
   Durable repaired = stable;
   repaired.term = 3;
   repaired.voted_for.reset();
-  repaired.log[1] = {3, "replacement"};
+  repaired.log.set(1, {3, "replacement"});
   ASSERT_TRUE(checkpoint.value().persist(repaired));
   auto reopened = CheckpointStore::open(path);
   ASSERT_TRUE(reopened);

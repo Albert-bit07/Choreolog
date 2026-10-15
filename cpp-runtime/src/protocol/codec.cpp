@@ -666,6 +666,7 @@ Result<std::string> encode(const ManagementQuery& message) {
   write_uint(out, 3, message.page_size);
   write_bytes(out, 4, message.peer_id);
   write_uint(out, 5, message.delay_ms);
+  write_bytes(out, 6, message.expected_state_hash);
   return out;
 }
 
@@ -690,6 +691,8 @@ Result<std::string> encode(const ManagementReply& message) {
   write_uint(out, 15, message.snapshot_index);
   write_bytes(out, 16, message.snapshot_state_hash);
   write_bytes(out, 17, message.recovery_report);
+  write_bytes(out, 18, message.state_chunk);
+  write_uint(out, 19, message.state_size);
   return out;
 }
 
@@ -703,13 +706,15 @@ Result<ManagementQuery> decode_management_query(std::string_view bytes) {
     }
     const auto field = key.value() >> 3;
     const int wire = static_cast<int>(key.value() & 7);
-    if ((field == 1 || field == 4) && wire == kLength) {
+    if ((field == 1 || field == 4 || field == 6) && wire == kLength) {
       auto value = reader.skip_or_read(wire, true);
       if (!value) {
         return value.error();
       }
       if (field == 1) {
         message.operation = value.value();
+      } else if (field == 6) {
+        message.expected_state_hash = value.value();
       } else {
         message.peer_id = value.value();
       }
@@ -748,7 +753,8 @@ Result<ManagementReply> decode_management_reply(std::string_view bytes) {
     }
     const auto field = key.value() >> 3;
     const int wire = static_cast<int>(key.value() & 7);
-    if ((field == 1 || field == 2 || field == 3 || field == 16 || field == 17) && wire == kLength) {
+    if ((field == 1 || field == 2 || field == 3 || field == 16 || field == 17 || field == 18) &&
+        wire == kLength) {
       auto value = reader.skip_or_read(wire, true);
       if (!value) {
         return value.error();
@@ -769,10 +775,13 @@ Result<ManagementReply> decode_management_reply(std::string_view bytes) {
         case 17:
           message.recovery_report = value.value();
           break;
+        case 18:
+          message.state_chunk = value.value();
+          break;
         default:
           break;
       }
-    } else if (field >= 4 && field <= 15 && wire == kVarint) {
+    } else if (((field >= 4 && field <= 15) || field == 19) && wire == kVarint) {
       auto value = reader.varint();
       if (!value) {
         return value.error();
@@ -813,6 +822,9 @@ Result<ManagementReply> decode_management_reply(std::string_view bytes) {
           break;
         case 15:
           message.snapshot_index = value.value();
+          break;
+        case 19:
+          message.state_size = value.value();
           break;
         default:
           break;

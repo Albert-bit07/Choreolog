@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <thread>
 
@@ -10,6 +11,7 @@
 #include "choreoos/protocol/codec.hpp"
 #include "choreoos/protocol/command_codec.hpp"
 #include "choreoos/runtime/config.hpp"
+#include "choreoos/state/store.hpp"
 
 namespace choreoos::network {
 namespace {
@@ -100,6 +102,92 @@ TEST(ClusterTest, ReplicationFramesFromUnidentifiedConnectionsAreRejected) {
   ASSERT_TRUE(status);
   EXPECT_LT(status.value().term, 1000u);
   EXPECT_GE(node.value()->metrics().rejected, 2u);
+  node.value()->stop();
+  runner.join();
+}
+
+TEST(ClusterTest, LaterDuplicateWaiterKeepsItsOwnMajorityDeadline) {
+  const auto root = fresh("choreoos-tcp-waiter-deadlines");
+  auto node = NodeServer::open(
+      node_config("node-1", "node-1", root, 19149,
+                  {{"node-2", "127.0.0.1", 19150}, {"node-3", "127.0.0.1", 19151}}));
+  ASSERT_TRUE(node);
+  std::thread runner([&] { node.value()->run(); });
+  const auto show = ChoreographyId::parse("opening").value();
+  const auto frame =
+      command_frame({CommandId::parse("create").value(), show, CommandType::CreateChoreography,
+                     kCurrentSchemaVersion, MusicalTick::from_count(0).value(),
+                     CreateChoreographyPayload{show, StageBounds::from_mm(100000, 100000).value(),
+                                               OverlapPolicy::Allowed, 5000}});
+  auto first = std::async(std::launch::async, [&] {
+    return choreoos::protocol::transact("127.0.0.1", 19149, frame, std::chrono::seconds(4));
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(800));
+  const auto started = std::chrono::steady_clock::now();
+  auto second = choreoos::protocol::transact("127.0.0.1", 19149, frame, std::chrono::seconds(4));
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  auto earlier = first.get();
+  EXPECT_TRUE(earlier);
+  EXPECT_TRUE(second);
+  EXPECT_GE(elapsed, std::chrono::milliseconds(1600));
+  if (second) {
+    auto response = choreoos::protocol::decode_client_response(second.value().payload);
+    EXPECT_TRUE(response);
+    if (response) {
+      EXPECT_EQ(response.value().error_code, "Unavailable");
+    }
+  }
+  node.value()->stop();
+  runner.join();
+}
+
+TEST(ClusterTest, LargeStateUsesBoundedPagesAndLightweightStatus) {
+  const auto root = fresh("choreoos-tcp-large-state");
+  choreoos::state::Engine engine;
+  const auto show = ChoreographyId::parse("opening").value();
+  ASSERT_TRUE(
+      engine.submit({CommandId::parse("create").value(), show, CommandType::CreateChoreography,
+                     kCurrentSchemaVersion, MusicalTick::from_count(0).value(),
+                     CreateChoreographyPayload{show, StageBounds::from_mm(100000, 100000).value(),
+                                               OverlapPolicy::Allowed, 5000}}));
+  auto state = engine.state();
+  for (int i = 0; i < 14000; ++i) {
+    const auto id = "d" + std::string(80, 'x') + std::to_string(i);
+    state.dancers.emplace(
+        id, choreoos::state::DancerState{Position::from_mm(1000, 1000).value(), true});
+  }
+  const auto expected = choreoos::state::canonical_state(state);
+  ASSERT_GT(expected.size(), choreoos::protocol::kMaxFramePayload);
+  {
+    auto store = choreoos::state::FileEngine::open(root);
+    ASSERT_TRUE(store);
+    choreoos::storage::Snapshot snapshot{state.last_applied,
+                                         state.term,
+                                         choreoos::state::state_hash(state),
+                                         {},
+                                         choreoos::state::snapshot_payload(state)};
+    ASSERT_TRUE(store.value().install_snapshot(snapshot));
+  }
+  auto node = NodeServer::open(node_config("node-1", "node-1", root, 19148, {}));
+  ASSERT_TRUE(node);
+  std::thread runner([&] { node.value()->run(); });
+  auto status = status_of(19148);
+  EXPECT_TRUE(status);
+  if (status) {
+    EXPECT_TRUE(status.value().canonical_state.empty());
+    auto result = choreoos::protocol::fetch_state("127.0.0.1", 19148, status.value().state_hash,
+                                                  std::chrono::seconds(5));
+    EXPECT_TRUE(result);
+    if (result) {
+      EXPECT_EQ(result.value(), expected);
+    }
+    auto bounded = choreoos::protocol::fetch_state("127.0.0.1", 19148, status.value().state_hash,
+                                                   std::chrono::seconds(5), 1024);
+    EXPECT_FALSE(bounded);
+    auto stale =
+        choreoos::protocol::fetch_state("127.0.0.1", 19148, "stale-hash", std::chrono::seconds(5));
+    EXPECT_FALSE(stale);
+  }
   node.value()->stop();
   runner.join();
 }

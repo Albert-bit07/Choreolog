@@ -13,7 +13,10 @@ using choreoos::state::Result;
 }  // namespace
 
 Result<NodeMetadata> load_metadata(const std::filesystem::path& path) {
-  if (!std::filesystem::exists(path)) {
+  std::error_code error;
+  const bool exists = std::filesystem::exists(path, error);
+  if (error) return Error{ErrorCode::StoreError, "unable to inspect metadata: " + error.message()};
+  if (!exists) {
     return NodeMetadata{};
   }
   auto bytes = read_file(path);

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Choreoos.Management.V1;
 using Grpc.Core;
 
@@ -32,25 +33,29 @@ public sealed class ChoreoClusterClient : IDisposable
     public async Task<IReadOnlyList<NodeStatus>> GetReachableStatusesAsync(
         CancellationToken cancellationToken = default)
     {
-        var statuses = new List<NodeStatus>();
-        foreach (var connection in _connections)
+        // Bound fan-out even when a caller supplies a large endpoint list.
+        using var concurrency = new SemaphoreSlim(4);
+        var polls = _connections.Select(async connection =>
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            await concurrency.WaitAsync(cancellationToken);
             try
             {
-                var status = await connection.Client.GetNodeStatusAsync(
+                return await connection.Client.GetNodeStatusAsync(
                     new GetNodeStatusRequest(),
                     deadline: DateTime.UtcNow.AddSeconds(2),
                     cancellationToken: cancellationToken);
-                statuses.Add(status);
             }
             catch (RpcException error) when (IsTransient(error.StatusCode))
             {
-                // A node or its local gRPC gateway may be offline.
+                return null;
             }
-        }
-
-        return statuses;
+            finally
+            {
+                concurrency.Release();
+            }
+        });
+        var statuses = await Task.WhenAll(polls);
+        return statuses.Where(status => status is not null).Select(status => status!).ToArray();
     }
 
     /// <summary>
@@ -75,22 +80,20 @@ public sealed class ChoreoClusterClient : IDisposable
             throw new ArgumentOutOfRangeException(nameof(timeout));
         }
 
-        var end = DateTime.UtcNow.Add(timeout);
-        while (DateTime.UtcNow < end)
+        request = request.Clone(); // Freeze caller-owned data across ambiguous retries.
+        var budget = Stopwatch.StartNew();
+        while (budget.Elapsed < timeout)
         {
             cancellationToken.ThrowIfCancellationRequested();
             foreach (var connection in _connections)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var callDeadline = DateTime.UtcNow.AddSeconds(2);
-                if (callDeadline > end)
-                {
-                    callDeadline = end;
-                }
-                if (callDeadline <= DateTime.UtcNow)
-                {
-                    break;
-                }
+                var remainingBudget = timeout - budget.Elapsed;
+                if (remainingBudget <= TimeSpan.Zero) break;
+                var callDuration = remainingBudget < TimeSpan.FromSeconds(2)
+                    ? remainingBudget : TimeSpan.FromSeconds(2);
+                // gRPC requires UTC deadlines; retry-budget arithmetic stays monotonic.
+                var callDeadline = DateTime.UtcNow.Add(callDuration);
 
                 try
                 {
@@ -120,11 +123,12 @@ public sealed class ChoreoClusterClient : IDisposable
                 }
             }
 
-            if (DateTime.UtcNow >= end)
+            if (budget.Elapsed >= timeout)
             {
                 break;
             }
-            var remaining = end - DateTime.UtcNow;
+            var remaining = timeout - budget.Elapsed;
+            if (remaining <= TimeSpan.Zero) break;
             await Task.Delay(remaining < TimeSpan.FromMilliseconds(150)
                                  ? remaining : TimeSpan.FromMilliseconds(150),
                              cancellationToken);

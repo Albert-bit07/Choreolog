@@ -126,6 +126,13 @@ void election_replication_commit() {
   require(proposal.persist.has_value() && proposal.send_now.empty(), "append sent before fsync");
   auto flushed = h.advance("a", PersistCompleted{proposal.persist->token});
   require(flushed.apply.empty(), "application emitted before commit");
+  for (const auto& output : lead.send_now) {
+    if (output.to == "b") {
+      const auto& initial = std::get<AppendEntries>(output.message);
+      h.advance("a", RecvAppendReply{AppendReply{initial.term, "b", true, initial.prev_index,
+                                                 initial.request_id}});
+    }
+  }
   auto heartbeats = h.advance("a", HeartbeatTimeout{});
   AppendEntries append{};
   bool found_append = false;
@@ -219,16 +226,18 @@ void stale_ack() {
   const auto first = h.advance("a", HeartbeatTimeout{});
   require(first.send_now.size() == 2, "missing probes");
   const auto first_msg = std::get<AppendEntries>(first.send_now[0].message);
+  const auto retry = h.advance("a", HeartbeatTimeout{});
+  require(retry.send_now.size() == 2, "missing retried probes");
+  require(std::get<AppendEntries>(retry.send_now[0].message).request_id == first_msg.request_id,
+          "retry replaced an outstanding request");
+  h.advance("a", RecvAppendReply{AppendReply{3, "b", true, 999, first_msg.request_id}});
   const auto second = h.advance("a", HeartbeatTimeout{});
-  require(second.send_now.size() == 2, "missing replacement probes");
   const auto second_msg = std::get<AppendEntries>(second.send_now[0].message);
-  require(first_msg.request_id != second_msg.request_id, "probe request ID reused");
-  auto stale = h.advance("a", RecvAppendReply{AppendReply{3, first_msg.leader == "a" ? "b" : "b",
-                                                          true, 999, first_msg.request_id}});
-  require(stale.send_now.empty() && h.nodes["a"].volatile_state.peers.at("b").match == 0,
-          "stale response inflated match");
-  h.advance("a", RecvAppendReply{AppendReply{3, "b", true, 999, second_msg.request_id}});
-  require(h.nodes["a"].volatile_state.peers.at("b").match == 1, "valid reply not counted");
+  require(first_msg.request_id != second_msg.request_id, "completed probe request ID reused");
+  auto stale = h.advance("a", RecvAppendReply{AppendReply{3, "b", false, 0, first_msg.request_id}});
+  require(stale.send_now.empty() && h.nodes["a"].volatile_state.peers.at("b").match == 1 &&
+              h.nodes["a"].volatile_state.peers.at("b").next == 2,
+          "obsolete response changed progress");
 }
 
 }  // namespace

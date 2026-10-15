@@ -109,6 +109,7 @@ struct ManagementQuery {
   std::uint32_t page_size = 0;
   std::string peer_id;
   std::uint32_t delay_ms = 0;
+  std::string expected_state_hash = {};
 };
 
 struct ManagementReply {
@@ -129,6 +130,8 @@ struct ManagementReply {
   std::uint64_t snapshot_index = 0;
   std::string snapshot_state_hash;
   std::string recovery_report;
+  std::string state_chunk;
+  std::uint64_t state_size = 0;
 };
 
 }  // namespace choreoos::protocol

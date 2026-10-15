@@ -23,7 +23,7 @@ struct RecoveredDomainProjection {
   std::uint64_t term = 0;
   std::optional<std::string> voted_for;
   std::optional<storage::Snapshot> snapshot;
-  std::vector<Entry> suffix;  // First entry is snapshot.index + 1, or 1.
+  EntryLog suffix;  // First entry is snapshot.index + 1, or 1.
   std::uint64_t commit = 0;
   std::uint64_t applied = 0;
   std::string applied_state_hash;

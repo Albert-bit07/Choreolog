@@ -103,7 +103,7 @@ class Replica {
   void tick();
   void heartbeat();
   [[nodiscard]] NodeStatus status() const;
-  // Cheap accessors for hot paths. status() serializes and hashes the whole state.
+  // Status and these accessors use the hash cached at the last commit.
   [[nodiscard]] const std::string& leader_id() const noexcept { return config_.leader_id; }
   [[nodiscard]] const std::string& committed_state_hash() const noexcept {
     return store_.recovery().state_hash;
@@ -163,6 +163,7 @@ class Replica {
   // Followers never propose, so they only mark speculative state stale. It is
   // rebuilt when this node needs it (becoming leader, or a restamped term).
   void ensure_speculative();
+  void trim_retained_history();
   void rebuild_command_index();
   void start_election();
   void become_leader();
@@ -185,6 +186,7 @@ class Replica {
   choreoos::state::FileEngine store_;
   choreoos::state::ChoreographyState speculative_{};
   bool speculative_dirty_ = false;
+  std::uint64_t history_anchor_ = 0;
   std::unordered_map<std::string, std::uint64_t> command_index_;  // command id -> log index
   std::vector<Peer> peers_;
   IncomingSnapshot incoming_snapshot_;

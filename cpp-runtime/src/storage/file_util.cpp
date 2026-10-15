@@ -87,12 +87,16 @@ std::uint64_t read_u64(const std::vector<std::uint8_t>& in, std::uint64_t offset
 }
 
 Result<std::vector<std::uint8_t>> read_file(const std::filesystem::path& path) {
-  std::ifstream in{path, std::ios::binary};
-  if (!in) {
-    return io_error("unable to open " + path.string());
+  try {
+    std::ifstream in{path, std::ios::binary};
+    if (!in) return io_error("unable to open " + path.string());
+    std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(in),
+                                    std::istreambuf_iterator<char>()};
+    if (in.bad()) return io_error("unable to read " + path.string());
+    return bytes;
+  } catch (const std::ios_base::failure& error) {
+    return io_error("unable to read " + path.string() + ": " + error.what());
   }
-  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in),
-                                   std::istreambuf_iterator<char>());
 }
 
 std::string wal_file_header() {

@@ -220,7 +220,10 @@ int run_remote(const Options& options, const LeaderEndpoint& leader, int redirec
                 << " commit=" << value.commit_index << " last=" << value.last_log_index
                 << " hash=" << value.state_hash << '\n';
       if (options.command == "show") {
-        std::cout << value.canonical_state;
+        auto state = choreoos::protocol::fetch_state(leader.host, leader.port, value.state_hash,
+                                                     std::chrono::seconds(3));
+        if (!state) return fail(state.error(), options.output);
+        std::cout << state.value();
       }
     }
     return 0;
