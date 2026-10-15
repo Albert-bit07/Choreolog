@@ -326,6 +326,21 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
     bool success = prev_ok;
     std::uint64_t hint =
         m.prev_index < target.snapshot_index ? target.snapshot_index : last_index(target);
+    if (prev_ok &&
+        m.prev_index + m.entries.size() - target.snapshot_index > EntryLog::kMaximumEntries) {
+      // Do not stage a log the host cannot persist. The matched prefix can
+      // still commit, allowing application/checkpoint maintenance to free the
+      // window before this exact request is retried.
+      effects.capacity_exhausted = true;
+      target.commit = std::max(target.commit, std::min(m.leader_commit, m.prev_index));
+      Outbound reply{
+          m.leader, AppendReply{target.term, config.self, false, last_index(target), m.request_id}};
+      if (target != state.durable)
+        begin_write(state, effects, std::move(target), {std::move(reply)});
+      else
+        effects.send_now.push_back(std::move(reply));
+      return {std::move(state), std::move(effects)};
+    }
     if (prev_ok) {
       for (std::size_t k = 0; k < m.entries.size(); ++k) {
         const auto index = m.prev_index + static_cast<std::uint64_t>(k) + 1;

@@ -62,6 +62,38 @@ TEST(RaftTransitionTest, RetainedWindowReturnsExplicitBackpressureWithoutHalting
   EXPECT_TRUE(unchanged.durable.log.shares_storage_with(node.durable.log));
 }
 
+TEST(RaftTransitionTest, FullFollowerWindowCommitsMatchedPrefixAndReportsCapacity) {
+  const auto config = cluster("b");
+  auto node = initial(config);
+  node.durable.term = 1;
+  for (std::size_t i = 0; i < EntryLog::kMaximumEntries; ++i)
+    node.durable.log.push_back({1, "entry"});
+  const auto boundary = static_cast<std::uint64_t>(node.durable.log.size());
+  auto [staged, effects] = run(
+      config, node, RecvAppend{AppendEntries{2, "a", boundary, 1, {{2, "next"}}, boundary, 77}});
+  EXPECT_TRUE(effects.capacity_exhausted);
+  EXPECT_FALSE(effects.halt);
+  ASSERT_TRUE(effects.persist);
+  EXPECT_TRUE(effects.send_now.empty());
+  EXPECT_EQ(effects.persist->target.term, 2u);
+  EXPECT_EQ(effects.persist->target.commit, boundary);
+  EXPECT_TRUE(effects.persist->target.log.shares_storage_with(node.durable.log));
+  auto [committed, completed] = run(config, staged, PersistCompleted{effects.persist->token});
+  EXPECT_FALSE(committed.halted);
+  EXPECT_EQ(committed.durable.commit, boundary);
+  ASSERT_EQ(completed.send_now.size(), 1u);
+  const auto reply = std::get<AppendReply>(completed.send_now.front().message);
+  EXPECT_FALSE(reply.success);
+  EXPECT_EQ(reply.term, 2u);
+  EXPECT_EQ(reply.request_id, 77u);
+  auto [unchanged, retry] =
+      run(config, committed,
+          RecvAppend{AppendEntries{2, "a", boundary, 1, {{2, "next"}}, boundary, 77}});
+  EXPECT_TRUE(retry.capacity_exhausted);
+  EXPECT_FALSE(retry.persist);
+  EXPECT_FALSE(unchanged.halted);
+}
+
 TEST(RaftTransitionTest, ElectionDoesNotEmitVotesBeforeDurableSelfVote) {
   const auto c = cluster("a");
   auto [staged, proposal] = run(c, initial(c), ElectionTimeout{});

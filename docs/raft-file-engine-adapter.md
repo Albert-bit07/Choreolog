@@ -106,7 +106,10 @@ explicitly requested. `current()` keeps its value-returning compatibility API.
 Shared log chunks retain immutable payload aliases, with constant-time term
 summaries and copy-on-write chunk mutation. The supported retained window is
 100000 entries. At that boundary the core emits `capacity_exhausted` for a client
-proposal, allowing the host to apply backpressure instead of halting.
+proposal, allowing the host to apply backpressure instead of halting. A full
+follower also refuses an append beyond the window while durably advancing its
+term and any matched committed prefix, so the host can apply/checkpoint that
+prefix before retrying the append.
 
 `checkpoint()` now saves committed state and compacts the production WAL to its
 snapshot boundary, preserving uncommitted suffix entries and durable retry
