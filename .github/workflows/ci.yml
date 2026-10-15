@@ -111,7 +111,20 @@ jobs:
           cmake "${args[@]}"
 
       - name: Build
-        run: cmake --build build/ci
+        shell: bash
+        run: |
+          if cmake --build build/ci > build/ci/build.log 2>&1; then
+            cat build/ci/build.log
+          else
+            cat build/ci/build.log
+            # Keep compiler diagnostics accessible through the Checks API too.
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              echo "::error::$line"
+            done < <(tail -n 60 build/ci/build.log)
+            exit 1
+          fi
 
       - name: Test
         run: ctest --test-dir build/ci --output-on-failure --timeout 240
