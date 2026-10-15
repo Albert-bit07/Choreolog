@@ -154,6 +154,41 @@ TEST(DurabilityTest, CompactingClusterBoundsLiveHistoryAndPreservesOldRetryRecei
   EXPECT_FALSE(store.value().engine().replay_through(std::nullopt, std::nullopt));
 }
 
+TEST(DurabilityTest, RecoveryAndSnapshotInstallBoundAliasesWithoutDroppingReceipts) {
+  const auto dir = fresh_dir("choreoos-recovered-history-aliases");
+  StoreOptions options;
+  options.compact_log = true;
+  options.snapshot_every = 10;
+  std::optional<storage::Snapshot> snapshot;
+  {
+    auto store = FileEngine::open(dir, options);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().submit(create_command()));
+    for (int i = 0; i < 40; ++i)
+      ASSERT_TRUE(store.value().submit(add_command("d" + std::to_string(i), 1000 + i * 100)));
+    snapshot = store.value().latest_snapshot();
+    EXPECT_EQ(store.value().engine().state().receipts.size(), 41u);
+  }
+  auto recovered = FileEngine::open(dir, options);
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(recovered.value().engine().state().receipts.size(), 41u);
+  EXPECT_LE(recovered.value().engine().state().applied_commands.size(),
+            recovered.value().log_events().size());
+  auto retry = recovered.value().submit(create_command());
+  ASSERT_TRUE(retry);
+  EXPECT_TRUE(retry.value().duplicate);
+  const auto target = fresh_dir("choreoos-installed-history-aliases");
+  auto follower = FileEngine::open(target, options);
+  ASSERT_TRUE(follower);
+  ASSERT_TRUE(snapshot);
+  ASSERT_TRUE(follower.value().install_snapshot(*snapshot));
+  EXPECT_EQ(follower.value().engine().state().receipts.size(), 40u);
+  EXPECT_TRUE(follower.value().engine().state().applied_commands.empty());
+  auto installed_retry = follower.value().submit(create_command());
+  ASSERT_TRUE(installed_retry);
+  EXPECT_TRUE(installed_retry.value().duplicate);
+}
+
 TEST(DurabilityTest, MetadataBeyondWalAndMissingSnapshotSuffixFailClosed) {
   const auto dir = fresh_dir("choreoos-missing-committed-coverage");
   StoreOptions options;

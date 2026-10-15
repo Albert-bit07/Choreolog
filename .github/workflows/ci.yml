@@ -303,4 +303,10 @@ jobs:
             cpp-runtime/src/raft/transition.cpp \
             cpp-runtime/src/runtime/config.cpp \
             cpp-runtime/src/network/node_server.cpp \
+            cpp-runtime/src/state/machine.cpp \
+            cpp-runtime/src/state/store.cpp \
+            cpp-runtime/src/storage/file_util.cpp \
+            cpp-runtime/src/storage/metadata.cpp \
+            cpp-runtime/src/storage/snapshot.cpp \
+            cpp-runtime/src/storage/wal.cpp \
             --warnings-as-errors='bugprone-*,performance-*'

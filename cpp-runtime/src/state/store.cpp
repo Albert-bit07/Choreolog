@@ -344,6 +344,10 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
       return stored.error();
     }
   }
+  if (options.compact_log) {
+    auto retained = store.engine_.retain_history_from(store.log_first_index());
+    if (!retained) return retained.error();
+  }
   store.recovery_.commit_index = commit.value();
   store.recovery_.state_hash = state_hash(store.engine_.state());
   return store;
@@ -712,6 +716,10 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
   // An older snapshot cannot bridge to a log that now starts at this one, so
   // keep only the installed snapshot.
   (void)storage::prune_snapshots(directory_, 1);
+  if (options_.compact_log) {
+    auto retained = engine_.retain_history_from(log_first_index());
+    if (!retained) return storage_failure_unlocked(retained.error());
+  }
   recovery_.used_snapshot = true;
   recovery_.snapshot_index = snapshot.index.value();
   recovery_.commit_index = snapshot.index.value();
