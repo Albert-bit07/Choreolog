@@ -174,17 +174,29 @@ TEST_F(RaftRecoveryProjectionTest, UncommittedEnvelopeAndTermsAreStillValidated)
   auto projection = audit_recovered_domain_store(store.value());
   ASSERT_TRUE(projection);
   auto bad = projection.value();
-  bad.suffix.front().command = state::canonical_event(events[1]);  // Index2, expected3.
+  {
+    auto changed = bad.suffix.front();
+    changed.command = state::canonical_event(events[1]);
+    bad.suffix.set(0, std::move(changed));
+  }  // Index2, expected3.
   EXPECT_FALSE(replay_recovered_domain(bad));
   bad = projection.value();
-  bad.suffix.front().command += ";unknown=field";
+  {
+    auto changed = bad.suffix.front();
+    changed.command += ";unknown=field";
+    bad.suffix.set(0, std::move(changed));
+  }
   EXPECT_FALSE(replay_recovered_domain(bad));
   bad = projection.value();
-  bad.suffix.front().term = 2;
+  {
+    auto changed = bad.suffix.front();
+    changed.term = 2;
+    bad.suffix.set(0, std::move(changed));
+  }
   EXPECT_FALSE(replay_recovered_domain(bad));
   auto future = events[2];
   future.term = state::Term::parse(2).value();
-  bad.suffix.front() = encode_domain_event(future).value();
+  bad.suffix.set(0, encode_domain_event(future).value());
   EXPECT_FALSE(replay_recovered_domain(bad));  // Canonical future-term envelope too.
   // Even a valid envelope must respect the snapshot term ordering.
   auto higher = events[1];

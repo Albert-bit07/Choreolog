@@ -58,6 +58,17 @@ choreoos::state::Result<Replica> Replica::open(ReplicaConfig config) {
   if (!metadata) {
     return metadata.error();
   }
+  auto previous_term = std::uint64_t{0};
+  const auto& snapshot = replica.store_.latest_snapshot();
+  if (snapshot && snapshot->term.value() > metadata.value().term.value())
+    return Error{ErrorCode::StoreError, "snapshot term exceeds durable consensus term"};
+  for (const auto& event : replica.store_.log_events()) {
+    if (event.term.value() < previous_term || event.term.value() > metadata.value().term.value() ||
+        (snapshot && event.index == snapshot->index && event.term != snapshot->term))
+      return Error{ErrorCode::StoreError,
+                   "recovered WAL terms disagree with consensus metadata or snapshot"};
+    previous_term = event.term.value();
+  }
   replica.current_term_ = metadata.value().term;
   if (metadata.value().voted_for) {
     replica.voted_for_ = metadata.value().voted_for->value();
@@ -132,7 +143,8 @@ choreoos::state::Result<EnqueueResult> Replica::enqueue(const choreoos::state::C
     return Error{ErrorCode::NotLeader, "leader is " + config_.leader_id};
   }
   const auto& committed = store_.engine().state();
-  if (committed.applied_commands.count(command.id.value()) != 0) {
+  if (committed.applied_commands.count(command.id.value()) != 0 ||
+      committed.receipts.count(command.id.value()) != 0) {
     auto receipt = choreoos::state::resolve_receipt(committed, command);
     if (!receipt) {
       return receipt.error();
@@ -260,6 +272,7 @@ void Replica::handle(const choreoos::protocol::Frame& frame, const std::string& 
 }
 
 void Replica::tick() {
+  trim_retained_history();
   if (halted_) return;
   ++ticks_;
   if (!config_.elections) {
@@ -288,8 +301,7 @@ NodeStatus Replica::status() const {
   status.term = current_term_.value();
   status.commit_index = store_.commit_index().value();
   status.last_log_index = last_index();
-  status.state_hash = choreoos::state::state_hash(store_.engine().state());
-  status.canonical_state = choreoos::state::canonical_state(store_.engine().state());
+  status.state_hash = committed_state_hash();
   return status;
 }
 
@@ -841,7 +853,25 @@ void Replica::rebuild_speculative() {
   }
 }
 
+void Replica::trim_retained_history() {
+  const auto anchor = store_.log_first_index();
+  if (anchor <= history_anchor_) return;
+  history_anchor_ = anchor;
+  auto retained = choreoos::state::retain_state_history_from(speculative_, anchor);
+  if (!retained) {
+    halt_after_storage_failure();
+    return;
+  }
+  for (auto it = command_index_.begin(); it != command_index_.end();) {
+    if (it->second < anchor)
+      it = command_index_.erase(it);
+    else
+      ++it;
+  }
+}
+
 void Replica::ensure_speculative() {
+  trim_retained_history();
   if (speculative_dirty_) {
     rebuild_speculative();
   }

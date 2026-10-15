@@ -94,7 +94,7 @@ message StatusResponse {
   uint64 commit_index = 5;
   uint64 last_log_index = 6;
   string state_hash = 7;
-  string canonical_state = 8;
+  string canonical_state = 8; // Reserved legacy inline state; new servers return empty.
 }
 
 message ManagementQuery {
@@ -103,6 +103,7 @@ message ManagementQuery {
   uint32 page_size = 3;
   string peer_id = 4;
   uint32 delay_ms = 5;
+  string expected_state_hash = 6;
 }
 
 message ManagementReply {
@@ -123,4 +124,6 @@ message ManagementReply {
   uint64 snapshot_index = 15;
   string snapshot_state_hash = 16;
   string recovery_report = 17;
+  bytes state_chunk = 18;
+  uint64 state_size = 19;
 }

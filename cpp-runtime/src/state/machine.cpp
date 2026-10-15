@@ -62,8 +62,8 @@ Command normalize_command(Command command) {
 std::uint64_t command_fingerprint(const Command& command) {
   const auto bytes = choreoos::protocol::canonical_command(normalize_command(command));
   std::uint64_t hash = kFnvOffset;
-  for (unsigned char byte : bytes) {
-    hash ^= byte;
+  for (char byte : bytes) {
+    hash ^= static_cast<unsigned char>(byte);
     hash *= kFnvPrime;
   }
   return hash;
@@ -160,11 +160,11 @@ bool mark_occupied(const ChoreographyState& state, const Position& position,
   return false;
 }
 
-Result<void> require_created(const ChoreographyState& state) {
+Result<StageBounds> require_created(const ChoreographyState& state) {
   if (!state.created || !state.id || !state.stage) {
     return Error{ErrorCode::ChoreographyNotFound, "choreography has not been created"};
   }
-  return {};
+  return *state.stage;
 }
 
 Result<void> require_schema(std::uint16_t version) {
@@ -263,13 +263,14 @@ Result<void> apply_create(ChoreographyState& state, const Event& event,
 }
 
 Result<void> apply_add(ChoreographyState& state, const DancerPayload& payload) {
-  if (auto created = require_created(state); !created) {
+  auto created = require_created(state);
+  if (!created) {
     return created.error();
   }
   if (find_dancer(state, payload.dancer_id) != nullptr) {
     return Error{ErrorCode::DancerExists, "dancer already exists"};
   }
-  if (!state.stage->contains(payload.position)) {
+  if (!created.value().contains(payload.position)) {
     return Error{ErrorCode::OutOfBounds, "dancer is outside the stage"};
   }
   if (state.overlap == OverlapPolicy::Forbidden &&
@@ -298,7 +299,8 @@ Result<void> apply_remove(ChoreographyState& state, const RemoveDancerPayload& p
 }
 
 Result<void> apply_move(ChoreographyState& state, const DancerPayload& payload) {
-  if (auto created = require_created(state); !created) {
+  auto created = require_created(state);
+  if (!created) {
     return created.error();
   }
   const auto it = state.dancers.find(payload.dancer_id.value());
@@ -308,7 +310,7 @@ Result<void> apply_move(ChoreographyState& state, const DancerPayload& payload) 
   if (!it->second.active) {
     return Error{ErrorCode::DancerInactive, "removed dancers cannot move"};
   }
-  if (!state.stage->contains(payload.position)) {
+  if (!created.value().contains(payload.position)) {
     return Error{ErrorCode::OutOfBounds, "move is outside the stage"};
   }
   if (!travel_within_limit(it->second.position, payload.position, state.max_travel_mm)) {
@@ -364,7 +366,7 @@ Result<Event> propose(const ChoreographyState& state, const Command& command) {
   }
 
   const auto seen = state.applied_commands.find(command.id.value());
-  if (seen != state.applied_commands.end()) {
+  if (seen != state.applied_commands.end() || state.receipts.count(command.id.value()) != 0) {
     return Error{ErrorCode::DuplicateCommand, "command id has already been accepted"};
   }
 
@@ -398,15 +400,11 @@ Result<Event> propose(const ChoreographyState& state, const Command& command) {
 }
 
 // Commit path: check schema, duplicates, index, then apply one event type.
-Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index_rule) {
-  if (auto schema = require_schema(event.schema_version); !schema) {
-    return schema.error();
-  }
-
+static Result<bool> existing_event(const ChoreographyState& state, const Event& event) {
   const auto seen = state.applied_events.find(event.id.value());
   if (seen != state.applied_events.end()) {
     if (seen->second == canonical_event(event)) {
-      return {};
+      return true;
     }
     return Error{ErrorCode::ConflictingEvent, "event id was reused with different content"};
   }
@@ -420,7 +418,7 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
     if (original && receipt->second.index == event.index.value() &&
         receipt->second.term == event.term.value() &&
         receipt->second.fingerprint == command_fingerprint(*original)) {
-      return {};
+      return true;
     }
     return Error{ErrorCode::ConflictingEvent,
                  "committed command id was reused with different event content"};
@@ -428,6 +426,25 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
   if (state.applied_commands.count(event.command_id.value()) != 0) {
     return Error{ErrorCode::ConflictingEvent,
                  "legacy committed command id was replayed without an outcome receipt"};
+  }
+
+  return false;
+}
+
+static Result<void> apply_against(ChoreographyState& state, const Event& event,
+                                  IndexRule index_rule,
+                                  const ChoreographyState* baseline = nullptr) {
+  if (auto schema = require_schema(event.schema_version); !schema) {
+    return schema.error();
+  }
+
+  auto seen = existing_event(state, event);
+  if (!seen) return seen.error();
+  if (seen.value()) return {};
+  if (baseline) {
+    auto prior = existing_event(*baseline, event);
+    if (!prior) return prior.error();
+    if (prior.value()) return {};
   }
 
   if (index_rule == IndexRule::Contiguous && event.index != state.last_applied.next()) {
@@ -504,7 +521,7 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
   // logs in place (O(log n) inserts, no O(history) copy).
   state.created = candidate.created;
   state.id = std::move(candidate.id);
-  state.stage = std::move(candidate.stage);
+  state.stage = candidate.stage;
   state.overlap = candidate.overlap;
   state.max_travel_mm = candidate.max_travel_mm;
   state.dancers = std::move(candidate.dancers);
@@ -519,6 +536,10 @@ Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index
     state.receipts[event.command_id.value()] = receipt_from_event(event);
   }
   return {};
+}
+
+Result<void> apply(ChoreographyState& state, const Event& event, IndexRule index_rule) {
+  return apply_against(state, event, index_rule);
 }
 
 // Fold events onto an empty state. Optional filters skip later counts/indexes.
@@ -607,8 +628,8 @@ std::string canonical_state(const ChoreographyState& state) {
 std::string state_hash(const ChoreographyState& state) {
   const std::string canonical = canonical_state(state);
   std::uint64_t hash = kFnvOffset;
-  for (unsigned char byte : canonical) {
-    hash ^= byte;
+  for (char byte : canonical) {
+    hash ^= static_cast<unsigned char>(byte);
     hash *= kFnvPrime;
   }
   std::ostringstream out;
@@ -870,9 +891,9 @@ Result<ChoreographyState> restore_state(std::string_view payload) {
 }
 
 // Single-node commit: reuse a prior command id, or propose + apply immediately.
-Result<SubmitResult> Engine::submit(Command command) {
+Result<SubmitResult> Engine::submit(const Command& command) {
   const auto seen = state_.applied_commands.find(command.id.value());
-  if (seen != state_.applied_commands.end()) {
+  if (seen != state_.applied_commands.end() || state_.receipts.count(command.id.value()) != 0) {
     auto receipt = resolve_receipt(state_, command);
     if (!receipt) {
       return receipt.error();
@@ -898,6 +919,71 @@ Result<void> Engine::apply_committed(const Event& event) {
   return {};
 }
 
+Result<void> retain_state_history_from(ChoreographyState& state, std::uint64_t anchor) {
+  for (auto it = state.applied_events.begin(); it != state.applied_events.end();) {
+    auto parsed = parse_event(it->second);
+    if (!parsed) return parsed.error();
+    if (parsed.value().index.value() >= anchor) {
+      ++it;
+      continue;
+    }
+    if (parsed.value().type == EventType::NoOp ||
+        state.receipts.count(parsed.value().command_id.value()) != 0)
+      state.applied_commands.erase(parsed.value().command_id.value());
+    it = state.applied_events.erase(it);
+  }
+  // Snapshot restores may contain command aliases without event bodies.
+  for (auto it = state.applied_commands.begin(); it != state.applied_commands.end();) {
+    auto receipt = state.receipts.find(it->first);
+    if (receipt != state.receipts.end() && receipt->second.index < anchor)
+      it = state.applied_commands.erase(it);
+    else
+      ++it;
+  }
+  return {};
+}
+
+Result<Engine> Engine::prepare_committed(const std::vector<Event>& batch) const {
+  Engine staged;
+  staged.state_ = domain_copy(state_);
+  staged.events_.reserve(batch.size());
+  for (const auto& event : batch) {
+    if (auto applied = apply_against(staged.state_, event, IndexRule::Contiguous, &state_);
+        !applied)
+      return applied.error();
+    staged.events_.push_back(event);
+  }
+  return staged;
+}
+
+void Engine::reserve_commit(std::size_t additional) {
+  // Geometric growth: reserve(size+1) on every commit would itself be quadratic.
+  if (events_.capacity() - events_.size() < additional)
+    events_.reserve(std::max(events_.size() + additional, events_.capacity() * 2 + 1));
+}
+
+void Engine::publish_committed(Engine staged) {
+  // No historical map copy. Transfer only staged nodes, then move the domain.
+  state_.applied_events.merge(staged.state_.applied_events);
+  state_.applied_commands.merge(staged.state_.applied_commands);
+  state_.receipts.merge(staged.state_.receipts);
+  staged.state_.applied_events = std::move(state_.applied_events);
+  staged.state_.applied_commands = std::move(state_.applied_commands);
+  staged.state_.receipts = std::move(state_.receipts);
+  state_ = std::move(staged.state_);
+  for (auto& event : staged.events_) events_.push_back(std::move(event));
+}
+
+Result<void> Engine::retain_history_from(std::uint64_t anchor) {
+  auto retained = retain_state_history_from(state_, anchor);
+  if (!retained) return retained.error();
+  auto first = std::lower_bound(
+      events_.begin(), events_.end(), anchor,
+      [](const Event& event, std::uint64_t index) { return event.index.value() < index; });
+  events_.erase(events_.begin(), first);
+  return {};
+}
+
 void Engine::restore(ChoreographyState state, std::vector<Event> history) {
   state_ = std::move(state);
   events_ = std::move(history);
@@ -911,6 +997,8 @@ void Engine::restore(ChoreographyState state, std::vector<Event> history) {
 
 Result<ChoreographyState> Engine::replay_through(std::optional<MusicalTick> through_tick,
                                                  std::optional<LogIndex> through_index) const {
+  if (events_.empty() ? state_.last_applied.value() != 0 : events_.front().index.value() != 1)
+    return Error{ErrorCode::StoreError, "historical replay is unavailable after compaction"};
   return replay(events_, through_tick, through_index);
 }
 

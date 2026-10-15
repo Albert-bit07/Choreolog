@@ -131,7 +131,11 @@ TEST(RaftDomainBridgeTest, NonCanonicalOrInconsistentEntryIsRejected) {
   bad.commit = 2;
   EXPECT_FALSE(replay_domain_committed(bad));
   bad = projected.value().raft;
-  bad.log[0].term = 10;
+  {
+    auto changed = bad.log[0];
+    changed.term = 10;
+    bad.log.set(0, std::move(changed));
+  }
   EXPECT_FALSE(replay_domain_committed(bad));
   std::filesystem::remove_all(path);
 }
@@ -174,12 +178,12 @@ TEST(RaftDomainBridgeTest, RejectsDecreasingTermsIncludingUncommittedSuffix) {
   second.term = state::Term::parse(2).value();
   second_entry = encode_domain_event(second);
   ASSERT_TRUE(second_entry);
-  durable.log[1] = second_entry.value();
+  durable.log.set(1, second_entry.value());
   EXPECT_TRUE(replay_domain_committed(durable));
   first.term = state::Term::parse(1).value();
   first_entry = encode_domain_event(first);
   ASSERT_TRUE(first_entry);
-  durable.log[0] = first_entry.value();
+  durable.log.set(0, first_entry.value());
   EXPECT_TRUE(replay_domain_committed(durable));
   std::filesystem::remove_all(path);
 }

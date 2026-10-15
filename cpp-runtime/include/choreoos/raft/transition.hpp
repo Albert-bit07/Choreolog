@@ -11,6 +11,8 @@
 #include <variant>
 #include <vector>
 
+#include "choreoos/raft/entry_log.hpp"
+
 namespace choreoos::raft {
 
 using PersistToken = std::uint64_t;
@@ -18,16 +20,10 @@ using RequestId = std::uint64_t;
 
 enum class Role { Follower, Candidate, Leader };
 
-struct Entry {
-  std::uint64_t term = 0;
-  std::string command;
-  bool operator==(const Entry&) const = default;
-};
-
 struct Durable {
   std::uint64_t term = 0;
   std::optional<std::string> voted_for;
-  std::vector<Entry> log;
+  EntryLog log;
   std::uint64_t commit = 0;
   std::uint64_t applied = 0;
   // log contains ONLY entries after this recovered snapshot boundary.
@@ -86,6 +82,7 @@ struct Probe {
   std::uint64_t term = 0;
   std::uint64_t prev = 0;
   std::uint64_t count = 0;
+  std::optional<AppendEntries> request = {};  // Exact context retained across retries.
 };
 struct PeerProgress {
   std::uint64_t next = 1;
@@ -162,8 +159,9 @@ struct PersistRequest {
 struct Effects {
   std::optional<PersistRequest> persist;
   std::vector<Outbound> send_now;
-  std::vector<Entry> apply;  // Released after PersistCompleted only.
-  bool halt = false;         // Fail-stop on failed durable write.
+  std::vector<Entry> apply;         // Released after PersistCompleted only.
+  bool halt = false;                // Fail-stop on failed durable write.
+  bool capacity_exhausted = false;  // Host must checkpoint before accepting more proposals.
   std::vector<SnapshotNeeded> snapshot_needed = {};
 };
 

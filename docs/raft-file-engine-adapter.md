@@ -78,10 +78,9 @@ requested uncommitted suffix. Tests inject API/phase failures and reopen files;
 they do not simulate every torn sector, filesystem, power loss or OS sync
 failure. Existing platform directory-durability assumptions still apply.
 
-No snapshot install, new checkpoint creation, compaction maintenance, concurrent
-dispatch, transport authentication, scheduling or production migration is
-implemented by this adapter. It preserves an already recovered snapshot
-boundary. The authoritative snapshot and receipt-enrichment limitations of the
+No snapshot install, concurrent dispatch, transport authentication, automatic
+maintenance scheduling or production migration is implemented by this adapter.
+Explicit checkpoint/compaction maintenance is described below. The authoritative snapshot and receipt-enrichment limitations of the
 read-only projection still apply.
 
 The pure core now supports recovered offsets, but production refinement still
@@ -90,3 +89,30 @@ model, an explicit commit/application mapping, host completion/effect
 discipline, production input/effect traces, and an independently checked
 model-state/action and stuttering relation. No TLA+-to-production proof or
 liveness guarantee follows from this adapter.
+
+## Incremental writes and maintenance
+
+The stabilization update adds `persist_delta(DomainWriteDelta)` for the future
+host: keep a validated prefix through `keep_index`, append only changed entries,
+and advance commit after validating the newly committed application batch.
+Snapshot index/term tokens reject stale plans. Existing committed history is
+immutable. Metadata-only updates do no suffix replay/copy; full observed audits
+remain on recovery and checkpoint maintenance. The original `persist(plan)` is
+retained as a bounded full-plan validation/audit API, with its higher cost.
+
+`current_shared()` returns a cached immutable projection; old views remain
+valid across writes. Payload/receipt serialization happens only when a view is
+explicitly requested. `current()` keeps its value-returning compatibility API.
+Shared log chunks retain immutable payload aliases, with constant-time term
+summaries and copy-on-write chunk mutation. The supported retained window is
+100000 entries. At that boundary the core emits `capacity_exhausted` for a client
+proposal, allowing the host to apply backpressure instead of halting.
+
+`checkpoint()` now saves committed state and compacts the production WAL to its
+snapshot boundary, preserving uncommitted suffix entries and durable retry
+receipts. Call it before exhausting the retained window; stale boundary plans
+must be rebuilt afterwards. Its explicit compaction uses the newest snapshot
+rather than preserving older-snapshot fallback coverage. Failure requires real
+recovery. This supplies a storage lifecycle API; it does not implement a core
+snapshot-install input, snapshot RPC, automatic host scheduling or production
+activation. The remaining formal/host integration limits above still apply.

@@ -55,7 +55,7 @@ class FileEngine {
  public:
   static Result<FileEngine> open(std::filesystem::path directory, StoreOptions options = {});
 
-  Result<SubmitResult> submit(Command command);
+  Result<SubmitResult> submit(const Command& command);
   Result<void> checkpoint();
 
   // Cluster log. These do not apply an entry until commit_through().
@@ -102,6 +102,8 @@ class FileEngine {
 
  private:
   Result<void> require_writable_unlocked() const;
+  Error storage_failure_unlocked(Error error);
+  Result<void> checked_mutation_unlocked(const Result<void>& result);
   Result<void> fail_before_flush_unlocked();
   Result<void> fail_after_flush_unlocked();
   FileEngine(std::filesystem::path directory, StoreOptions options);

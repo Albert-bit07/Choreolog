@@ -13,7 +13,19 @@ struct DomainWritePlan {
   std::uint64_t base_term = 0;
   std::uint64_t term = 1;
   std::optional<std::string> voted_for;
-  std::vector<Entry> suffix;
+  EntryLog suffix;
+  std::uint64_t commit = 0;
+};
+
+// Incremental host write: preserve through keep_index, then append only the
+// changed suffix. Boundary tokens reject plans prepared before maintenance.
+struct DomainWriteDelta {
+  std::uint64_t base_index = 0;
+  std::uint64_t base_term = 0;
+  std::uint64_t term = 1;
+  std::optional<std::string> voted_for;
+  std::uint64_t keep_index = 0;
+  std::vector<Entry> append;
   std::uint64_t commit = 0;
 };
 
@@ -32,6 +44,12 @@ class FileEngineAdapter {
   [[nodiscard]] static state::Result<FileEngineAdapter> open(std::filesystem::path directory,
                                                              bool test_mode = false);
   [[nodiscard]] state::Result<RecoveredDomainProjection> current() const;
+  [[nodiscard]] state::Result<std::shared_ptr<const RecoveredDomainProjection>> current_shared()
+      const;
+  [[nodiscard]] state::Result<void> persist_delta(const DomainWriteDelta& delta);
+  // Explicit lifecycle boundary: snapshot committed state and compact to it.
+  // Uncommitted entries and all durable retry receipts survive.
+  [[nodiscard]] state::Result<void> checkpoint();
   [[nodiscard]] bool uncertain() const noexcept { return uncertain_ || !store_; }
 
   // Validate completely before writing. A successful return is the only write
@@ -49,6 +67,7 @@ class FileEngineAdapter {
   DomainWriteFault fault_ = DomainWriteFault::None;
   std::unique_ptr<state::FileEngine> store_;
   RecoveredDomainProjection current_;
+  mutable std::shared_ptr<const RecoveredDomainProjection> view_;
 };
 
 }  // namespace choreoos::raft

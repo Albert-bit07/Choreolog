@@ -251,10 +251,9 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
   store.wal_ = std::make_unique<storage::WriteAheadLog>(std::move(wal.value()));
   store.recovery_.truncated_tail_bytes = store.wal_->stats().truncated_tail_bytes;
 
-  auto snapshot = storage::load_latest_snapshot(store.directory_);
-  if (!snapshot) {
-    return snapshot.error();
-  }
+  auto loaded_snapshot = storage::load_latest_snapshot(store.directory_);
+  if (!loaded_snapshot) return loaded_snapshot.error();
+  auto snapshot = std::move(loaded_snapshot.value());
   auto metadata = storage::load_metadata(store.directory_ / "meta.bin");
   if (!metadata) {
     return metadata.error();
@@ -266,20 +265,20 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
   const std::uint64_t apply_limit =
       options.commit_on_append ? UINT64_MAX : metadata.value().commit_index.value();
   std::uint64_t start_after = 0;
-  if (snapshot.value() && snapshot.value()->index.value() <= apply_limit) {
-    auto restored = storage::verify_snapshot(*snapshot.value());
+  if (snapshot && snapshot->index.value() <= apply_limit) {
+    auto restored = storage::verify_snapshot(*snapshot);
     if (!restored) {
       return restored.error();
     }
     // Always hold the snapshot in state form so a leader can serve it to a
     // lagging peer, whichever format was on disk.
-    storage::Snapshot in_memory = *snapshot.value();
+    storage::Snapshot in_memory = *snapshot;
     if (in_memory.legacy()) {
       in_memory.state_payload = snapshot_payload(restored.value());
       in_memory.events.clear();
     }
-    if (snapshot.value()->legacy()) {
-      for (const auto& event : snapshot.value()->events) {
+    if (snapshot->legacy()) {
+      for (const auto& event : snapshot->events) {
         if (auto applied = store.engine_.apply_committed(event); !applied) {
           return applied.error();
         }
@@ -291,7 +290,7 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
       const auto& records = store.wal_->events();
       if (!records.empty() && records.front().index.value() == 1) {
         for (const auto& event : records) {
-          if (event.index.value() > snapshot.value()->index.value()) {
+          if (event.index.value() > snapshot->index.value()) {
             break;
           }
           history.push_back(event);
@@ -300,9 +299,9 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
       store.engine_.restore(std::move(restored.value()), std::move(history));
     }
     store.recovery_.used_snapshot = true;
-    store.recovery_.snapshot_index = snapshot.value()->index.value();
+    store.recovery_.snapshot_index = snapshot->index.value();
     store.snapshot_ = std::move(in_memory);
-    start_after = snapshot.value()->index.value();
+    start_after = snapshot->index.value();
   }
   if (start_after == 0 && !store.wal_->events().empty() &&
       store.wal_->events().front().index.value() > 1 &&
@@ -321,6 +320,12 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
       return applied.error();
     }
     ++store.recovery_.replayed_after_snapshot;
+  }
+
+  // A torn uncommitted tail is recoverable. Missing committed state is not:
+  // never advertise a commit boundary that replay could not reconstruct.
+  if (store.engine_.state().last_applied < metadata.value().commit_index) {
+    return Error{ErrorCode::StoreError, "committed history is missing from snapshot and WAL"};
   }
 
   const auto commit =
@@ -344,11 +349,12 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
   return store;
 }
 
-Result<SubmitResult> FileEngine::submit(Command command) {
+Result<SubmitResult> FileEngine::submit(const Command& command) {
   std::lock_guard<std::mutex> lock(*mutex_);
   if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   const auto seen = engine_.state().applied_commands.find(command.id.value());
-  if (seen != engine_.state().applied_commands.end()) {
+  if (seen != engine_.state().applied_commands.end() ||
+      engine_.state().receipts.count(command.id.value()) != 0) {
     auto receipt = resolve_receipt(engine_.state(), command);
     if (!receipt) {
       return receipt.error();
@@ -360,34 +366,36 @@ Result<SubmitResult> FileEngine::submit(Command command) {
   if (!proposed) {
     return proposed.error();
   }
+  if (canonical_event(proposed.value()).size() > storage::kMaxPayloadBytes)
+    return Error{ErrorCode::StoreError, "event payload exceeds 1 MiB"};
   const bool sync = options_.durability == storage::Durability::Sync;
   if (auto blocked = fail_before_flush_unlocked(); !blocked) {
     return blocked.error();
   }
   if (auto written = wal_->append(proposed.value(), options_.durability); !written) {
-    return written.error();
+    return storage_failure_unlocked(written.error());
   }
   if (auto after = fail_after_flush_unlocked(); !after) {
-    return after.error();
+    return storage_failure_unlocked(after.error());
   }
   // propose() already validated this event against the unchanged engine.
   // Publish it only after metadata is durable, without copying full history.
   auto metadata = storage::load_metadata(directory_ / "meta.bin");
-  if (!metadata) return metadata.error();
+  if (!metadata) return storage_failure_unlocked(metadata.error());
   auto updated = metadata.value();
   updated.commit_index = proposed.value().index;
   if (updated.term.value() < proposed.value().term.value()) updated.term = proposed.value().term;
   if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
-    return stored.error();
+    return storage_failure_unlocked(stored.error());
   }
   if (auto applied = engine_.apply_committed(proposed.value()); !applied) {
-    return applied.error();
+    return storage_failure_unlocked(applied.error());
   }
   recovery_.commit_index = engine_.state().last_applied.value();
   recovery_.state_hash = state_hash(engine_.state());
   commit_index_ = engine_.state().last_applied;
   if (auto snapshotted = maybe_snapshot_unlocked(); !snapshotted) {
-    return snapshotted.error();
+    return storage_failure_unlocked(snapshotted.error());
   }
   return SubmitResult{proposed.value(), false};
 }
@@ -435,13 +443,15 @@ Result<void> FileEngine::append_event(const Event& event) {
   if (event.index.value() != expected) {
     return Error{ErrorCode::IndexGap, "appended event is not the next log index"};
   }
+  if (canonical_event(event).size() > storage::kMaxPayloadBytes)
+    return Error{ErrorCode::StoreError, "event payload exceeds 1 MiB"};
   if (auto blocked = fail_before_flush_unlocked(); !blocked) {
     return blocked.error();
   }
   if (auto written = wal_->append(event, options_.durability); !written) {
-    return written.error();
+    return storage_failure_unlocked(written.error());
   }
-  return fail_after_flush_unlocked();
+  return checked_mutation_unlocked(fail_after_flush_unlocked());
 }
 
 Result<void> FileEngine::arm_storage_fault(StorageFault fault) {
@@ -455,9 +465,18 @@ Result<void> FileEngine::arm_storage_fault(StorageFault fault) {
 
 Result<void> FileEngine::require_writable_unlocked() const {
   if (recovery_required_) {
-    return Error{ErrorCode::StoreError,
-                 "snapshot transaction requires reopen before further writes"};
+    return Error{ErrorCode::StoreError, "storage failure requires reopen before further writes"};
   }
+  return {};
+}
+
+Error FileEngine::storage_failure_unlocked(Error error) {
+  recovery_required_ = true;
+  return error;
+}
+
+Result<void> FileEngine::checked_mutation_unlocked(const Result<void>& result) {
+  if (!result) return storage_failure_unlocked(result.error());
   return {};
 }
 
@@ -492,7 +511,7 @@ Result<void> FileEngine::truncate_after(LogIndex index) {
   if (index < commit_index_) {
     return Error{ErrorCode::StoreError, "committed log prefix cannot be truncated"};
   }
-  return wal_->truncate_after(index);
+  return checked_mutation_unlocked(wal_->truncate_after(index));
 }
 
 Result<void> FileEngine::commit_through(LogIndex index) {
@@ -503,22 +522,24 @@ Result<void> FileEngine::commit_through(LogIndex index) {
   }
   // Validate the complete batch without exposing state or retry receipts.
   // A failed metadata write may be ambiguous; only recovery decides what won.
-  Engine replacement = engine_;
+  std::vector<Event> batch;
   for (std::uint64_t next = commit_index_.value() + 1; next <= index.value(); ++next) {
     const Event* event = log_entry(next);
     if (event == nullptr) {
       break;
     }
-    if (auto applied = replacement.apply_committed(*event); !applied) {
-      return applied.error();
-    }
+    batch.push_back(*event);
   }
+  auto prepared = engine_.prepare_committed(batch);
+  if (!prepared) return prepared.error();
+  auto& replacement = prepared.value();
   if (replacement.state().last_applied != index) {
     return Error{ErrorCode::IndexGap, "commit index is not present in the log"};
   }
+  engine_.reserve_commit(batch.size());
   auto metadata = storage::load_metadata(directory_ / "meta.bin");
   if (!metadata) {
-    return metadata.error();
+    return storage_failure_unlocked(metadata.error());
   }
   storage::NodeMetadata updated = metadata.value();
   updated.commit_index = index;
@@ -528,13 +549,13 @@ Result<void> FileEngine::commit_through(LogIndex index) {
   }
   const bool sync = options_.durability == storage::Durability::Sync;
   if (auto stored = storage::store_metadata(directory_ / "meta.bin", updated, sync); !stored) {
-    return stored.error();
+    return storage_failure_unlocked(stored.error());
   }
-  engine_ = std::move(replacement);
+  engine_.publish_committed(std::move(replacement));
   commit_index_ = index;
   recovery_.commit_index = index.value();
   recovery_.state_hash = state_hash(engine_.state());
-  return maybe_snapshot_unlocked();
+  return checked_mutation_unlocked(maybe_snapshot_unlocked());
 }
 
 Result<void> FileEngine::maybe_snapshot_unlocked() {
@@ -549,7 +570,7 @@ Result<void> FileEngine::maybe_snapshot_unlocked() {
   if (applied / every <= last / every) {
     return {};
   }
-  return take_snapshot_unlocked();
+  return checked_mutation_unlocked(take_snapshot_unlocked());
 }
 
 Result<void> FileEngine::take_snapshot_unlocked() {
@@ -564,7 +585,8 @@ Result<void> FileEngine::take_snapshot_unlocked() {
                                 snapshot_payload(engine_.state())};
   // Two snapshots are enough: the newest, and one fallback if it is damaged.
   auto pruned = storage::prune_snapshots(directory_, 2);
-  if (options_.compact_log && pruned && pruned.value().remaining >= 2) {
+  if (!pruned) return pruned.error();
+  if (options_.compact_log && pruned.value().remaining >= 2) {
     // Only compact once a fallback exists, and only back to the fallback.
     return compact_unlocked(pruned.value().oldest_index);
   }
@@ -583,7 +605,10 @@ Result<void> FileEngine::compact_unlocked(std::uint64_t anchor) {
   // check of the first AppendEntries after the boundary.
   const auto offset = static_cast<std::ptrdiff_t>(anchor - events.front().index.value());
   std::vector<Event> kept(events.begin() + offset, events.end());
-  return wal_->rewrite(kept);
+  auto rewritten = checked_mutation_unlocked(wal_->rewrite(kept));
+  if (rewritten && options_.compact_log)
+    return checked_mutation_unlocked(engine_.retain_history_from(anchor));
+  return rewritten;
 }
 
 Result<storage::NodeMetadata> FileEngine::consensus_metadata() const {
@@ -595,7 +620,7 @@ Result<void> FileEngine::persist_consensus(Term term, std::optional<NodeId> vote
   if (auto writable = require_writable_unlocked(); !writable) return writable.error();
   auto metadata = storage::load_metadata(directory_ / "meta.bin");
   if (!metadata) {
-    return metadata.error();
+    return storage_failure_unlocked(metadata.error());
   }
   if (term.value() < metadata.value().term.value()) {
     return Error{ErrorCode::StoreError, "consensus term cannot move backwards"};
@@ -603,8 +628,8 @@ Result<void> FileEngine::persist_consensus(Term term, std::optional<NodeId> vote
   storage::NodeMetadata updated = metadata.value();
   updated.term = term;
   updated.voted_for = std::move(voted_for);
-  return storage::store_metadata(directory_ / "meta.bin", updated,
-                                 options_.durability == storage::Durability::Sync);
+  return checked_mutation_unlocked(storage::store_metadata(
+      directory_ / "meta.bin", updated, options_.durability == storage::Durability::Sync));
 }
 
 Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
@@ -650,7 +675,7 @@ Result<void> FileEngine::install_snapshot(const storage::Snapshot& snapshot) {
   // were replaced before the process stopped.
   auto metadata = storage::load_metadata(directory_ / "meta.bin");
   if (!metadata) {
-    return metadata.error();
+    return storage_failure_unlocked(metadata.error());
   }
   storage::NodeMetadata updated = metadata.value();
   updated.commit_index = snapshot.index;
@@ -709,7 +734,7 @@ Result<void> FileEngine::checkpoint() {
   if (engine_.state().last_applied.value() == 0) {
     return {};
   }
-  return take_snapshot_unlocked();
+  return checked_mutation_unlocked(take_snapshot_unlocked());
 }
 
 }  // namespace choreoos::state

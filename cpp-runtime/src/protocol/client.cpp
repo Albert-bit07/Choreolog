@@ -3,6 +3,8 @@
 #include <boost/asio.hpp>
 #include <chrono>
 #include <stdexcept>
+
+#include "choreoos/protocol/codec.hpp"
 #ifndef _WIN32
 #include <poll.h>
 
@@ -103,6 +105,49 @@ Result<Frame> transact(const std::string& host, std::uint16_t port, const Frame&
   } catch (const std::exception& error) {
     return Error{ErrorCode::Unavailable, error.what()};
   }
+}
+
+Result<std::string> fetch_state(const std::string& host, std::uint16_t port,
+                                const std::string& expected_hash, std::chrono::milliseconds timeout,
+                                std::size_t maximum_bytes) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::string assembled;
+  std::string hash = expected_hash;
+  do {
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) return Error{ErrorCode::Unavailable, "state pagination timed out"};
+    ManagementQuery query;
+    query.operation = "state";
+    query.after_index = assembled.size();
+    query.expected_state_hash = hash;
+    auto payload = encode(query);
+    if (!payload) return payload.error();
+    Frame frame;
+    frame.type = MessageType::ManagementQuery;
+    frame.payload = std::move(payload.value());
+    auto wire = transact(host, port, frame, remaining);
+    if (!wire) return wire.error();
+    if (wire.value().type != MessageType::ManagementReply)
+      return Error{ErrorCode::ProtocolError, "unexpected state page response"};
+    auto page = decode_management_reply(wire.value().payload);
+    if (!page) return page.error();
+    const auto& value = page.value();
+    if (!value.error_code.empty()) return Error{ErrorCode::Unavailable, value.error_message};
+    if (value.state_size > maximum_bytes)
+      return Error{ErrorCode::ProtocolError,
+                   "state exceeds unary response limit; use paginated state queries"};
+    if ((hash.empty() ? value.snapshot_state_hash.empty() : hash != value.snapshot_state_hash) ||
+        value.state_chunk.size() > maximum_bytes - assembled.size() ||
+        value.next_after_index != assembled.size() + value.state_chunk.size() ||
+        value.next_after_index > value.state_size ||
+        value.has_more != (value.next_after_index < value.state_size) ||
+        (value.has_more && value.state_chunk.empty()))
+      return Error{ErrorCode::ProtocolError, "invalid state page cursor or hash"};
+    hash = value.snapshot_state_hash;
+    assembled += value.state_chunk;
+    if (!value.has_more) return assembled;
+  } while (true);
 }
 
 }  // namespace choreoos::protocol

@@ -1,6 +1,7 @@
 #include "choreoos/storage/snapshot.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <functional>
 #include <iomanip>
 #include <sstream>
@@ -41,7 +42,7 @@ Result<Snapshot> read_snapshot(const std::filesystem::path& path) {
     return Error{ErrorCode::StoreError, "snapshot version is unsupported"};
   }
   const std::uint32_t payload_len = read_u32(file, 44);
-  if (file.size() != static_cast<std::size_t>(52 + payload_len)) {
+  if (file.size() != 52u + static_cast<std::size_t>(payload_len)) {
     return Error{ErrorCode::StoreError, "snapshot length is invalid"};
   }
   if (crc32(file.data(), file.size() - 4) != read_u32(file, file.size() - 4)) {
@@ -137,7 +138,7 @@ Result<void> save_snapshot(const std::filesystem::path& directory,
   return write_atomic(snapshot_path(directory, state.last_applied.value()), bytes.value(), sync);
 }
 
-Result<std::optional<Snapshot>> load_latest_snapshot(const std::filesystem::path& directory) {
+Result<std::optional<Snapshot>> load_latest_snapshot(const std::filesystem::path& directory) try {
   const auto folder = directory / "snapshots";
   if (!std::filesystem::exists(folder)) {
     return std::optional<Snapshot>{};
@@ -148,7 +149,11 @@ Result<std::optional<Snapshot>> load_latest_snapshot(const std::filesystem::path
   std::vector<std::filesystem::path> files;
   for (const auto& entry : std::filesystem::directory_iterator(folder)) {
     if (entry.path().extension() == ".snap") {
-      files.push_back(entry.path());
+      const auto name = entry.path().stem().string();
+      std::uint64_t index = 0;
+      const auto parsed = std::from_chars(name.data(), name.data() + name.size(), index);
+      if (parsed.ec == std::errc{} && parsed.ptr == name.data() + name.size())
+        files.push_back(entry.path());
     }
   }
   std::sort(files.begin(), files.end(), std::greater<>());
@@ -159,9 +164,12 @@ Result<std::optional<Snapshot>> load_latest_snapshot(const std::filesystem::path
     }
   }
   return std::optional<Snapshot>{};
+} catch (const std::filesystem::filesystem_error& error) {
+  return Error{ErrorCode::StoreError,
+               std::string("unable to enumerate snapshots: ") + error.what()};
 }
 
-Result<PruneResult> prune_snapshots(const std::filesystem::path& directory, std::size_t keep) {
+Result<PruneResult> prune_snapshots(const std::filesystem::path& directory, std::size_t keep) try {
   const auto folder = directory / "snapshots";
   if (!std::filesystem::exists(folder)) {
     return PruneResult{};
@@ -169,7 +177,11 @@ Result<PruneResult> prune_snapshots(const std::filesystem::path& directory, std:
   std::vector<std::filesystem::path> files;
   for (const auto& entry : std::filesystem::directory_iterator(folder)) {
     if (entry.path().extension() == ".snap") {
-      files.push_back(entry.path());
+      const auto name = entry.path().stem().string();
+      std::uint64_t index = 0;
+      const auto parsed = std::from_chars(name.data(), name.data() + name.size(), index);
+      if (parsed.ec == std::errc{} && parsed.ptr == name.data() + name.size())
+        files.push_back(entry.path());
     }
   }
   std::sort(files.begin(), files.end(), std::greater<>());
@@ -181,9 +193,15 @@ Result<PruneResult> prune_snapshots(const std::filesystem::path& directory, std:
   result.remaining = std::min(keep, files.size());
   if (result.remaining > 0) {
     // File names are the zero-padded index.
-    result.oldest_index = std::stoull(files[result.remaining - 1].stem().string());
+    const auto name = files[result.remaining - 1].stem().string();
+    const auto parsed =
+        std::from_chars(name.data(), name.data() + name.size(), result.oldest_index);
+    if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size())
+      return Error{ErrorCode::StoreError, "invalid snapshot index"};
   }
   return result;
+} catch (const std::filesystem::filesystem_error& error) {
+  return Error{ErrorCode::StoreError, std::string("unable to prune snapshots: ") + error.what()};
 }
 
 }  // namespace choreoos::storage

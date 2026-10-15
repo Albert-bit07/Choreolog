@@ -97,7 +97,14 @@ class ManagementService final : public ChoreoManagement::Service {
       return {StatusCode::FAILED_PRECONDITION,
               "not leader; last known leader: " + status.value().leader_id};
     }
-    response->set_canonical_state(status.value().canonical_state);
+    auto state = choreoos::protocol::fetch_state("127.0.0.1", port_, status.value().state_hash,
+                                                 std::chrono::milliseconds(2500));
+    if (!state)
+      return {state.error().code() == choreoos::state::ErrorCode::ProtocolError
+                  ? StatusCode::RESOURCE_EXHAUSTED
+                  : StatusCode::UNAVAILABLE,
+              state.error().message()};
+    response->set_canonical_state(std::move(state.value()));
     response->set_state_hash(status.value().state_hash);
     response->set_applied_index(status.value().commit_index);
     response->set_term(status.value().term);

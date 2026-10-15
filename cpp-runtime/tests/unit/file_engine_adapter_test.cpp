@@ -50,6 +50,105 @@ class FileEngineAdapterTest : public testing::Test {
   }
 };
 
+TEST_F(FileEngineAdapterTest, IncrementalWritesAndCheckpointPreserveReceiptsAndUncommittedSuffix) {
+  auto adapter = FileEngineAdapter::open(path);
+  ASSERT_TRUE(adapter);
+  DomainWriteDelta delta;
+  delta.term = 2;
+  delta.voted_for = "node-a";
+  delta.commit = 2;
+  for (const auto& event : events) delta.append.push_back(encode_domain_event(event).value());
+  ASSERT_TRUE(adapter.value().persist_delta(delta));
+  auto before = adapter.value().current_shared();
+  ASSERT_TRUE(before);
+  auto same = adapter.value().current_shared();
+  ASSERT_TRUE(same);
+  EXPECT_EQ(before.value(), same.value());
+  EXPECT_EQ(before.value()->commit, 2u);
+  ASSERT_TRUE(adapter.value().checkpoint());
+  auto compacted = adapter.value().current_shared();
+  ASSERT_TRUE(compacted);
+  ASSERT_TRUE(compacted.value()->snapshot);
+  EXPECT_EQ(compacted.value()->snapshot->index.value(), 2u);
+  EXPECT_EQ(compacted.value()->suffix.size(), 1u);
+  // A previously returned immutable view keeps its original boundary.
+  EXPECT_FALSE(before.value()->snapshot);
+  EXPECT_EQ(before.value()->suffix.size(), 3u);
+  EXPECT_FALSE(adapter.value().persist_delta(delta));  // Stale boundary.
+  EXPECT_FALSE(adapter.value().uncertain());
+  DomainWriteDelta metadata;
+  metadata.base_index = 2;
+  metadata.base_term = 1;
+  metadata.term = 3;
+  metadata.voted_for = "node-b";
+  metadata.keep_index = 3;
+  metadata.commit = 2;
+  ASSERT_TRUE(adapter.value().persist_delta(metadata));
+  auto updated = adapter.value().current_shared();
+  ASSERT_TRUE(updated);
+  EXPECT_TRUE(updated.value()->suffix.shares_storage_with(compacted.value()->suffix));
+  metadata.commit = 3;
+  ASSERT_TRUE(adapter.value().persist_delta(metadata));
+  auto recovered = adapter.value().recover();
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(recovered.value().commit, 3u);
+  EXPECT_EQ(recovered.value().term, 3u);
+  auto replayed = replay_recovered_domain(recovered.value());
+  ASSERT_TRUE(replayed);
+  EXPECT_TRUE(state::resolve_receipt(replayed.value(), create()));
+  EXPECT_EQ(replayed.value().receipts.at("d2").index, 3u);
+}
+
+TEST_F(FileEngineAdapterTest, InvalidIncrementalCommitCannotModifyOrPoisonStorage) {
+  auto adapter = FileEngineAdapter::open(path);
+  ASSERT_TRUE(adapter);
+  DomainWriteDelta delta;
+  delta.commit = 2;
+  auto invalid = events[1];
+  invalid.payload = state::DancerPayload{state::DancerId::parse("bad").value(),
+                                         state::Position::from_mm(999999, 999999).value()};
+  delta.append = {encode_domain_event(events[0]).value(), encode_domain_event(invalid).value()};
+  EXPECT_FALSE(adapter.value().persist_delta(delta));
+  EXPECT_FALSE(adapter.value().uncertain());
+  auto original = adapter.value().current();
+  ASSERT_TRUE(original);
+  EXPECT_EQ(original.value().commit, 0u);
+  EXPECT_TRUE(original.value().suffix.empty());
+}
+
+TEST_F(FileEngineAdapterTest, IncrementalMutationFailuresRequireRecoveryAtEveryPhase) {
+  for (auto fault : {DomainWriteFault::AfterMetadata, DomainWriteFault::AfterTruncate,
+                     DomainWriteFault::AfterAppend, DomainWriteFault::AfterCommit,
+                     DomainWriteFault::AppendBeforeFlush, DomainWriteFault::AppendAfterFlush}) {
+    auto adapter = FileEngineAdapter::open(path / std::to_string(static_cast<int>(fault)), true);
+    ASSERT_TRUE(adapter);
+    ASSERT_TRUE(adapter.value().persist(plan(1, 1)));
+    DomainWriteDelta delta;
+    delta.term = 2;
+    delta.keep_index = 1;
+    delta.commit = 3;
+    for (std::size_t i = 1; i < events.size(); ++i) {
+      auto event = events[i];
+      event.term = state::Term::parse(2).value();
+      delta.append.push_back(encode_domain_event(event).value());
+    }
+    ASSERT_TRUE(adapter.value().inject_next_fault_for_test(fault));
+    EXPECT_FALSE(adapter.value().persist_delta(delta));
+    EXPECT_TRUE(adapter.value().uncertain());
+    EXPECT_FALSE(adapter.value().current_shared());
+    EXPECT_FALSE(adapter.value().persist_delta(delta));
+    auto recovered = adapter.value().recover();
+    ASSERT_TRUE(recovered);
+    if (recovered.value().commit < 3) {
+      ASSERT_TRUE(adapter.value().persist_delta(delta));
+    }
+    auto final = adapter.value().current();
+    ASSERT_TRUE(final);
+    EXPECT_EQ(final.value().commit, 3u);
+    EXPECT_TRUE(replay_recovered_domain(final.value()));
+  }
+}
+
 TEST_F(FileEngineAdapterTest, CommittedStateAndReceiptsRecoverFromProductionFiles) {
   {
     auto adapter = FileEngineAdapter::open(path);
@@ -118,15 +217,21 @@ TEST_F(FileEngineAdapterTest, InvalidPlansCannotWriteOrPoisonTheAdapter) {
   EXPECT_FALSE(adapter.value().persist(bad));
   bad = original;
   bad.term = 9;
-  bad.suffix[0].command += ";unknown=field";
+  {
+    auto changed = bad.suffix[0];
+    changed.command += ";unknown=field";
+    bad.suffix.set(0, std::move(changed));
+  }
   EXPECT_FALSE(adapter.value().persist(bad));
   bad = original;
-  bad.suffix.back().command += ";unknown=field";  // Uncommitted data is also checked.
+  auto bad_entry = bad.suffix.back();
+  bad_entry.command += ";unknown=field";
+  bad.suffix.set(bad.suffix.size() - 1, std::move(bad_entry));  // Uncommitted data is also checked.
   EXPECT_FALSE(adapter.value().persist(bad));
   bad = original;
   auto rewritten = events[0];
   rewritten.term = state::Term::parse(2).value();
-  bad.suffix[0] = encode_domain_event(rewritten).value();
+  bad.suffix.set(0, encode_domain_event(rewritten).value());
   bad.term = 9;
   EXPECT_FALSE(adapter.value().persist(bad));
   EXPECT_FALSE(adapter.value().uncertain());
@@ -146,7 +251,7 @@ TEST_F(FileEngineAdapterTest, DomainValidationHappensBeforeEvenTermMetadataIsWri
   // A second Create at index3 has a valid canonical envelope but cannot apply.
   invalid.type = events[0].type;
   invalid.payload = events[0].payload;
-  target.suffix[2] = encode_domain_event(invalid).value();
+  target.suffix.set(2, encode_domain_event(invalid).value());
   EXPECT_FALSE(adapter.value().persist(target));
   EXPECT_FALSE(adapter.value().uncertain());
   auto recovered = adapter.value().recover();
@@ -164,7 +269,7 @@ TEST_F(FileEngineAdapterTest, UncommittedConflictCanBeReplacedAndShortenedWithou
   for (std::size_t i = 1; i < events.size(); ++i) {
     auto replacement = events[i];
     replacement.term = state::Term::parse(2).value();
-    target.suffix[i] = encode_domain_event(replacement).value();
+    target.suffix.set(i, encode_domain_event(replacement).value());
   }
   target.commit = 1;
   ASSERT_TRUE(adapter.value().persist(target));
@@ -227,7 +332,7 @@ TEST_F(FileEngineAdapterTest, EveryWriteBoundaryFailsClosedAndRecoversActualDisk
     for (std::size_t i = 1; i < events.size(); ++i) {
       auto event = events[i];
       event.term = state::Term::parse(2).value();
-      target.suffix[i] = encode_domain_event(event).value();
+      target.suffix.set(i, encode_domain_event(event).value());
     }
     ASSERT_TRUE(adapter.value().inject_next_fault_for_test(fault));
     EXPECT_FALSE(adapter.value().persist(target));

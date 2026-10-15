@@ -66,6 +66,146 @@ TEST(DurabilityTest, ReopenPreservesHashAndMagic) {
   std::filesystem::remove_all(dir);
 }
 
+TEST(DurabilityTest, MissingCommittedTailFailsRecoveryInBothModes) {
+  for (bool cluster : {false, true}) {
+    const auto dir =
+        fresh_dir(cluster ? "choreoos-committed-tail-cluster" : "choreoos-committed-tail-cli");
+    {
+      auto store = FileEngine::open(dir);
+      ASSERT_TRUE(store);
+      ASSERT_TRUE(store.value().submit(create_command()));
+      ASSERT_TRUE(store.value().submit(add_command("alice", 1000)));
+    }
+    std::filesystem::resize_file(dir / "wal.bin", std::filesystem::file_size(dir / "wal.bin") - 1);
+    StoreOptions options;
+    options.commit_on_append = !cluster;
+    EXPECT_FALSE(FileEngine::open(dir, options));
+    std::filesystem::remove_all(dir);
+  }
+}
+
+TEST(DurabilityTest, UncertainAppendBlocksEveryMutationUntilReopen) {
+  const auto dir = fresh_dir("choreoos-uncertain-reuse");
+  StoreOptions options;
+  options.test_mode = true;
+  {
+    auto store = FileEngine::open(dir, options);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().submit(create_command()));
+    ASSERT_TRUE(store.value().arm_storage_fault(StorageFault::FailAfterFlush));
+    EXPECT_FALSE(store.value().submit(add_command("alice", 1000)));
+    EXPECT_FALSE(store.value().submit(add_command("bob", 2000)));
+    EXPECT_FALSE(store.value().persist_consensus(Term::parse(2).value(), std::nullopt));
+    EXPECT_FALSE(store.value().truncate_after(LogIndex::parse(1).value()));
+    EXPECT_FALSE(store.value().commit_through(LogIndex::parse(2).value()));
+    EXPECT_FALSE(store.value().checkpoint());
+    ASSERT_EQ(store.value().log_events().size(), 2u);
+  }
+  auto reopened = FileEngine::open(dir, options);
+  ASSERT_TRUE(reopened);
+  EXPECT_EQ(reopened.value().engine().state().last_applied.value(), 2u);
+  EXPECT_TRUE(reopened.value().submit(add_command("bob", 2000)));
+  std::filesystem::remove_all(dir);
+}
+
+TEST(DurabilityTest, UnreadableMetadataReturnsErrorAndBlocksReuse) {
+  const auto dir = fresh_dir("choreoos-metadata-directory");
+  auto store = FileEngine::open(dir);
+  ASSERT_TRUE(store);
+  ASSERT_TRUE(store.value().submit(create_command()));
+  std::filesystem::remove(dir / "meta.bin");
+  std::filesystem::create_directory(dir / "meta.bin");
+  EXPECT_NO_THROW(
+      { EXPECT_FALSE(store.value().persist_consensus(Term::parse(2).value(), std::nullopt)); });
+  std::filesystem::remove(dir / "meta.bin");
+  EXPECT_FALSE(store.value().submit(add_command("alice", 1000)));
+  std::filesystem::remove_all(dir);
+}
+
+TEST(DurabilityTest, CompactingClusterBoundsLiveHistoryAndPreservesOldRetryReceipts) {
+  const auto dir = fresh_dir("choreoos-bounded-live-history");
+  StoreOptions options;
+  options.commit_on_append = false;
+  options.compact_log = true;
+  options.snapshot_every = 10;
+  auto store = FileEngine::open(dir, options);
+  ASSERT_TRUE(store);
+  auto first = propose(ChoreographyState{}, create_command());
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(store.value().append_event(first.value()));
+  ASSERT_TRUE(store.value().commit_through(first.value().index));
+  for (std::uint64_t i = 2; i <= 100; ++i) {
+    auto event = first.value();
+    event.id = EventId::parse("noop-" + std::to_string(i)).value();
+    event.command_id = CommandId::parse("noop-" + std::to_string(i)).value();
+    event.index = LogIndex::parse(i).value();
+    event.type = EventType::NoOp;
+    ASSERT_TRUE(store.value().append_event(event));
+    ASSERT_TRUE(store.value().commit_through(event.index));
+  }
+  EXPECT_LE(store.value().engine().events().size(), 11u);
+  EXPECT_LE(store.value().engine().state().applied_events.size(), 11u);
+  EXPECT_LE(store.value().engine().state().applied_commands.size(), 11u);
+  auto retry = store.value().submit(create_command());
+  ASSERT_TRUE(retry);
+  EXPECT_TRUE(retry.value().duplicate);
+  EXPECT_EQ(retry.value().event.index.value(), 1u);
+  EXPECT_EQ(store.value().last_log_index(), 100u);
+  EXPECT_FALSE(store.value().engine().replay_through(std::nullopt, std::nullopt));
+}
+
+TEST(DurabilityTest, MetadataBeyondWalAndMissingSnapshotSuffixFailClosed) {
+  const auto dir = fresh_dir("choreoos-missing-committed-coverage");
+  StoreOptions options;
+  options.snapshot_every = 1;
+  {
+    auto store = FileEngine::open(dir, options);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().submit(create_command()));
+    ASSERT_TRUE(store.value().submit(add_command("alice", 1000)));
+  }
+  // Destroy the newest checkpoint and the committed WAL tail. The older
+  // snapshot covers only index1, so falling back cannot recover commit2.
+  std::filesystem::remove(dir / "snapshots" / "0000000000000002.snap");
+  std::filesystem::resize_file(dir / "wal.bin", std::filesystem::file_size(dir / "wal.bin") - 1);
+  options.commit_on_append = false;
+  EXPECT_FALSE(FileEngine::open(dir, options));
+  std::filesystem::remove_all(dir);
+  {
+    auto store = FileEngine::open(dir);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().submit(create_command()));
+  }
+  auto metadata = storage::load_metadata(dir / "meta.bin");
+  ASSERT_TRUE(metadata);
+  metadata.value().commit_index = LogIndex::parse(10).value();
+  ASSERT_TRUE(storage::store_metadata(dir / "meta.bin", metadata.value(), true));
+  EXPECT_FALSE(FileEngine::open(dir, options));
+}
+
+TEST(DurabilityTest, TornUncommittedTailCanBeDiscardedWithoutLosingCommit) {
+  const auto dir = fresh_dir("choreoos-safe-uncommitted-tail");
+  StoreOptions options;
+  options.commit_on_append = false;
+  {
+    auto store = FileEngine::open(dir, options);
+    ASSERT_TRUE(store);
+    auto first = propose(ChoreographyState{}, create_command());
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(store.value().append_event(first.value()));
+    ASSERT_TRUE(store.value().commit_through(first.value().index));
+    auto later = propose(store.value().engine().state(), add_command("alice", 1000));
+    ASSERT_TRUE(later);
+    ASSERT_TRUE(store.value().append_event(later.value()));
+  }
+  std::filesystem::resize_file(dir / "wal.bin", std::filesystem::file_size(dir / "wal.bin") - 1);
+  auto recovered = FileEngine::open(dir, options);
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(recovered.value().commit_index().value(), 1u);
+  EXPECT_EQ(recovered.value().last_log_index(), 1u);
+  EXPECT_EQ(recovered.value().engine().state().last_applied.value(), 1u);
+}
+
 TEST(DurabilityTest, TornTailOfEveryPartialLengthIsDiscarded) {
   const auto dir = fresh_dir("choreoos-wal-torn");
   {

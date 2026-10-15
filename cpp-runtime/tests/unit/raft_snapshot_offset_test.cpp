@@ -195,8 +195,16 @@ TEST(RaftSnapshotOffsetTest, InvalidRecoveredBoundariesFailStopRatherThanWrappin
     if (mutation == 0) node.durable.snapshot_term = 0;
     if (mutation == 1) node.durable.commit = 4;
     if (mutation == 2) node.durable.applied = 4;
-    if (mutation == 3) node.durable.log[0].term = 1;
-    if (mutation == 4) node.durable.log[1].term = 5;
+    if (mutation == 3) {
+      auto changed = node.durable.log[0];
+      changed.term = 1;
+      node.durable.log.set(0, std::move(changed));
+    }
+    if (mutation == 4) {
+      auto changed = node.durable.log[1];
+      changed.term = 5;
+      node.durable.log.set(1, std::move(changed));
+    }
     if (mutation == 5) node.durable.snapshot_index = std::numeric_limits<std::uint64_t>::max();
     auto [halted, effects] = step(config, node, Restart{});
     EXPECT_TRUE(halted.halted);

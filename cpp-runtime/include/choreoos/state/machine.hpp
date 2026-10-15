@@ -81,6 +81,9 @@ enum class IndexRule { Contiguous, Monotonic };
 [[nodiscard]] Result<ChoreographyState> replay(
     const std::vector<Event>& events, std::optional<MusicalTick> through_tick = std::nullopt,
     std::optional<LogIndex> through_index = std::nullopt);
+// Remove full event bodies covered by compact receipts; preserve legacy tombstones.
+[[nodiscard]] Result<void> retain_state_history_from(ChoreographyState& state,
+                                                     std::uint64_t anchor);
 [[nodiscard]] std::string canonical_state(const ChoreographyState& state);
 [[nodiscard]] std::string state_hash(const ChoreographyState& state);
 
@@ -95,8 +98,13 @@ enum class IndexRule { Contiguous, Monotonic };
 // In-memory single-node engine: submit assigns the next index and applies.
 class Engine {
  public:
-  Result<SubmitResult> submit(Command command);
+  Result<SubmitResult> submit(const Command& command);
   Result<void> apply_committed(const Event& event);
+  // Stage domain changes and new retry records against read-only history.
+  [[nodiscard]] Result<Engine> prepare_committed(const std::vector<Event>& batch) const;
+  void reserve_commit(std::size_t additional);
+  void publish_committed(Engine staged);
+  Result<void> retain_history_from(std::uint64_t anchor);
   // Start from a snapshot instead of replaying from index 1. `history` is the
   // committed events at or below the snapshot when the caller still has them
   // (a store that has not compacted); it may be empty.

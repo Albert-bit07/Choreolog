@@ -25,7 +25,10 @@ Error corrupt(const std::string& detail) { return Error{ErrorCode::StoreError, d
 
 Result<WriteAheadLog> WriteAheadLog::open(std::filesystem::path path) {
   WriteAheadLog log{std::move(path)};
-  if (!std::filesystem::exists(log.path_)) {
+  std::error_code error;
+  const bool exists = std::filesystem::exists(log.path_, error);
+  if (error) return corrupt("unable to inspect WAL: " + error.message());
+  if (!exists) {
     if (auto header = write_new_header(log.path_); !header) {
       return header.error();
     }
