@@ -53,9 +53,10 @@ now checks compacted production stores without manufacturing a full
 full-WAL API and to production migration.
 
 - **Compacted logs and snapshots are rejected.** The projection cannot
-  manufacture missing entries from a snapshot. The next production bridge
-  needs a `lastIncludedIndex`/`lastIncludedTerm` offset model, snapshot
-  state and receipt correspondence, and updated Raft transition semantics.
+  manufacture missing entries from a snapshot. Separate recovery projections
+  and the experimental core now represent snapshot boundaries; this API stays
+  full-prefix-only. Snapshot lifecycle and production host integration remain
+  separate gates.
 - This module never calls `FileEngine::append_event`,
   `commit_through`, `truncate_after` or `persist_consensus`. It is not a
   writable WAL adapter and does not turn on the pure Raft core in production.

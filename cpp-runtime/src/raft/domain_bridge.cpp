@@ -44,6 +44,8 @@ state::Result<state::Event> decode_domain_entry(const Entry& entry, std::uint64_
 }
 
 state::Result<state::ChoreographyState> replay_domain_committed(const Durable& durable) {
+  if (durable.snapshot_index != 0 || durable.snapshot_term != 0)
+    return bridge_error("Full-WAL domain replay cannot reconstruct a snapshot boundary");
   if (durable.commit > durable.log.size() || durable.applied > durable.commit) {
     return bridge_error("Raft domain replay has invalid commit/applied indexes");
   }

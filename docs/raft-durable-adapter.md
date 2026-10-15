@@ -44,6 +44,11 @@ verified mapping of operation IDs, terms, indexes, payloads and snapshot offsets
 
 ## Deliberate fail-closed limitations
 
+**Snapshot offsets:** the core now supports recovered boundaries, but this v1
+checkpoint format rejects nonzero snapshot index/term rather than dropping
+them. The separate [FileEngine writer](raft-file-engine-adapter.md) preserves
+production snapshots; a general core/host bridge is still required.
+
 **Applied-state atomicity:** `ApplyCommitted` is rejected and checkpoints
 with nonzero `applied` are invalid. Updating applied progress durably before
 persisting the actual choreography state would permit a restart to skip an

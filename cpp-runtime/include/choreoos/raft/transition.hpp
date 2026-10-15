@@ -30,6 +30,10 @@ struct Durable {
   std::vector<Entry> log;
   std::uint64_t commit = 0;
   std::uint64_t applied = 0;
+  // log contains ONLY entries after this recovered snapshot boundary.
+  // The host owns the actual verified snapshot state and retry receipts.
+  std::uint64_t snapshot_index = 0;
+  std::uint64_t snapshot_term = 0;
   bool operator==(const Durable&) const = default;
 };
 
@@ -69,6 +73,14 @@ struct Outbound {
   WireMessage message;
 };
 
+// Work request to the future host, not an authenticated snapshot RPC or ack.
+// Never fabricate compacted entries when ordinary AppendEntries cannot help.
+struct SnapshotNeeded {
+  std::string peer;
+  std::uint64_t index = 0;
+  std::uint64_t term = 0;
+};
+
 struct Probe {
   RequestId request_id = 0;
   std::uint64_t term = 0;
@@ -95,6 +107,7 @@ struct PendingWrite {
   // Applied commands are observable only after their application checkpoint.
   std::vector<Entry> apply_after;
   bool self_vote = false;
+  std::vector<SnapshotNeeded> snapshot_after = {};
 };
 
 struct Node {
@@ -151,6 +164,7 @@ struct Effects {
   std::vector<Outbound> send_now;
   std::vector<Entry> apply;  // Released after PersistCompleted only.
   bool halt = false;         // Fail-stop on failed durable write.
+  std::vector<SnapshotNeeded> snapshot_needed = {};
 };
 
 [[nodiscard]] Node initial(const Config& config);
