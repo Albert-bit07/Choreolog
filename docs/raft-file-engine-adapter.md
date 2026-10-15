@@ -84,8 +84,9 @@ implemented by this adapter. It preserves an already recovered snapshot
 boundary. The authoritative snapshot and receipt-enrichment limitations of the
 read-only projection still apply.
 
-Production refinement still requires snapshot/offset semantics in the pure core
-and model, an explicit commit/application mapping, host completion/effect
+The pure core now supports recovered offsets, but production refinement still
+requires core snapshot-install/compaction semantics and a snapshot-aware formal
+model, an explicit commit/application mapping, host completion/effect
 discipline, production input/effect traces, and an independently checked
 model-state/action and stuttering relation. No TLA+-to-production proof or
 liveness guarantee follows from this adapter.

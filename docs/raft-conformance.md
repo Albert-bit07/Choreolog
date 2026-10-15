@@ -33,9 +33,11 @@ The fixture coverage is:
 - Stale AppendEntries reply handling; an outdated request ID cannot inflate
   `matchIndex`.
 
-The checker also mutates five passing traces, inserting premature disk
+The checker also mutates six passing traces, inserting premature disk
 changes, committed-log corruption, premature vote emission, application
-ahead of commit, and broken per-node continuity. Each mutation must fail.
+ahead of commit, broken per-node continuity, and an unsupported snapshot offset.
+Each mutation must fail. The v1 serializer/checker explicitly refuses nonzero
+snapshot boundaries until a snapshot-aware trace/model relation is defined.
 This is mutation detection of the checker, not a protocol safety proof.
 
 The CTest name is `raft-transition-trace-contract`. It runs on Linux and

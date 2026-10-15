@@ -12,6 +12,7 @@ add_executable(
   unit/replication_test.cpp
   unit/consensus_hardening_test.cpp
   unit/raft_transition_test.cpp
+  unit/raft_snapshot_offset_test.cpp
   unit/raft_domain_bridge_test.cpp
   unit/raft_recovery_projection_test.cpp
   unit/file_engine_adapter_test.cpp

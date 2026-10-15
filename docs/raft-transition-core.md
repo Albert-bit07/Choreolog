@@ -35,8 +35,9 @@ tests are `cpp-runtime/tests/unit/raft_transition_test.cpp`.
 
 ## Important implementation gaps
 
-1. **No production adapter.** There is no write executor, event dispatcher,
-   retransmission scheduler, or equivalent connection to `Replica`.
+1. **No production host integration.** An isolated
+   [FileEngine write executor](raft-file-engine-adapter.md) exists, but no
+   dispatcher, retransmission scheduler or core connection to `Replica` does.
 2. **Application atomicity remains unspecified.** The `ApplyCommitted` path
    currently updates `durable.applied` with a persistence request and releases
    an application effect only after completion. This is not sufficient to
@@ -44,9 +45,10 @@ tests are `cpp-runtime/tests/unit/raft_transition_test.cpp`.
    the deterministic applied state together with the applied index, or can
    reliably replay the committed prefix on recovery. Production code must
    establish this before integration.
-3. **Snapshot and log compaction boundaries are absent.** The model stores
-   complete in-memory command identifiers and does not model the current
-   FileEngine's snapshot/receipt format or deduplication behavior.
+3. **Recovered snapshot offsets are supported in the C++ core**, through
+   explicit absolute-index boundary/suffix semantics. Snapshot transfer,
+   installation and local compaction transitions remain absent; the formal
+   model still stores complete logs. See [offset scope](raft-snapshot-offsets.md).
 4. **No model-to-code proof.** New unit tests characterize the transition
    contract but do not mechanically replay `ChoreoRaft.tla` behaviors. The
    model's larger multi-term replication failure space is also not exhaustively

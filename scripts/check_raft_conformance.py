@@ -48,6 +48,13 @@ def check_projection(state: object, actions: set[str]) -> None:
                isinstance(entry.get("val"), str), "invalid log entry")
     disk = state.get("durable")
     demand(isinstance(disk, dict), "missing durable projection")
+    # This v1 safety contract has no snapshot/model-offset relation. Never
+    # silently interpret a retained suffix as a complete index-1 log.
+    for projection in (state, disk):
+        for boundary in ("snapshot_index", "snapshot_term"):
+            demand(type(projection.get(boundary, 0)) is int and
+                   projection.get(boundary, 0) == 0,
+                   "snapshot offsets are outside the v1 trace contract")
     for name in ("term", "log_len", "commit", "applied"):
         demand(uint(disk.get(name)), f"invalid durable.{name}")
     demand(disk["term"] <= state["term"], "disk term ahead of staged term")
@@ -214,6 +221,13 @@ def check_mutants(rows: list[dict], schema: dict) -> None:
     r["post"]["durable"]["term"] += 1
     mutants.append(m)
 
+    # Snapshot offsets require a separately defined trace/model relation.
+    m = copy.deepcopy(rows)
+    for row in m:
+        for projection in (row["pre"], row["post"]):
+            projection["snapshot_index"] = 1
+    mutants.append(m)
+
     # Committed prefix must survive every subsequent transition.
     m = copy.deepcopy(rows)
     r = next(r for r in m if r["scenario"] == "conflict-protection")
@@ -266,7 +280,7 @@ def main() -> int:
         check_mutants(rows, schema)
     print("Raft trace contract PASS:", ", ".join(f"{name}={count}" for name, count in counts.items()))
     if args.self_test:
-        print("All five deliberately invalid trace mutations were rejected.")
+        print("All six deliberately invalid trace mutations were rejected.")
     print("Scope: bounded observable safety contract, NOT TLC-to-C++ refinement.")
     return 0
 

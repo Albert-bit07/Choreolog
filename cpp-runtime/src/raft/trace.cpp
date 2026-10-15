@@ -1,6 +1,7 @@
 #include "choreoos/raft/trace.hpp"
 
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 #include <variant>
@@ -96,6 +97,9 @@ std::string trace_line(const Config& config, const Node& state, const Input& inp
   // mem is staged while disk is the last acknowledged durability boundary.
   const auto& mem = state.pending ? state.pending->target : state.durable;
   const auto& disk = state.durable;
+  if (mem.snapshot_index != 0 || mem.snapshot_term != 0 || disk.snapshot_index != 0 ||
+      disk.snapshot_term != 0)
+    throw std::invalid_argument("v1 Raft trace projection does not support snapshot offsets");
   std::ostringstream out;
   out << "{\"v\":1,\"seq\":" << sequence << ",\"node\":";
   quoted(out, config.self);

@@ -71,8 +71,9 @@ must complete redo and satisfy correspondence.
 
 ## Remaining refinement obligations
 
-- Define snapshot offsets and compaction transitions in the experimental core
-  and formal model; neither currently supports this projected representation.
+- The C++ core now supports [recovered offsets](raft-snapshot-offsets.md).
+  Define snapshot installation/local compaction transitions and a matching
+  formal model before claiming this projected representation refines TLA+.
 - Define a recovery-safe writable adapter and application/receipt checkpoint
   contract, including operation-specific ambiguous persistence outcomes.
 - Capture production inputs, persistence outcomes, authenticated senders and

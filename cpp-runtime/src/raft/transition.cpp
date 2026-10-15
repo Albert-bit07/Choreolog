@@ -16,49 +16,77 @@ bool known_peer(const Node& state, const std::string& id) {
   return state.volatile_state.peers.count(id) != 0;
 }
 
+std::uint64_t last_index(const Durable& state) {
+  return state.snapshot_index + static_cast<std::uint64_t>(state.log.size());
+}
+
+bool valid_durable(const Durable& state) {
+  const auto maximum = std::numeric_limits<std::uint64_t>::max();
+  if ((state.snapshot_index == 0) != (state.snapshot_term == 0) ||
+      state.snapshot_term > state.term || state.log.size() > maximum - state.snapshot_index ||
+      last_index(state) == maximum || state.applied < state.snapshot_index ||
+      state.applied > state.commit || state.commit > last_index(state))
+    return false;
+  auto previous = state.snapshot_term;
+  for (const auto& entry : state.log) {
+    if (entry.term == 0 || entry.term < previous || entry.term > state.term) return false;
+    previous = entry.term;
+  }
+  return true;
+}
+
+std::optional<std::uint64_t> term_at(const Durable& state, std::uint64_t index) {
+  if (index == state.snapshot_index) return state.snapshot_term;
+  if (index < state.snapshot_index || index > last_index(state)) return std::nullopt;
+  return state.log[static_cast<std::size_t>(index - state.snapshot_index - 1)].term;
+}
+
 std::uint64_t last_term(const Durable& state) {
-  return state.log.empty() ? 0 : state.log.back().term;
+  return state.log.empty() ? state.snapshot_term : state.log.back().term;
 }
 
 bool up_to_date(const Durable& self, std::uint64_t term, std::uint64_t index) {
   const auto ours = last_term(self);
-  return term > ours || (term == ours && index >= self.log.size());
+  return term > ours || (term == ours && index >= last_index(self));
 }
 
 void begin_write(Node& state, Effects& effects, Durable target, std::vector<Outbound> after = {},
-                 std::vector<Entry> apply_after = {}, bool self_vote = false) {
+                 std::vector<Entry> apply_after = {}, bool self_vote = false,
+                 std::vector<SnapshotNeeded> snapshot_after = {}) {
   const auto token = state.next_token++;
   effects.persist = PersistRequest{token, target};
   state.pending =
-      PendingWrite{token, std::move(target), std::move(after), std::move(apply_after), self_vote};
+      PendingWrite{token,     std::move(target),        std::move(after), std::move(apply_after),
+                   self_vote, std::move(snapshot_after)};
 }
 
 void send_append(const Config& config, Node& state, const Durable& log, const std::string& peer,
-                 std::vector<Outbound>& out) {
+                 std::vector<Outbound>& out, std::vector<SnapshotNeeded>& snapshots) {
   auto it = state.volatile_state.peers.find(peer);
   if (it == state.volatile_state.peers.end() || it->second.in_flight) {
     return;
   }
   auto& progress = it->second;
   const auto next = std::max<std::uint64_t>(1, progress.next);
-  if (next > log.log.size() + 1) {
+  if (next <= log.snapshot_index) {
+    snapshots.push_back({peer, log.snapshot_index, log.snapshot_term});
+    return;
+  }
+  if (next > last_index(log) + 1) {
     return;
   }
   const auto prev = next - 1;
+  const auto prev_term = term_at(log, prev);
+  if (!prev_term) return;
   std::vector<Entry> entries;
   // One-entry batches make the request's acknowledged index unambiguous.
-  if (next <= log.log.size()) {
-    entries.push_back(log.log[static_cast<std::size_t>(next - 1)]);
+  if (next <= last_index(log)) {
+    entries.push_back(log.log[static_cast<std::size_t>(next - log.snapshot_index - 1)]);
   }
   const auto id = state.next_request_id++;
   progress.in_flight = Probe{id, log.term, prev, entries.size()};
-  AppendEntries message{log.term,
-                        config.self,
-                        prev,
-                        prev == 0 ? 0 : log.log[static_cast<std::size_t>(prev - 1)].term,
-                        std::move(entries),
-                        log.commit,
-                        id};
+  AppendEntries message{log.term,           config.self, prev, *prev_term,
+                        std::move(entries), log.commit,  id};
   out.push_back(Outbound{peer, std::move(message)});
 }
 
@@ -66,8 +94,8 @@ void become_leader(const Config& config, Node& state, Effects& effects) {
   state.volatile_state.role = Role::Leader;
   ++state.volatile_state.leadership_epoch;
   for (auto& [peer, progress] : state.volatile_state.peers) {
-    progress = PeerProgress{state.durable.log.size() + 1, 0, std::nullopt};
-    send_append(config, state, state.durable, peer, effects.send_now);
+    progress = PeerProgress{last_index(state.durable) + 1, 0, std::nullopt};
+    send_append(config, state, state.durable, peer, effects.send_now, effects.snapshot_needed);
   }
 }
 
@@ -82,8 +110,8 @@ void step_down(Node& state) {
 
 std::uint64_t highest_committable(const Config& config, const Node& state) {
   const auto& d = state.durable;
-  for (auto n = static_cast<std::uint64_t>(d.log.size()); n > d.commit; --n) {
-    if (d.log[static_cast<std::size_t>(n - 1)].term != d.term) {
+  for (auto n = last_index(d); n > d.commit; --n) {
+    if (d.log[static_cast<std::size_t>(n - d.snapshot_index - 1)].term != d.term) {
       continue;  // Raft Figure 8: do not commit an old-term entry by counting.
     }
     std::size_t votes = 1;  // Only the durable leader log counts itself.
@@ -113,6 +141,14 @@ Node initial(const Config& config) {
 std::pair<Node, Effects> step(const Config& config, Node state, const Input& input) {
   Effects effects;
 
+  if (!valid_durable(state.durable) || (state.pending && !valid_durable(state.pending->target))) {
+    state.pending.reset();
+    step_down(state);
+    state.halted = true;
+    effects.halt = true;
+    return {std::move(state), std::move(effects)};
+  }
+
   if (const auto* completed = std::get_if<PersistCompleted>(&input)) {
     if (state.pending && state.pending->token == completed->token && !state.halted) {
       PendingWrite pending = std::move(*state.pending);
@@ -120,6 +156,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       state.durable = std::move(pending.target);
       effects.send_now = std::move(pending.after);
       effects.apply = std::move(pending.apply_after);
+      effects.snapshot_needed = std::move(pending.snapshot_after);
       if (pending.self_vote) {
         state.volatile_state.votes.insert(config.self);
         if (state.volatile_state.votes.size() >= quorum(config)) {
@@ -160,9 +197,9 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       step_down(state);
       state.volatile_state.role = Role::Candidate;
       std::vector<Outbound> after;
+      after.reserve(config.peers.size());
       for (const auto& peer : config.peers) {
-        after.push_back(Outbound{peer, RequestVote{target.term, config.self,
-                                                   static_cast<std::uint64_t>(target.log.size()),
+        after.push_back(Outbound{peer, RequestVote{target.term, config.self, last_index(target),
                                                    last_term(target), state.next_request_id++}});
       }
       begin_write(state, effects, std::move(target), std::move(after), {}, true);
@@ -172,7 +209,8 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
 
   if (const auto* request = std::get_if<RecvRequestVote>(&input)) {
     const auto& m = request->message;
-    if (!known_peer(state, m.candidate)) {
+    if (!known_peer(state, m.candidate) || m.term == 0 || m.last_term > m.term ||
+        ((m.last_index == 0) != (m.last_term == 0))) {
       return {std::move(state), std::move(effects)};
     }
     if (m.term < state.durable.term) {
@@ -223,14 +261,17 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
   }
 
   if (const auto* proposal = std::get_if<ClientPropose>(&input)) {
-    if (state.volatile_state.role == Role::Leader && !proposal->command.empty()) {
+    if (state.volatile_state.role == Role::Leader && !proposal->command.empty() &&
+        last_index(state.durable) < std::numeric_limits<std::uint64_t>::max() - 1) {
       Durable target = state.durable;
       target.log.push_back(Entry{target.term, proposal->command});
       std::vector<Outbound> after;
+      std::vector<SnapshotNeeded> snapshots;
       for (const auto& peer : config.peers) {
-        send_append(config, state, target, peer, after);
+        send_append(config, state, target, peer, after, snapshots);
       }
-      begin_write(state, effects, std::move(target), std::move(after));
+      begin_write(state, effects, std::move(target), std::move(after), {}, false,
+                  std::move(snapshots));
     }
     return {std::move(state), std::move(effects)};
   }
@@ -240,7 +281,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       for (auto& [peer, progress] : state.volatile_state.peers) {
         // Supersede a lost probe. Late replies to the old ID are ignored.
         progress.in_flight.reset();
-        send_append(config, state, state.durable, peer, effects.send_now);
+        send_append(config, state, state.durable, peer, effects.send_now, effects.snapshot_needed);
       }
     }
     return {std::move(state), std::move(effects)};
@@ -251,11 +292,20 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
     if (!known_peer(state, m.leader)) {
       return {std::move(state), std::move(effects)};
     }
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    if (m.term == 0 || m.prev_index == maximum || m.entries.size() > maximum - 1 - m.prev_index ||
+        m.prev_term > m.term || ((m.prev_index == 0) != (m.prev_term == 0)))
+      return {std::move(state), std::move(effects)};
+    auto previous_term = m.prev_term;
+    for (const auto& entry : m.entries) {
+      if (entry.term == 0 || entry.term < previous_term || entry.term > m.term)
+        return {std::move(state), std::move(effects)};
+      previous_term = entry.term;
+    }
     if (m.term < state.durable.term) {
-      effects.send_now.push_back(Outbound{
-          m.leader,
-          AppendReply{state.durable.term, config.self, false,
-                      static_cast<std::uint64_t>(state.durable.log.size()), m.request_id}});
+      effects.send_now.push_back(
+          Outbound{m.leader, AppendReply{state.durable.term, config.self, false,
+                                         last_index(state.durable), m.request_id}});
       return {std::move(state), std::move(effects)};
     }
     Durable target = state.durable;
@@ -264,25 +314,24 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       target.voted_for.reset();
     }
     step_down(state);
-    const bool prev_ok =
-        m.prev_index <= target.log.size() &&
-        (m.prev_index == 0 ||
-         target.log[static_cast<std::size_t>(m.prev_index - 1)].term == m.prev_term);
+    const auto prev_term = term_at(target, m.prev_index);
+    const bool prev_ok = prev_term && *prev_term == m.prev_term;
     bool success = prev_ok;
-    std::uint64_t hint = static_cast<std::uint64_t>(target.log.size());
+    std::uint64_t hint =
+        m.prev_index < target.snapshot_index ? target.snapshot_index : last_index(target);
     if (prev_ok) {
       for (std::size_t k = 0; k < m.entries.size(); ++k) {
-        const auto index = m.prev_index + static_cast<std::uint64_t>(k);
-        if (index < target.log.size() &&
-            target.log[static_cast<std::size_t>(index)] != m.entries[k]) {
-          if (index < target.commit) {
+        const auto index = m.prev_index + static_cast<std::uint64_t>(k) + 1;
+        const auto offset = static_cast<std::size_t>(index - target.snapshot_index - 1);
+        if (index <= last_index(target) && target.log[offset] != m.entries[k]) {
+          if (index <= target.commit) {
             success = false;
             hint = target.commit;
             break;
           }
-          target.log.resize(static_cast<std::size_t>(index));
+          target.log.resize(offset);
         }
-        if (index == target.log.size()) {
+        if (index == last_index(target) + 1) {
           target.log.push_back(m.entries[k]);
         }
       }
@@ -291,7 +340,8 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
         target.commit = std::max(target.commit, std::min(m.leader_commit, covered));
       }
     }
-    if (!success && m.prev_index > 0 && !prev_ok && m.prev_index <= target.log.size()) {
+    if (!success && m.prev_index > target.snapshot_index && !prev_ok &&
+        m.prev_index <= last_index(target)) {
       hint = m.prev_index - 1;
     }
     if (!success) {
@@ -321,12 +371,13 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       begin_write(state, effects, std::move(target));
     } else if (state.volatile_state.role == Role::Leader && m.term == state.durable.term) {
       auto it = state.volatile_state.peers.find(m.follower);
-      if (it != state.volatile_state.peers.end() && it->second.in_flight &&
-          it->second.in_flight->request_id == m.request_id &&
-          it->second.in_flight->term == m.term) {
+      if (it != state.volatile_state.peers.end()) {
         auto& progress = it->second;
-        const auto probe = *progress.in_flight;
-        progress.in_flight.reset();
+        auto& in_flight = progress.in_flight;
+        if (!in_flight || in_flight->request_id != m.request_id || in_flight->term != m.term)
+          return {std::move(state), std::move(effects)};
+        const auto probe = *in_flight;
+        in_flight.reset();
         if (m.success) {
           // Match derives from the SENT request, never the follower's extra suffix.
           progress.match = std::max(progress.match, probe.prev + probe.count);
@@ -359,10 +410,11 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
 
   if (std::holds_alternative<ApplyCommitted>(input) &&
       state.durable.applied < state.durable.commit &&
-      state.durable.applied < state.durable.log.size()) {
+      state.durable.applied < last_index(state.durable)) {
     Durable target = state.durable;
     ++target.applied;
-    std::vector<Entry> after{target.log[static_cast<std::size_t>(target.applied - 1)]};
+    std::vector<Entry> after{
+        target.log[static_cast<std::size_t>(target.applied - target.snapshot_index - 1)]};
     begin_write(state, effects, std::move(target), {}, std::move(after));
   }
   return {std::move(state), std::move(effects)};

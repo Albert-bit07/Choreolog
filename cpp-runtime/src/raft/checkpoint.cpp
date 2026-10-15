@@ -63,6 +63,8 @@ struct Reader {
 };
 
 Result<void> valid_state(const Durable& value) {
+  if (value.snapshot_index != 0 || value.snapshot_term != 0)
+    return invalid("Raft v1 checkpoint cannot store a snapshot boundary");
   if (value.commit > value.log.size() || value.applied > value.commit) {
     return invalid("Raft checkpoint indexes violate applied <= commit <= log length");
   }
