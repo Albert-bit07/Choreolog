@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "choreoos/state/store.hpp"
+#include "choreoos/storage/file_util.hpp"
 #include "choreoos/storage/metadata.hpp"
 #include "choreoos/storage/wal.hpp"
 
@@ -187,6 +188,108 @@ TEST(DurabilityTest, RecoveryAndSnapshotInstallBoundAliasesWithoutDroppingReceip
   auto installed_retry = follower.value().submit(create_command());
   ASSERT_TRUE(installed_retry);
   EXPECT_TRUE(installed_retry.value().duplicate);
+}
+
+TEST(DurabilityTest, SnapshotCannotHideAGapInRetainedWalIndexes) {
+  const auto dir = fresh_dir("choreoos-retained-prefix-gap");
+  StoreOptions options;
+  options.snapshot_every = 2;
+  options.compact_log = true;
+  {
+    auto store = FileEngine::open(dir, options);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().submit(create_command()));
+    for (int i = 0; i < 6; ++i)
+      ASSERT_TRUE(store.value().submit(add_command("d" + std::to_string(i), 1000 + i * 100)));
+  }
+  auto bytes = storage::read_file(dir / "wal.bin");
+  ASSERT_TRUE(bytes);
+  bool removed = false;
+  for (std::size_t offset = 16; offset < bytes.value().size();) {
+    const auto size = 32u + static_cast<std::size_t>(storage::read_u32(bytes.value(), offset + 8));
+    if (storage::read_u64(bytes.value(), offset + 20) == 5) {
+      bytes.value().erase(bytes.value().begin() + static_cast<std::ptrdiff_t>(offset),
+                          bytes.value().begin() + static_cast<std::ptrdiff_t>(offset + size));
+      removed = true;
+      break;
+    }
+    offset += size;
+  }
+  ASSERT_TRUE(removed);
+  {
+    std::ofstream out(dir / "wal.bin", std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.value().data()),
+              static_cast<std::streamsize>(bytes.value().size()));
+  }
+  // Every remaining frame still has its original valid CRC. Snapshot6 can
+  // replay7, but indexes4,6,7 violate the retained vector lookup invariant.
+  EXPECT_FALSE(FileEngine::open(dir, options));
+}
+
+TEST(DurabilityTest, CommittedSnapshotFinishesDiscardingAnObsoleteWalPrefix) {
+  const auto dir = fresh_dir("choreoos-retained-prefix-before-snapshot");
+  StoreOptions options;
+  options.snapshot_every = 1;
+  {
+    auto store = FileEngine::open(dir, options);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().submit(create_command()));
+    ASSERT_TRUE(store.value().submit(add_command("alice", 1000)));
+  }
+  std::filesystem::resize_file(dir / "wal.bin", std::filesystem::file_size(dir / "wal.bin") - 1);
+  options.commit_on_append = false;
+  auto recovered = FileEngine::open(dir, options);
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(recovered.value().commit_index().value(), 2u);
+  EXPECT_EQ(recovered.value().engine().state().last_applied.value(), 2u);
+  EXPECT_EQ(recovered.value().last_log_index(), 2u);
+  EXPECT_TRUE(recovered.value().log_events().empty());
+  EXPECT_EQ(recovered.value().log_term_at(2), 1u);
+}
+
+TEST(DurabilityTest, UncommittedWalCannotStartAfterAMissingPrefix) {
+  const auto dir = fresh_dir("choreoos-uncommitted-missing-prefix");
+  std::filesystem::create_directories(dir);
+  auto event = propose(ChoreographyState{}, create_command());
+  ASSERT_TRUE(event);
+  event.value().index = LogIndex::parse(2).value();
+  auto bytes = storage::encode_wal({event.value()});
+  ASSERT_TRUE(bytes);
+  {
+    std::ofstream out(dir / "wal.bin", std::ios::binary | std::ios::trunc);
+    out.write(bytes.value().data(), static_cast<std::streamsize>(bytes.value().size()));
+  }
+  StoreOptions options;
+  options.commit_on_append = false;
+  EXPECT_FALSE(FileEngine::open(dir, options));
+}
+
+TEST(DurabilityTest, SnapshotBoundaryTermRemainsAvailableAfterAppendingItsSuffix) {
+  const auto dir = fresh_dir("choreoos-snapshot-boundary-suffix");
+  Engine engine;
+  ASSERT_TRUE(engine.submit(create_command()));
+  const auto state = engine.state();
+  storage::Snapshot snapshot{
+      state.last_applied, state.term, state_hash(state), {}, snapshot_payload(state)};
+  StoreOptions options;
+  options.commit_on_append = false;
+  options.compact_log = true;
+  {
+    auto store = FileEngine::open(dir, options);
+    ASSERT_TRUE(store);
+    ASSERT_TRUE(store.value().install_snapshot(snapshot));
+    auto next = engine.events().front();
+    next.id = EventId::parse("noop-2").value();
+    next.command_id = CommandId::parse("noop-2").value();
+    next.type = EventType::NoOp;
+    next.index = LogIndex::parse(2).value();
+    ASSERT_TRUE(store.value().append_event(next));
+    EXPECT_EQ(store.value().log_term_at(1), 1u);
+  }
+  auto recovered = FileEngine::open(dir, options);
+  ASSERT_TRUE(recovered);
+  EXPECT_EQ(recovered.value().log_first_index(), 2u);
+  EXPECT_EQ(recovered.value().log_term_at(1), 1u);
 }
 
 TEST(DurabilityTest, MetadataBeyondWalAndMissingSnapshotSuffixFailClosed) {

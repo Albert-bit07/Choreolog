@@ -159,3 +159,18 @@ Engine/replica full history and command indexes to the retained log window;
 compact retry receipts and legacy outcome tombstones remain durable. The CLI
 keeps its default full-history behavior. Historical replay explicitly refuses
 compacted/incomplete history instead of replaying a suffix as a complete log.
+
+Recovery validates every retained WAL index, including records below a selected
+snapshot that replay would otherwise skip. A retained-prefix hole or missing
+uncommitted prefix is refused. The WAL must join the verified snapshot boundary
+and any retained anchor must match its term. Empty snapshot-only WALs and a
+contiguous suffix immediately after the snapshot are valid; the snapshot term
+remains available after suffix appends.
+
+For compatibility with legacy install crash states, if a verified snapshot and
+durable metadata agree on the commit but a nonempty WAL ends before it, recovery
+atomically finishes discarding that obsolete, fully covered prefix. It never
+advertises a last log index behind commit. If metadata requires a later missing
+committed suffix, recovery refuses instead of discarding history or lowering
+commit. Full historical replay remains unavailable when snapshot recovery lacks
+the complete event prefix.

@@ -250,6 +250,16 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
   }
   store.wal_ = std::make_unique<storage::WriteAheadLog>(std::move(wal.value()));
   store.recovery_.truncated_tail_bytes = store.wal_->stats().truncated_tail_bytes;
+  // Snapshot replay can skip old records, but O(1) log lookup still requires
+  // the entire retained vector to be contiguous, including that old prefix.
+  std::uint64_t previous_index = 0;
+  for (const auto& event : store.wal_->events()) {
+    if (event.index.value() == 0 ||
+        (previous_index != 0 &&
+         (previous_index == UINT64_MAX || event.index.value() != previous_index + 1)))
+      return Error{ErrorCode::StoreError, "retained WAL indexes are not contiguous"};
+    previous_index = event.index.value();
+  }
 
   auto loaded_snapshot = storage::load_latest_snapshot(store.directory_);
   if (!loaded_snapshot) return loaded_snapshot.error();
@@ -266,19 +276,20 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
       options.commit_on_append ? UINT64_MAX : metadata.value().commit_index.value();
   std::uint64_t start_after = 0;
   if (snapshot && snapshot->index.value() <= apply_limit) {
-    auto restored = storage::verify_snapshot(*snapshot);
+    const auto& selected = *snapshot;
+    auto restored = storage::verify_snapshot(selected);
     if (!restored) {
       return restored.error();
     }
     // Always hold the snapshot in state form so a leader can serve it to a
     // lagging peer, whichever format was on disk.
-    storage::Snapshot in_memory = *snapshot;
+    storage::Snapshot in_memory = selected;
     if (in_memory.legacy()) {
       in_memory.state_payload = snapshot_payload(restored.value());
       in_memory.events.clear();
     }
-    if (snapshot->legacy()) {
-      for (const auto& event : snapshot->events) {
+    if (selected.legacy()) {
+      for (const auto& event : selected.events) {
         if (auto applied = store.engine_.apply_committed(event); !applied) {
           return applied.error();
         }
@@ -288,9 +299,10 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
       // whole prefix, so tools that replay to an index keep working.
       std::vector<Event> history;
       const auto& records = store.wal_->events();
-      if (!records.empty() && records.front().index.value() == 1) {
+      if (!records.empty() && records.front().index.value() == 1 &&
+          records.back().index.value() >= selected.index.value()) {
         for (const auto& event : records) {
-          if (event.index.value() > snapshot->index.value()) {
+          if (event.index.value() > selected.index.value()) {
             break;
           }
           history.push_back(event);
@@ -299,15 +311,36 @@ Result<FileEngine> FileEngine::open(std::filesystem::path directory, StoreOption
       store.engine_.restore(std::move(restored.value()), std::move(history));
     }
     store.recovery_.used_snapshot = true;
-    store.recovery_.snapshot_index = snapshot->index.value();
+    store.recovery_.snapshot_index = selected.index.value();
     store.snapshot_ = std::move(in_memory);
-    start_after = snapshot->index.value();
+    start_after = selected.index.value();
   }
   if (start_after == 0 && !store.wal_->events().empty() &&
-      store.wal_->events().front().index.value() > 1 &&
-      store.wal_->events().front().index.value() <= apply_limit) {
+      store.wal_->events().front().index.value() > 1) {
     return Error{ErrorCode::StoreError,
                  "the log was compacted but no valid snapshot covers its missing prefix"};
+  }
+  if (store.snapshot_ && !store.wal_->events().empty()) {
+    const auto& boundary_snapshot = *store.snapshot_;
+    const auto boundary = boundary_snapshot.index.value();
+    const auto first = store.wal_->events().front().index.value();
+    if (store.wal_->events().back().index.value() < boundary) {
+      // Legacy snapshot install could stop after metadata advanced but before
+      // replacing the obsolete WAL. The verified committed snapshot covers
+      // every old record; finish that single-file replacement atomically.
+      if (metadata.value().commit_index != boundary_snapshot.index ||
+          metadata.value().term.value() < boundary_snapshot.term.value())
+        return Error{ErrorCode::StoreError,
+                     "snapshot and WAL cannot cover durable commit metadata"};
+      if (auto rewritten = store.wal_->rewrite({}); !rewritten) return rewritten.error();
+    } else if (first > boundary && first - boundary != 1) {
+      return Error{ErrorCode::StoreError,
+                   "retained WAL does not join the recovered snapshot boundary"};
+    }
+    if (const auto* anchor = store.log_entry(boundary);
+        anchor && anchor->term != boundary_snapshot.term)
+      return Error{ErrorCode::StoreError,
+                   "retained WAL anchor disagrees with recovered snapshot term"};
   }
   for (const auto& event : store.wal_->events()) {
     if (event.index.value() <= start_after) {
@@ -432,7 +465,7 @@ std::optional<std::uint64_t> FileEngine::log_term_at(std::uint64_t index) const 
   if (const Event* entry = log_entry(index)) {
     return entry->term.value();
   }
-  if (wal_->events().empty() && snapshot_ && snapshot_->index.value() == index) {
+  if (snapshot_ && snapshot_->index.value() == index) {
     return snapshot_->term.value();
   }
   return std::nullopt;

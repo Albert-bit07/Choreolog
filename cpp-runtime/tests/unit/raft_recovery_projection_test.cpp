@@ -304,11 +304,9 @@ TEST_F(RaftRecoveryProjectionTest, RetainedAnchorMustAgreeWithTheSnapshotTerm) {
     retained[0].term = state::Term::parse(1).value();
     ASSERT_TRUE(wal.value().rewrite(retained));
   }
-  // Recovery uses the valid snapshot and leaves the uncommitted suffix alone;
-  // the correspondence checker must additionally notice the wrong anchor.
-  auto store = state::FileEngine::open(path, options());
-  ASSERT_TRUE(store);
-  EXPECT_FALSE(audit_recovered_domain_store(store.value()));
+  // The production recovery boundary now rejects the wrong anchor before
+  // returning a usable store; the projection checker retains its own checks.
+  EXPECT_FALSE(state::FileEngine::open(path, options()));
 }
 
 }  // namespace
