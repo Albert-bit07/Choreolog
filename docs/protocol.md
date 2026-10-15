@@ -89,7 +89,9 @@ silently withholding a reply.
 Both plaintext and TLS transports admit at most128 sessions, including outbound
 connect attempts; at most96 sessions can be admitted as clients. Peer dial
 attempts use the remaining capacity. Each session has at most64 queued frames
-and2MiB of queued payload, including its active write. The process queue budget
+and2MiB of queued payload, including its active write. An active write keeps
+its global byte reservation after session retirement until its final buffer
+reference is released by the completion/cancellation handler. The process queue budget
 is32MiB, with at most24MiB used by clients. Delayed test sends use that same
 budget and are coalesced by peer/type/correlation. Append/snapshot retransmits
 already in an outgoing queue are coalesced by type/correlation. Exceeding an

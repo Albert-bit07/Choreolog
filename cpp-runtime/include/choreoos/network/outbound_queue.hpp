@@ -37,10 +37,12 @@ class OutboundQueue {
         size > QueueBudget::kGlobalBytes - budget_->bytes ||
         (!peer && size > QueueBudget::kClientBytes - budget_->client_bytes))
       return false;
-    frames_.push_back({std::move(bytes), peer, retry});
+    auto reservation = std::make_shared<Reservation>(std::move(bytes), budget_, peer);
+    // Aliasing ownership carries the reservation into an active async write.
+    // Retirement may clear the queue before that write's cancellation runs.
+    Buffer accounted(reservation, reservation->buffer.get());
+    frames_.push_back({std::move(accounted), retry});
     bytes_ += size;
-    budget_->bytes += size;
-    if (!peer) budget_->client_bytes += size;
     return true;
   }
   [[nodiscard]] bool empty() const { return frames_.empty(); }
@@ -50,8 +52,6 @@ class OutboundQueue {
     const auto& frame = frames_.front();
     const auto size = frame.bytes->size();
     bytes_ -= size;
-    budget_->bytes -= size;
-    if (!frame.peer) budget_->client_bytes -= size;
     frames_.pop_front();
   }
   void clear() {
@@ -62,8 +62,23 @@ class OutboundQueue {
   static constexpr std::size_t kSessionBytes = 2u << 20;
   struct Frame {
     Buffer bytes;
-    bool peer;
     std::optional<RetryKey> retry;
+  };
+  struct Reservation {
+    Reservation(Buffer bytes, std::shared_ptr<QueueBudget> owner, bool is_peer)
+        : buffer(std::move(bytes)), budget(std::move(owner)), peer(is_peer) {
+      budget->bytes += buffer->size();
+      if (!peer) budget->client_bytes += buffer->size();
+    }
+    ~Reservation() {
+      budget->bytes -= buffer->size();
+      if (!peer) budget->client_bytes -= buffer->size();
+    }
+    Reservation(const Reservation&) = delete;
+    Reservation& operator=(const Reservation&) = delete;
+    Buffer buffer;
+    std::shared_ptr<QueueBudget> budget;
+    bool peer;
   };
   std::shared_ptr<QueueBudget> budget_;
   std::size_t bytes_ = 0;

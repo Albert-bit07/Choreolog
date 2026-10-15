@@ -44,6 +44,24 @@ TEST(NetworkCapacityTest, ByteBudgetsReservePeerCapacityAndReleaseOnRetirement) 
   EXPECT_EQ(budget->bytes, 0u);
 }
 
+TEST(NetworkCapacityTest, RetiredActiveWritesCannotReuseTheirGlobalReservationsEarly) {
+  auto budget = std::make_shared<QueueBudget>();
+  auto bytes = std::make_shared<const std::string>(1u << 20, 'x');
+  std::vector<OutboundQueue::Buffer> active;
+  for (std::size_t i = 0; i < 32; ++i) {
+    OutboundQueue retired(budget);
+    ASSERT_TRUE(retired.push(bytes, true));
+    active.push_back(retired.front());
+    retired.clear();
+  }
+  EXPECT_EQ(budget->bytes, QueueBudget::kGlobalBytes);
+  OutboundQueue next(budget);
+  EXPECT_FALSE(next.push(bytes, true));
+  active.clear();  // Completion releases the final async-write references.
+  EXPECT_EQ(budget->bytes, 0u);
+  EXPECT_TRUE(next.push(bytes, true));
+}
+
 TEST(NetworkCapacityTest, CorrelatedRetriesDoNotGrowQueueAndActiveBuffersOutliveIt) {
   auto budget = std::make_shared<QueueBudget>();
   OutboundQueue queue(budget);
@@ -53,8 +71,10 @@ TEST(NetworkCapacityTest, CorrelatedRetriesDoNotGrowQueueAndActiveBuffersOutlive
   EXPECT_EQ(queue.bytes(), 1024u);
   auto active = queue.front();
   queue.clear();
-  EXPECT_EQ(budget->bytes, 0u);
+  EXPECT_EQ(budget->bytes, 1024u);  // Cancelled write still owns its bytes.
   EXPECT_EQ(active->size(), 1024u);
+  active.reset();
+  EXPECT_EQ(budget->bytes, 0u);
 }
 
 }  // namespace
