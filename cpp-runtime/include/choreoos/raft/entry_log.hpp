@@ -56,7 +56,7 @@ class EntryLog {
       data_->chunks.push_back(std::move(chunk));
     } else {
       auto& chunk = data_->chunks.back();
-      if (!chunk.unique()) chunk = std::make_shared<std::vector<Entry>>(*chunk);
+      if (chunk.use_count() != 1) chunk = std::make_shared<std::vector<Entry>>(*chunk);
       chunk->push_back(std::move(entry));
     }
     ++data_->size;
@@ -130,7 +130,7 @@ class EntryLog {
     bool valid = true;
   };
   void detach() {
-    if (!data_.unique()) data_ = std::make_shared<Data>(*data_);
+    if (data_.use_count() != 1) data_ = std::make_shared<Data>(*data_);
   }
   void validate_terms() {
     data_->valid = true;
