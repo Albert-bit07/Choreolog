@@ -68,8 +68,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/vcpkg-binary-cache"
           echo "VCPKG_DEFAULT_BINARY_CACHE=$RUNNER_TEMP/vcpkg-binary-cache" >> "$GITHUB_ENV"
 
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
+      - name: Restore vcpkg binary packages
+        id: dependency-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/vcpkg-binary-cache
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ env.VCPKG_COMMIT }}-${{ steps.dependency-compiler.outputs.hash }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'CMakePresets.json') }}
@@ -110,6 +111,14 @@ jobs:
           )
           cmake "${args[@]}"
 
+      # Dependency packages remain reusable even when our source fails to build.
+      - name: Save configured vcpkg packages
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: ${{ steps.dependency-cache.outputs.cache-primary-key }}
+
       - name: Build
         shell: bash
         run: |
@@ -122,7 +131,7 @@ jobs:
               line=${line//'%'/'%25'}
               line=${line//$'\r'/'%0D'}
               echo "::error::$line"
-            done < <(tail -n 60 build/ci/build.log)
+            done < <(grep -iE '(^|[[:space:]])(fatal )?error([[:space:]:]|$)|warning [A-Z]+[0-9]+|ninja:' build/ci/build.log | head -n 10)
             exit 1
           fi
 
