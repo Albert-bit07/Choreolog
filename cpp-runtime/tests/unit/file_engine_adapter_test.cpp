@@ -50,6 +50,97 @@ class FileEngineAdapterTest : public testing::Test {
   }
 };
 
+Durable projected_durable(const RecoveredDomainProjection& projection) {
+  Durable durable;
+  durable.term = projection.term;
+  durable.voted_for = projection.voted_for;
+  durable.log = projection.suffix;
+  durable.commit = projection.commit;
+  durable.applied = projection.applied;
+  if (projection.snapshot) {
+    durable.snapshot_index = projection.snapshot->index.value();
+    durable.snapshot_term = projection.snapshot->term.value();
+  }
+  return durable;
+}
+
+TEST_F(FileEngineAdapterTest, CoreCompactionCheckpointsBeforeCompletionAndPreservesReceipts) {
+  const Config config{"a", {"b"}};
+  auto adapter = FileEngineAdapter::open(path);
+  ASSERT_TRUE(adapter);
+  auto original_plan = plan(4, 2);
+  original_plan.voted_for = "a";
+  ASSERT_TRUE(adapter.value().persist(original_plan));
+  auto before = adapter.value().current_shared();
+  ASSERT_TRUE(before);
+  auto node = initial(config);
+  node.durable = projected_durable(*before.value());
+  auto [staged, request] = step(config, node, CompactCommitted{});
+  ASSERT_TRUE(request.persist);
+  ASSERT_EQ(request.persist->kind, PersistKind::LocalCompaction);
+  EXPECT_EQ(staged.durable, node.durable);
+  ASSERT_TRUE(adapter.value().checkpoint());
+  auto disk = adapter.value().current_shared();
+  ASSERT_TRUE(disk);
+  EXPECT_EQ(projected_durable(*disk.value()), request.persist->target);
+  EXPECT_EQ(disk.value()->applied_state_payload, before.value()->applied_state_payload);
+  EXPECT_EQ(disk.value()->applied_state_hash, before.value()->applied_state_hash);
+  EXPECT_FALSE(before.value()->snapshot);
+  EXPECT_EQ(before.value()->suffix.size(), 3u);
+  // Disk completion alone cannot publish the staged core boundary.
+  EXPECT_EQ(staged.durable.snapshot_index, 0u);
+  auto [compacted, completed] = step(config, staged, PersistCompleted{request.persist->token});
+  EXPECT_TRUE(completed.apply.empty());
+  EXPECT_TRUE(completed.send_now.empty());
+  EXPECT_EQ(compacted.durable, request.persist->target);
+  auto reopened = adapter.value().recover();
+  ASSERT_TRUE(reopened);
+  EXPECT_EQ(projected_durable(reopened.value()), compacted.durable);
+  auto domain = replay_recovered_domain(reopened.value());
+  ASSERT_TRUE(domain);
+  EXPECT_TRUE(state::resolve_receipt(domain.value(), create()));
+  EXPECT_EQ(domain.value().receipts.at("d1").index, 2u);
+  EXPECT_EQ(domain.value().receipts.count("d2"), 0u);
+  EXPECT_EQ(reopened.value().suffix.size(), 1u);
+  EXPECT_FALSE(adapter.value().persist(original_plan));  // Pre-maintenance boundary is stale.
+  EXPECT_FALSE(adapter.value().uncertain());
+}
+
+TEST_F(FileEngineAdapterTest, FailedCoreCompactionMustRecoverActualOldOrNewDiskBoundary) {
+  const Config config{"a", {"b"}};
+  for (bool disk_completed : {false, true}) {
+    auto adapter = FileEngineAdapter::open(path / (disk_completed ? "written" : "not-written"));
+    ASSERT_TRUE(adapter);
+    ASSERT_TRUE(adapter.value().persist(plan(4, 2)));
+    auto before = adapter.value().current();
+    ASSERT_TRUE(before);
+    auto node = initial(config);
+    node.durable = projected_durable(before.value());
+    auto [staged, request] = step(config, node, CompactCommitted{});
+    ASSERT_TRUE(request.persist);
+    if (disk_completed) {
+      ASSERT_TRUE(adapter.value().checkpoint());
+    }
+    // Includes a completed disk checkpoint whose completion was lost.
+    auto [failed, effects] = step(config, staged, PersistFailed{request.persist->token});
+    ASSERT_TRUE(effects.halt);
+    EXPECT_EQ(failed.durable, node.durable);
+    auto disk = adapter.value().recover();
+    ASSERT_TRUE(disk);
+    EXPECT_EQ(disk.value().applied_state_payload, before.value().applied_state_payload);
+    failed.durable = projected_durable(disk.value());  // Real recovery must precede Restart.
+    auto [restarted, released] = step(config, failed, Restart{});
+    EXPECT_FALSE(restarted.halted);
+    EXPECT_FALSE(restarted.pending);
+    EXPECT_TRUE(released.send_now.empty());
+    EXPECT_TRUE(released.apply.empty());
+    EXPECT_EQ(restarted.durable, disk_completed ? request.persist->target : node.durable);
+    EXPECT_EQ(restarted.durable.commit, 2u);
+    EXPECT_EQ(restarted.durable.applied, 2u);
+    EXPECT_EQ(restarted.durable.log.size(), disk_completed ? 1u : 3u);
+  }
+}
+
 TEST_F(FileEngineAdapterTest, IncrementalWritesAndCheckpointPreserveReceiptsAndUncommittedSuffix) {
   auto adapter = FileEngineAdapter::open(path);
   ASSERT_TRUE(adapter);

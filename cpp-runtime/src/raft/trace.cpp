@@ -12,7 +12,8 @@ namespace {
 void quoted(std::ostringstream& out, std::string_view text) {
   constexpr char hex[] = "0123456789abcdef";
   out << '"';
-  for (unsigned char c : text) {
+  for (char byte : text) {
+    const auto c = static_cast<unsigned char>(byte);
     switch (c) {
       case '"':
         out << "\\\"";
@@ -60,7 +61,7 @@ const char* role_name(Role role) noexcept {
 
 }  // namespace
 
-const char* trace_action(const Input& input) noexcept {
+const char* trace_action(const Input& input) {
   return std::visit(
       [](const auto& event) noexcept -> const char* {
         using T = std::decay_t<decltype(event)>;
@@ -82,6 +83,8 @@ const char* trace_action(const Input& input) noexcept {
           return "AdvanceCommit";
         else if constexpr (std::is_same_v<T, ApplyCommitted>)
           return "Apply";
+        else if constexpr (std::is_same_v<T, CompactCommitted>)
+          return "CompactCommitted";
         else if constexpr (std::is_same_v<T, PersistCompleted>)
           return "PersistCompleted";
         else if constexpr (std::is_same_v<T, PersistFailed>)
@@ -97,9 +100,10 @@ std::string trace_line(const Config& config, const Node& state, const Input& inp
   // mem is staged while disk is the last acknowledged durability boundary.
   const auto& mem = state.pending ? state.pending->target : state.durable;
   const auto& disk = state.durable;
-  if (mem.snapshot_index != 0 || mem.snapshot_term != 0 || disk.snapshot_index != 0 ||
-      disk.snapshot_term != 0)
-    throw std::invalid_argument("v1 Raft trace projection does not support snapshot offsets");
+  if (std::holds_alternative<CompactCommitted>(input) || mem.snapshot_index != 0 ||
+      mem.snapshot_term != 0 || disk.snapshot_index != 0 || disk.snapshot_term != 0)
+    throw std::invalid_argument(
+        "v1 Raft trace projection does not support snapshots or local compaction");
   std::ostringstream out;
   out << "{\"v\":1,\"seq\":" << sequence << ",\"node\":";
   quoted(out, config.self);

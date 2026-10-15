@@ -48,9 +48,10 @@ bool up_to_date(const Durable& self, std::uint64_t term, std::uint64_t index) {
 
 void begin_write(Node& state, Effects& effects, Durable target, std::vector<Outbound> after = {},
                  std::vector<Entry> apply_after = {}, bool self_vote = false,
-                 std::vector<SnapshotNeeded> snapshot_after = {}) {
+                 std::vector<SnapshotNeeded> snapshot_after = {},
+                 PersistKind kind = PersistKind::StateUpdate) {
   const auto token = state.next_token++;
-  effects.persist = PersistRequest{token, target};
+  effects.persist = PersistRequest{token, target, kind};
   state.pending =
       PendingWrite{token,     std::move(target),        std::move(after), std::move(apply_after),
                    self_vote, std::move(snapshot_after)};
@@ -181,6 +182,25 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
   }
   if (state.halted || state.pending) {
     // One durable operation in flight per node. Never act on staged state.
+    return {std::move(state), std::move(effects)};
+  }
+
+  if (std::holds_alternative<CompactCommitted>(input)) {
+    const auto& durable = state.durable;
+    if (durable.applied != durable.commit || durable.commit == durable.snapshot_index)
+      return {std::move(state), std::move(effects)};
+    const auto boundary_term = term_at(durable, durable.commit);
+    if (!boundary_term) return {std::move(state), std::move(effects)};
+    Durable target = durable;
+    target.snapshot_index = durable.commit;
+    target.snapshot_term = *boundary_term;
+    target.log.clear();
+    // Maintenance copies only the retained suffix; ordinary steps still share
+    // immutable chunks. Never drop or renumber uncommitted entries.
+    const auto removed = static_cast<std::size_t>(durable.commit - durable.snapshot_index);
+    for (auto offset = removed; offset < durable.log.size(); ++offset)
+      target.log.push_back(durable.log[offset]);
+    begin_write(state, effects, std::move(target), {}, {}, false, {}, PersistKind::LocalCompaction);
     return {std::move(state), std::move(effects)};
   }
 

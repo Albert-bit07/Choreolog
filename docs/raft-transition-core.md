@@ -46,9 +46,10 @@ tests are `cpp-runtime/tests/unit/raft_transition_test.cpp`.
    reliably replay the committed prefix on recovery. Production code must
    establish this before integration.
 3. **Recovered snapshot offsets are supported in the C++ core**, through
-   explicit absolute-index boundary/suffix semantics. Snapshot transfer,
-   installation and local compaction transitions remain absent; the formal
-   model still stores complete logs. See [offset scope](raft-snapshot-offsets.md).
+   explicit absolute-index boundary/suffix semantics. Snapshot transfer
+   and installation remain absent. Explicit
+   [durable local compaction](raft-local-compaction.md) is available after
+   application catches up; the formal model still stores complete logs. See [offset scope](raft-snapshot-offsets.md).
 4. **No model-to-code proof.** New unit tests characterize the transition
    contract but do not mechanically replay `ChoreoRaft.tla` behaviors. The
    model's larger multi-term replication failure space is also not exhaustively

@@ -140,6 +140,8 @@ struct RecvAppendReply {
 };
 struct AdvanceCommit {};
 struct ApplyCommitted {};
+// Local maintenance, only once application has durably caught up to commit.
+struct CompactCommitted {};
 struct PersistCompleted {
   PersistToken token;
 };
@@ -148,13 +150,19 @@ struct PersistFailed {
 };
 struct Restart {};
 
-using Input = std::variant<ElectionTimeout, HeartbeatTimeout, ClientPropose, RecvRequestVote,
-                           RecvVoteReply, RecvAppend, RecvAppendReply, AdvanceCommit,
-                           ApplyCommitted, PersistCompleted, PersistFailed, Restart>;
+using Input =
+    std::variant<ElectionTimeout, HeartbeatTimeout, ClientPropose, RecvRequestVote, RecvVoteReply,
+                 RecvAppend, RecvAppendReply, AdvanceCommit, ApplyCommitted, CompactCommitted,
+                 PersistCompleted, PersistFailed, Restart>;
+
+enum class PersistKind { StateUpdate, LocalCompaction };
 
 struct PersistRequest {
   PersistToken token;
   Durable target;
+  // LocalCompaction requires the matching application snapshot and WAL
+  // maintenance, not just persistence of the Raft metadata/log suffix.
+  PersistKind kind = PersistKind::StateUpdate;
 };
 struct Effects {
   std::optional<PersistRequest> persist;

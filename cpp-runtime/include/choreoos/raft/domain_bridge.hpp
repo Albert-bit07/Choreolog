@@ -17,8 +17,8 @@ struct DomainProjection {
   std::string applied_state_hash;
 };
 
-// Recovery correspondence with absolute indexes. This is NOT raft::Durable:
-// the experimental transition core cannot interpret a compacted log yet.
+// Recovery correspondence with absolute indexes and verified application data.
+// Unlike raft::Durable, this also retains snapshot payloads and retry receipts.
 struct RecoveredDomainProjection {
   std::uint64_t term = 0;
   std::optional<std::string> voted_for;
