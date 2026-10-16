@@ -79,7 +79,8 @@ A real FileEngine snapshot plus FileEngineAdapter drives an election metadata
 write before the test releases its vote requests. This is a narrow test host;
 it does not map every protocol persistence/application transition to production.
 
-Remaining work includes durable local compaction and snapshot installation
+[Durable local compaction](raft-local-compaction.md) now has an explicit
+persistence-gated transition. Remaining work includes snapshot installation
 transitions, host snapshot transfer/correlation, the FileEngine commit/apply
 mapping, production host integration, a reviewed snapshot-aware formal model,
 and independently checked state/action/stuttering correspondence. Shared-code

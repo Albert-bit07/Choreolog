@@ -323,6 +323,7 @@ jobs:
             cpp-runtime/src/raft/domain_bridge.cpp \
             cpp-runtime/src/raft/file_engine_adapter.cpp \
             cpp-runtime/src/raft/transition.cpp \
+            cpp-runtime/src/raft/trace.cpp \
             cpp-runtime/src/runtime/config.cpp \
             cpp-runtime/src/network/node_server.cpp \
             cpp-runtime/src/state/machine.cpp \

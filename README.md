@@ -12,7 +12,7 @@ A read-only [snapshot-aware recovery projection](docs/raft-recovery-projection.m
 
 An experimental [FileEngine write adapter](docs/raft-file-engine-adapter.md) executes validated metadata/log/commit plans with recovery after uncertain errors. It is not connected to the production Replica or pure transition core.
 
-The pure core supports [recovered snapshot offsets](docs/raft-snapshot-offsets.md) for absolute-index elections and replication. Snapshot transfer, production host integration and a snapshot-aware formal relation remain open.
+The pure core supports [recovered snapshot offsets](docs/raft-snapshot-offsets.md) for absolute-index elections and replication, plus explicit [durable local compaction](docs/raft-local-compaction.md) after application catches up to commit. Snapshot transfer, production host integration and a snapshot-aware formal relation remain open.
 
 A [scoped Raft verification program](docs/raft-verification.md) is underway. PRs #7–#9 added separate election and replication models and a unified asynchronous model with **explicitly bounded**, completed TLC profiles. The broader combined-failure model remains incomplete. PR #10 introduces an experimental pure C++ transition core **alongside**, not inside, the deployed `Replica`. Formal verification or model-to-code refinement of the deployed C++ implementation has **not** been established.
 
