@@ -28,6 +28,8 @@ struct PeerTlsConfig {
   std::vector<PeerEndpoint> peers;
 };
 
+enum class ConsensusEngine { Legacy, Transition };
+
 struct NodeConfig {
   std::string id;
   std::string leader_id;
@@ -37,9 +39,11 @@ struct NodeConfig {
   std::vector<PeerEndpoint> peers;
   // False keeps the configured leader. True runs Raft-like elections.
   bool elections = false;
+  ConsensusEngine consensus_engine = ConsensusEngine::Legacy;
   // Explicitly permits loopback-only management fault injection.
   bool test_mode = false;
   std::uint64_t rng_seed = 1;
+  std::uint64_t snapshot_every = 100;
   // One replica tick every heartbeat_ms. A leader heartbeats on every tick and
   // a follower starts an election after a random number of silent ticks drawn
   // from [election_timeout_min, election_timeout_max]. Raise heartbeat_ms on
@@ -52,6 +56,8 @@ struct NodeConfig {
 };
 
 // Called both by the file loader and NodeServer::open for programmatic configs.
+[[nodiscard]] choreoos::state::Result<void> validate_consensus_config(const NodeConfig& config);
+
 [[nodiscard]] choreoos::state::Result<void> validate_peer_tls_config(const NodeConfig& config);
 
 [[nodiscard]] choreoos::state::Result<NodeConfig> load_node_config(

@@ -1,7 +1,7 @@
 #pragma once
 
-// Experimental, pure Raft transition core. This does NOT yet drive Replica.
-// The host owns storage, networking, clocks and snapshot installation.
+// Pure Raft transition core, hosted by RuntimeHost/CoreReplica for real nodes.
+// The host owns I/O and snapshot payloads; legacy Replica remains separate.
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -61,9 +61,28 @@ struct AppendReply {
   bool success;
   std::uint64_t hint;
   RequestId request_id;
+  std::uint64_t matched = 0;  // Exact prefix proved by the original request.
 };
 
-using WireMessage = std::variant<RequestVote, VoteReply, AppendEntries, AppendReply>;
+// The host validates/assembles the application snapshot. Incomplete chunks
+// only establish term/leadership; ready requests install the verified boundary.
+struct SnapshotRequest {
+  std::uint64_t term;
+  std::string leader;
+  std::uint64_t index;
+  std::uint64_t snapshot_term;
+  RequestId request_id;
+  bool ready = true;
+};
+struct SnapshotReply {
+  std::uint64_t term;
+  std::string follower;
+  bool success;
+  std::uint64_t index;
+  RequestId request_id;
+};
+
+using WireMessage = std::variant<RequestVote, VoteReply, AppendEntries, AppendReply, SnapshotReply>;
 struct Outbound {
   std::string to;
   WireMessage message;
@@ -75,6 +94,7 @@ struct SnapshotNeeded {
   std::string peer;
   std::uint64_t index = 0;
   std::uint64_t term = 0;
+  RequestId request_id = 0;
 };
 
 struct Probe {
@@ -88,6 +108,7 @@ struct PeerProgress {
   std::uint64_t next = 1;
   std::uint64_t match = 0;
   std::optional<Probe> in_flight;
+  std::optional<SnapshotNeeded> snapshot_in_flight = std::nullopt;
 };
 
 struct Volatile {
@@ -138,6 +159,12 @@ struct RecvAppend {
 struct RecvAppendReply {
   AppendReply message;
 };
+struct RecvSnapshot {
+  SnapshotRequest message;
+};
+struct RecvSnapshotReply {
+  SnapshotReply message;
+};
 struct AdvanceCommit {};
 struct ApplyCommitted {};
 // Local maintenance, only once application has durably caught up to commit.
@@ -153,9 +180,9 @@ struct Restart {};
 using Input =
     std::variant<ElectionTimeout, HeartbeatTimeout, ClientPropose, RecvRequestVote, RecvVoteReply,
                  RecvAppend, RecvAppendReply, AdvanceCommit, ApplyCommitted, CompactCommitted,
-                 PersistCompleted, PersistFailed, Restart>;
+                 RecvSnapshot, RecvSnapshotReply, PersistCompleted, PersistFailed, Restart>;
 
-enum class PersistKind { StateUpdate, LocalCompaction };
+enum class PersistKind { StateUpdate, LocalCompaction, SnapshotInstall };
 
 struct PersistRequest {
   PersistToken token;

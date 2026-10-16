@@ -14,6 +14,9 @@ add_executable(
   unit/raft_transition_test.cpp
   unit/raft_snapshot_offset_test.cpp
   unit/raft_local_compaction_test.cpp
+  unit/runtime_host_test.cpp
+  unit/raft_snapshot_install_test.cpp
+  unit/core_replica_test.cpp
   unit/raft_domain_bridge_test.cpp
   unit/raft_recovery_projection_test.cpp
   unit/file_engine_adapter_test.cpp
@@ -29,6 +32,7 @@ add_executable(
   unit/workload.cpp
   unit/property_test.cpp
   integration/cluster_test.cpp
+  integration/transition_cluster_test.cpp
   integration/peer_tls_test.cpp
 )
 target_link_libraries(
@@ -67,3 +71,15 @@ add_test(
           --self-test
 )
 set_tests_properties(raft-transition-trace-contract PROPERTIES TIMEOUT 90)
+
+# Actual process termination exercises OS lease release and durable retry
+# recovery through the shipped executables, on both Windows and Linux.
+add_test(
+  NAME transition-runtime-process-recovery
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/check_runtime_recovery.py"
+          --node "$<TARGET_FILE:choreoos-node>"
+          --cli "$<TARGET_FILE:choreoos-cli>"
+          --replay "$<TARGET_FILE:choreoos-replay>"
+)
+set_tests_properties(transition-runtime-process-recovery PROPERTIES TIMEOUT 120)

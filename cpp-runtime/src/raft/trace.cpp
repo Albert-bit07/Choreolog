@@ -85,6 +85,10 @@ const char* trace_action(const Input& input) {
           return "Apply";
         else if constexpr (std::is_same_v<T, CompactCommitted>)
           return "CompactCommitted";
+        else if constexpr (std::is_same_v<T, RecvSnapshot>)
+          return "InstallSnapshot";
+        else if constexpr (std::is_same_v<T, RecvSnapshotReply>)
+          return "SnapshotReply";
         else if constexpr (std::is_same_v<T, PersistCompleted>)
           return "PersistCompleted";
         else if constexpr (std::is_same_v<T, PersistFailed>)
@@ -100,7 +104,9 @@ std::string trace_line(const Config& config, const Node& state, const Input& inp
   // mem is staged while disk is the last acknowledged durability boundary.
   const auto& mem = state.pending ? state.pending->target : state.durable;
   const auto& disk = state.durable;
-  if (std::holds_alternative<CompactCommitted>(input) || mem.snapshot_index != 0 ||
+  if (std::holds_alternative<CompactCommitted>(input) ||
+      std::holds_alternative<RecvSnapshot>(input) ||
+      std::holds_alternative<RecvSnapshotReply>(input) || mem.snapshot_index != 0 ||
       mem.snapshot_term != 0 || disk.snapshot_index != 0 || disk.snapshot_term != 0)
     throw std::invalid_argument(
         "v1 Raft trace projection does not support snapshots or local compaction");

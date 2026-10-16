@@ -16,6 +16,7 @@
 #include "choreoos/protocol/codec.hpp"
 #include "choreoos/protocol/command_codec.hpp"
 #include "choreoos/state/store.hpp"
+#include "choreoos/storage/directory_lease.hpp"
 
 namespace {
 
@@ -363,6 +364,8 @@ int main(int argc, char** argv) {
   if (!store_dir) {
     return fail("missing --store DIR", options.output);
   }
+  auto lease = choreoos::storage::DirectoryLease::acquire(*store_dir);
+  if (!lease) return fail(lease.error(), options.output);
   auto store = FileEngine::open(*store_dir);
   if (!store) {
     return fail(store.error(), options.output);

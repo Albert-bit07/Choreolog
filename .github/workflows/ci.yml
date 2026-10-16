@@ -241,6 +241,15 @@ jobs:
             "$PWD/build/management/cpp-runtime/choreoos-management"
 
 
+      - name: Verify transition backend through gRPC failover and safe retries
+        shell: bash
+        run: |
+          dotnet run --no-build --project dotnet-dashboard/tests/ChoreoOS.ClusterSmoke/ChoreoOS.ClusterSmoke.csproj \
+            --configuration Release -- \
+            "$PWD/build/management/cpp-runtime/choreoos-node" \
+            "$PWD/build/management/cpp-runtime/choreoos-management" transition
+
+
   
   api-audit:
     runs-on: ubuntu-latest
@@ -322,6 +331,10 @@ jobs:
             cpp-runtime/src/protocol/codec.cpp \
             cpp-runtime/src/raft/domain_bridge.cpp \
             cpp-runtime/src/raft/file_engine_adapter.cpp \
+            cpp-runtime/src/raft/runtime_host.cpp \
+            cpp-runtime/src/replication/core_replica.cpp \
+            cpp-runtime/src/replication/runtime_replica.cpp \
+            cpp-runtime/src/storage/directory_lease.cpp \
             cpp-runtime/src/raft/transition.cpp \
             cpp-runtime/src/raft/trace.cpp \
             cpp-runtime/src/runtime/config.cpp \

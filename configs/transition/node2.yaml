@@ -1,0 +1,13 @@
+# Loopback transition-core cluster; use peer mTLS for remote replication.
+id: node-2
+leader: node-1
+data: node-data/transition-node-2
+listen: 127.0.0.1:7202
+peers: node-1@127.0.0.1:7201,node-3@127.0.0.1:7203
+consensus_engine: transition
+elections: true
+snapshot_every: 100
+heartbeat_ms: 100
+election_timeout_min: 6
+election_timeout_max: 12
+rng_seed: 25

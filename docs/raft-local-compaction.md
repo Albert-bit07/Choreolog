@@ -1,8 +1,9 @@
 # Durable local compaction in the experimental Raft core
 
 The experimental core accepts `CompactCommitted` as explicit local maintenance.
-This supplies a bounded-log lifecycle prerequisite; it does not activate the
-core in `Replica`, transfer/install snapshots, or extend the formal model.
+The selectable [transition runtime](transition-runtime.md) now executes this
+intent through real application checkpoints and provides snapshot catch-up.
+The legacy Replica and formal model remain separate.
 
 ## Contract and persistence ordering
 
@@ -44,8 +45,8 @@ FileEngine path, under exclusive directory ownership and synchronized access:
    node, recover from actual storage, replace `Node.durable` from that verified
    projection, and only then use `Restart`.
 
-This is a documented contract and a narrow test driver, not a general host
-implementation. A completed checkpoint with a lost callback can recover the
+The tests provide a narrow driver; RuntimeHost now implements this contract
+for the selectable node backend. A completed checkpoint with a lost callback can recover the
 new boundary; a failure before disk work can recover the old boundary. Existing
 FileEngine recovery and atomic replacement/redo contracts govern intermediate
 I/O failures. This PR adds no all-files atomic transaction or new fault model.
@@ -87,6 +88,6 @@ of snapshot states. The v1 schema/checker and `ChoreoRaft.tla` have no compactio
 mapping; no TLC-to-code refinement or new model-checking result is claimed.
 The v1 checkpoint store still rejects nonzero snapshot boundaries.
 
-Next gates are core snapshot installation and transfer/correlation, a general
-FileEngine-backed host with reviewed commit/apply semantics, snapshot-aware
-formal modeling/refinement, then staged production integration.
+Snapshot installation/transfer and the FileEngine-backed host are now
+implemented in the selectable runtime. Snapshot-aware formal modeling and
+refinement, rollout validation and broader production hardening remain separate.

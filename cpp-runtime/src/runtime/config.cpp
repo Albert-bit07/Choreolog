@@ -137,6 +137,13 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
       } else {
         return Error{ErrorCode::StoreError, "unknown peer TLS configuration key: " + key};
       }
+    } else if (key == "consensus_engine") {
+      if (value == "legacy")
+        config.consensus_engine = ConsensusEngine::Legacy;
+      else if (value == "transition")
+        config.consensus_engine = ConsensusEngine::Transition;
+      else
+        return Error{ErrorCode::StoreError, "consensus_engine must be legacy or transition"};
     } else if (key == "elections") {
       config.elections = value == "true" || value == "1";
     } else if (key == "test_mode") {
@@ -150,6 +157,10 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
         return seed.error();
       }
       config.rng_seed = seed.value();
+    } else if (key == "snapshot_every") {
+      auto interval = parse_number(key, value, 0, 100000);
+      if (!interval) return interval.error();
+      config.snapshot_every = interval.value();
     } else if (key == "heartbeat_ms") {
       auto number = parse_number(key, value, 10, 10000);
       if (!number) {
@@ -177,8 +188,32 @@ Result<NodeConfig> load_node_config(const std::filesystem::path& path) {
   if (config.id.empty() || config.leader_id.empty() || config.data.empty()) {
     return Error{ErrorCode::StoreError, "config requires id, leader, and data"};
   }
+  if (auto valid = validate_consensus_config(config); !valid) return valid.error();
   if (auto valid = validate_peer_tls_config(config); !valid) return valid.error();
   return config;
+}
+
+Result<void> validate_consensus_config(const NodeConfig& config) {
+  if (config.consensus_engine == ConsensusEngine::Legacy) return {};
+  if (config.consensus_engine != ConsensusEngine::Transition || !config.elections ||
+      config.election_timeout_min < 2 ||
+      config.election_timeout_max < config.election_timeout_min ||
+      config.election_timeout_max > 1000 || config.heartbeat_ms < 10 || config.heartbeat_ms > 10000)
+    return Error{ErrorCode::StoreError,
+                 "transition consensus requires elections and valid timer bounds"};
+  if (!config.peer_tls) {
+    boost::system::error_code error;
+    const auto listener = boost::asio::ip::make_address(config.host, error);
+    if (error || !listener.is_loopback())
+      return Error{ErrorCode::StoreError,
+                   "transition plaintext listener must be loopback; use peer TLS for remote peers"};
+    for (const auto& peer : config.peers) {
+      const auto address = boost::asio::ip::make_address(peer.host, error);
+      if (error || !address.is_loopback())
+        return Error{ErrorCode::StoreError, "transition remote peers require peer TLS"};
+    }
+  }
+  return {};
 }
 
 Result<void> validate_peer_tls_config(const NodeConfig& config) {

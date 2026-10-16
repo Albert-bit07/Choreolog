@@ -1,16 +1,17 @@
 # Experimental writable FileEngine adapter
 
 `raft::FileEngineAdapter` executes validated writes using the production
-`meta.bin`, `wal.bin` and existing snapshot formats. It is an isolated library
-component: neither production `replication::Replica` nor the experimental pure
-transition core calls it. It replaces neither runtime.
+`meta.bin`, `wal.bin` and existing snapshot formats. It is used by the selectable
+[transition runtime](transition-runtime.md) through RuntimeHost. The pure step
+function still performs no I/O; the legacy Replica remains separate.
 
 ## Write contract
 
 One synchronous host exclusively owns the directory. Do not open this adapter
 on a live node's directory or concurrently access it from other threads or
-processes. There is no filesystem ownership lock or authenticated membership
-policy here; the eventual host must enforce those boundaries.
+processes. The low-level adapter has no directory lease of its own. RuntimeHost enforces
+OS-backed ownership, and NodeServer binds authenticated/configured transport
+identity. Direct adapter callers must coordinate ownership themselves.
 
 `open` and `recover` use FileEngine recovery and the snapshot-aware
 [recovered-store audit](raft-recovery-projection.md). The adapter forces sync
@@ -31,8 +32,9 @@ adapter. Plans are capped at 100,000 suffix entries.
 This plan intentionally has no independently writable `applied` index.
 Recovered application progress equals commit because FileEngine replays the
 committed prefix onto the snapshot. Its serialized state includes retry
-receipts. A future pure-core adapter must explicitly relate this rule to the
-core's separate commit/apply steps; do not silently feed `raft::Durable` here.
+receipts. RuntimeHost explicitly maps core apply steps to confirmation of that already
+durable application, not duplicate execution. See the runtime contract; do not
+silently feed `raft::Durable` into the full-plan API.
 
 ## Execution and failure boundaries
 

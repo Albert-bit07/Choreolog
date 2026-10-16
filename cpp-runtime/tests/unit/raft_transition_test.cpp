@@ -36,6 +36,24 @@ TEST(RaftTransitionTest, SharedLogCopiesRemainImmutableAndValidateAcrossChunkBou
   EXPECT_EQ(log.size(), 258u);
 }
 
+TEST(RaftTransitionTest, CommonPrefixFindsRepairsAndTruncationsAcrossSharedChunks) {
+  EntryLog original;
+  for (int i = 0; i < 1025; ++i) original.push_back({1, "entry-" + std::to_string(i)});
+  auto appended = original;
+  appended.push_back({2, "new"});
+  EXPECT_EQ(original.common_prefix_size(appended), 1025u);
+  EXPECT_EQ(appended.common_prefix_size(original), 1025u);
+  auto repaired = original;
+  repaired.set(512, {1, "replacement"});
+  EXPECT_EQ(original.common_prefix_size(repaired), 512u);
+  EXPECT_NE(original, repaired);
+  auto truncated = original;
+  truncated.resize(256);
+  EXPECT_EQ(truncated.common_prefix_size(original), 256u);
+  EXPECT_EQ(original.common_prefix_size(original), original.size());
+  EXPECT_EQ(original.common_prefix_size(EntryLog{}), 0u);
+}
+
 TEST(RaftTransitionTest, MetadataOnlyTransitionSharesPayloadHistory) {
   const auto config = cluster("b");
   auto node = initial(config);

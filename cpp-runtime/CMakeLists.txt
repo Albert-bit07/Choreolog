@@ -18,6 +18,7 @@ target_sources(
     src/state/store.cpp
     src/storage/crc32.cpp
     src/storage/file_util.cpp
+    src/storage/directory_lease.cpp
     src/storage/wal.cpp
     src/storage/metadata.cpp
     src/storage/snapshot.cpp
@@ -29,10 +30,13 @@ target_sources(
     src/raft/transition.cpp
     src/raft/domain_bridge.cpp
     src/raft/file_engine_adapter.cpp
+    src/raft/runtime_host.cpp
     src/raft/checkpoint.cpp
     src/raft/durable_node.cpp
     src/raft/trace.cpp
     src/replication/replica.cpp
+    src/replication/core_replica.cpp
+    src/replication/runtime_replica.cpp
     src/replication/simulator.cpp
     src/runtime/config.cpp
     src/network/node_server.cpp

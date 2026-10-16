@@ -50,13 +50,13 @@ applied progress, so **do not write this projection into that checkpoint**.
 A separate [snapshot-aware recovery projection](raft-recovery-projection.md)
 now checks compacted production stores without manufacturing a full
 `raft::Durable` log. The exclusions below continue to apply to this original
-full-WAL API and to production migration.
+full-WAL API; the selectable runtime uses the separate recovered projection.
 
 - **Compacted logs and snapshots are rejected.** The projection cannot
   manufacture missing entries from a snapshot. Separate recovery projections
   and the experimental core now represent snapshot boundaries; this API stays
-  full-prefix-only. Snapshot lifecycle and production host integration remain
-  separate gates.
+  full-prefix-only. Snapshot lifecycle and host mapping are implemented
+  separately in the [transition runtime](transition-runtime.md).
 - This module never calls `FileEngine::append_event`,
   `commit_through`, `truncate_after` or `persist_consensus`. It is not a
   writable WAL adapter and does not turn on the pure Raft core in production.
@@ -79,6 +79,7 @@ pass on the exact pull request head before merge.
 
 An experimental [writable FileEngine adapter](raft-file-engine-adapter.md) now
 executes prevalidated plans with term/vote/WAL/commit sequencing, snapshot
-offsets and fail-stop/reopen handling. It remains separate from the pure core
-and production Replica. Snapshot maintenance, the core's commit/apply mapping,
-host effect discipline and formal correspondence remain migration gates.
+offsets and fail-stop/reopen handling. RuntimeHost now connects it to the pure
+core in the selectable node backend, including snapshot maintenance and
+commit/apply confirmation. Legacy Replica remains separate; formal
+correspondence is still an open gate.

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <exception>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace choreoos::raft {
@@ -83,6 +84,64 @@ state::Result<RecoveredDomainProjection> FileEngineAdapter::current() const {
   return *view.value();
 }
 
+state::Result<Durable> FileEngineAdapter::current_raft() const {
+  if (uncertain()) return invalid("FileEngine adapter requires disk recovery");
+  Durable state;
+  state.term = current_.term;
+  state.voted_for = current_.voted_for;
+  state.log = current_.suffix;
+  state.commit = current_.commit;
+  state.applied = current_.applied;
+  if (current_.snapshot) {
+    state.snapshot_index = current_.snapshot->index.value();
+    state.snapshot_term = current_.snapshot->term.value();
+  }
+  return state;
+}
+
+const state::FileEngine& FileEngineAdapter::inspection_store() const {
+  if (!store_) throw std::logic_error("FileEngine adapter has no open store");
+  return *store_;
+}
+
+state::Result<void> FileEngineAdapter::install_snapshot(
+    const storage::Snapshot& snapshot, std::uint64_t term,
+    const std::optional<std::string>& voted_for) try {
+  if (uncertain()) return invalid("FileEngine adapter requires disk recovery");
+  if (snapshot.index.value() <= current_.commit || term < current_.term ||
+      snapshot.term.value() > term ||
+      snapshot.index.value() == std::numeric_limits<std::uint64_t>::max() ||
+      (term == current_.term && current_.voted_for && voted_for != current_.voted_for))
+    return invalid("snapshot install has invalid indexes, term or vote");
+  auto verified = storage::verify_snapshot(snapshot);
+  if (!verified) return verified.error();
+  auto parsed_term = state::Term::parse(term);
+  if (!parsed_term) return parsed_term.error();
+  std::optional<state::NodeId> vote;
+  if (voted_for) {
+    auto parsed = state::NodeId::parse(*voted_for);
+    if (!parsed) return parsed.error();
+    vote = parsed.value();
+  }
+  uncertain_ = true;
+  view_.reset();
+  if (term != current_.term || voted_for != current_.voted_for) {
+    auto metadata = store_->persist_consensus(parsed_term.value(), vote);
+    if (!metadata) return metadata.error();
+  }
+  auto installed = store_->install_snapshot(snapshot);
+  if (!installed) return installed.error();
+  auto observed = audit_recovered_domain_store(*store_);
+  if (!observed) return observed.error();
+  current_ = std::move(observed.value());
+  uncertain_ = false;
+  return {};
+} catch (const std::exception& error) {
+  uncertain_ = true;
+  view_.reset();
+  return invalid(std::string("FileEngine snapshot install failed: ") + error.what());
+}
+
 state::Result<std::shared_ptr<const RecoveredDomainProjection>> FileEngineAdapter::current_shared()
     const {
   if (uncertain()) return invalid("FileEngine adapter requires disk recovery");
@@ -155,8 +214,10 @@ state::Result<void> FileEngineAdapter::persist_delta(const DomainWriteDelta& del
   auto injected = [&fail]() {
     return fail(invalid("injected incremental FileEngine write failure"));
   };
-  auto metadata = store_->persist_consensus(state::Term::parse(delta.term).value(), vote);
-  if (!metadata) return fail(metadata.error());
+  if (delta.term != current_.term || delta.voted_for != current_.voted_for) {
+    auto metadata = store_->persist_consensus(state::Term::parse(delta.term).value(), vote);
+    if (!metadata) return fail(metadata.error());
+  }
   if (fault == DomainWriteFault::AfterMetadata) return injected();
   if (delta.keep_index < store_->last_log_index()) {
     auto truncated = store_->truncate_after(state::LogIndex::parse(delta.keep_index).value());

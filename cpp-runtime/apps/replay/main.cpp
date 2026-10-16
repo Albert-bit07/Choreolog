@@ -7,6 +7,7 @@
 
 #include "choreoos/core/version.hpp"
 #include "choreoos/state/store.hpp"
+#include "choreoos/storage/directory_lease.hpp"
 
 int main(int argc, char** argv) {
   if (argc < 2) {
@@ -14,6 +15,11 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  auto lease = choreoos::storage::DirectoryLease::acquire(argv[1]);
+  if (!lease) {
+    std::cerr << lease.error().to_string() << '\n';
+    return 1;
+  }
   auto store = choreoos::state::FileEngine::open(argv[1]);
   if (!store) {
     std::cerr << store.error().to_string() << '\n';

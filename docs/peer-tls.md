@@ -97,3 +97,11 @@ identities, protocol identity forgery, TLS 1.2 rejection, plaintext bypass,
 client/peer plane separation, startup validation, wrong-member dial targets,
 leader failure, disk restart, and leaf rotation with overlapping CA trust.
 No test keys or production credentials are committed.
+
+## Transition backend
+
+`consensus_engine: transition` uses the same certificate validation and identity
+binding. Its plaintext endpoints are restricted to numeric loopback addresses;
+remote peers require this TLS configuration. Transition-specific integration
+tests cover certificate rejection, claimed-identity mismatch, plaintext bypass
+and authenticated leader failover/recovery. See [runtime integration](transition-runtime.md).

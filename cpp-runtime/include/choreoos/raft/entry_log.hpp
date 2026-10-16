@@ -117,9 +117,24 @@ class EntryLog {
   };
   [[nodiscard]] Iterator begin() const { return {this, 0}; }
   [[nodiscard]] Iterator end() const { return {this, size()}; }
+  [[nodiscard]] std::size_t common_prefix_size(const EntryLog& other) const {
+    if (data_ == other.data_) return size();
+    const auto count = std::min(size(), other.size());
+    std::size_t index = 0;
+    while (index < count) {
+      const auto chunk = index / kChunkSize;
+      const auto end = std::min(count, (chunk + 1) * kChunkSize);
+      if (data_->chunks[chunk] == other.data_->chunks[chunk]) {
+        index = end;
+      } else {
+        for (; index < end; ++index)
+          if ((*this)[index] != other[index]) return index;
+      }
+    }
+    return count;
+  }
   bool operator==(const EntryLog& other) const {
-    return data_ == other.data_ ||
-           (size() == other.size() && std::equal(begin(), end(), other.begin()));
+    return size() == other.size() && common_prefix_size(other) == size();
   }
 
  private:

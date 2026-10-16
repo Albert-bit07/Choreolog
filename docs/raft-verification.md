@@ -3,8 +3,9 @@
 Status: **active; not yet Raft-verified**. The deployed runtime is still
 Raft-like. PRs #7–#9 merged bounded TLA+ election, replication and unified
 asynchronous models; merged PR #10 introduces a separate, experimental C++ pure
-transition core. Neither model-to-code refinement nor a machine-checked C++
-proof has been established.
+transition core. The selectable [transition runtime](transition-runtime.md) connects that core
+to real nodes, storage and authenticated transport. Neither model-to-code
+refinement nor a machine-checked C++ proof has been established.
 
 ## Scope and trust boundary
 
@@ -48,8 +49,8 @@ crash model form a trusted/assumed boundary unless covered separately.
 **Refactor status (merged PR #10):** a new `cpp-runtime/src/raft/transition.cpp`
 implements a pure `step(Config, Node, Input)` with persistence, messaging and
 application effect intents and corresponding GoogleTests. It is compiled
-separately from the deployed `replication::Replica` and does **not** replace
-production I/O or establish a refinement mapping. The eventual host must
+separately from legacy `replication::Replica`; the selectable runtime now hosts
+it with real I/O, without establishing a formal refinement mapping. The eventual host must
 persist dependent term/vote/log changes before releasing associated effects,
 including on failure/restart.
 
