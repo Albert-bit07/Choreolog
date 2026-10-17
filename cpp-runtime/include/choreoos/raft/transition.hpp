@@ -111,11 +111,29 @@ struct PeerProgress {
   std::optional<SnapshotNeeded> snapshot_in_flight = std::nullopt;
 };
 
+// One bounded read round. Only append probes created after admission count;
+// snapshot replies and replication match indices are not read authority.
+struct ReadBarrier {
+  RequestId context;
+  std::uint64_t term;
+  std::uint64_t index;
+  std::set<std::string> acknowledgements;
+  std::map<std::string, RequestId> probes;
+};
+enum class ReadStatus { Ready, NotLeader, NotReady, Busy, Cancelled, Unavailable };
+struct ReadResult {
+  RequestId context;
+  ReadStatus status;
+  std::uint64_t term = 0;
+  std::uint64_t index = 0;
+};
+
 struct Volatile {
   Role role = Role::Follower;
   std::set<std::string> votes;
   std::map<std::string, PeerProgress> peers;
   std::uint64_t leadership_epoch = 0;
+  std::optional<ReadBarrier> read = std::nullopt;
 };
 
 struct PendingWrite {
@@ -147,6 +165,14 @@ struct HeartbeatTimeout {};
 struct ClientPropose {
   std::string command;
 };
+// The host supplies unique contexts, schedules cancellation/deadlines and
+// serves state only after Ready. No wall clock or client queue lives here.
+struct BeginRead {
+  RequestId context;
+};
+struct CancelRead {
+  RequestId context;
+};
 struct RecvRequestVote {
   RequestVote message;
 };
@@ -177,10 +203,10 @@ struct PersistFailed {
 };
 struct Restart {};
 
-using Input =
-    std::variant<ElectionTimeout, HeartbeatTimeout, ClientPropose, RecvRequestVote, RecvVoteReply,
-                 RecvAppend, RecvAppendReply, AdvanceCommit, ApplyCommitted, CompactCommitted,
-                 RecvSnapshot, RecvSnapshotReply, PersistCompleted, PersistFailed, Restart>;
+using Input = std::variant<ElectionTimeout, HeartbeatTimeout, ClientPropose, RecvRequestVote,
+                           RecvVoteReply, RecvAppend, RecvAppendReply, AdvanceCommit,
+                           ApplyCommitted, CompactCommitted, RecvSnapshot, RecvSnapshotReply,
+                           BeginRead, CancelRead, PersistCompleted, PersistFailed, Restart>;
 
 enum class PersistKind { StateUpdate, LocalCompaction, SnapshotInstall };
 
@@ -198,6 +224,7 @@ struct Effects {
   bool halt = false;                // Fail-stop on failed durable write.
   bool capacity_exhausted = false;  // Host must checkpoint before accepting more proposals.
   std::vector<SnapshotNeeded> snapshot_needed = {};
+  std::optional<ReadResult> read = std::nullopt;
 };
 
 [[nodiscard]] Node initial(const Config& config);

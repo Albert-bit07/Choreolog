@@ -16,6 +16,7 @@ struct HostEffects {
   std::vector<Outbound> send;
   std::vector<PinnedSnapshot> snapshots;
   bool capacity_exhausted = false;
+  std::vector<ReadResult> reads;
 };
 
 // Synchronous storage/application host. One node strand owns this object.

@@ -112,6 +112,68 @@ TEST_F(RuntimeHostTest, MajorityAckCommitsOnlyTheSentEntryAfterActualDiskPersist
   EXPECT_EQ(host.value().store().engine().state().receipts.at("create").index, 1u);
 }
 
+TEST_F(RuntimeHostTest, ReadResultCoversRealApplicationAndCompactionWithoutWriting) {
+  {
+    auto opened = RuntimeHost::open({"a", {}}, path, 1, true);
+    ASSERT_TRUE(opened);
+    auto& host = opened.value();
+    ASSERT_TRUE(host.dispatch(ElectionTimeout{}));
+    ASSERT_TRUE(host.dispatch(ClientPropose{entry(0, host.node().durable.term).command}));
+    ASSERT_EQ(host.node().durable.snapshot_index, 1u);
+    const auto hash = host.store().recovery().state_hash;
+    ASSERT_TRUE(host.inject_next_fault_for_test(DomainWriteFault::AppendAfterFlush));
+    auto read = host.dispatch(BeginRead{71});
+    ASSERT_TRUE(read);
+    ASSERT_EQ(read.value().reads.size(), 1u);
+    EXPECT_EQ(read.value().reads.front().status, ReadStatus::Ready);
+    EXPECT_EQ(read.value().reads.front().index, host.node().durable.applied);
+    EXPECT_EQ(host.store().engine().state().receipts.at("create").index, 1u);
+    EXPECT_EQ(host.store().recovery().state_hash, hash);
+    // The read did not consume the append fault or manufacture a WAL event.
+    EXPECT_FALSE(host.dispatch(ClientPropose{entry(1, host.node().durable.term).command}));
+    EXPECT_TRUE(host.node().halted);
+    EXPECT_FALSE(host.dispatch(BeginRead{72}));
+  }
+  auto reopened = RuntimeHost::open({"a", {}}, path, 1);
+  ASSERT_TRUE(reopened);
+  auto read = reopened.value().dispatch(BeginRead{73});
+  ASSERT_TRUE(read);
+  ASSERT_EQ(read.value().reads.size(), 1u);
+  EXPECT_EQ(read.value().reads.front().status, ReadStatus::NotLeader);
+}
+
+TEST_F(RuntimeHostTest, ReadQuorumOutputFollowsActualCommittedApplication) {
+  auto opened = RuntimeHost::open({"a", {"b", "c"}}, path, 0);
+  ASSERT_TRUE(opened);
+  auto& host = opened.value();
+  ASSERT_TRUE(host.dispatch(ElectionTimeout{}));
+  ASSERT_TRUE(host.dispatch(RecvVoteReply{{2, "b", true, 1}}));
+  ASSERT_TRUE(host.dispatch(ClientPropose{entry(0, 2).command}));
+  for (int i = 0; i < 2; ++i) {
+    const auto probe = *host.node().volatile_state.peers.at("b").in_flight;
+    ASSERT_TRUE(host.dispatch(
+        RecvAppendReply{{2, "b", true, 0, probe.request_id, probe.prev + probe.count}}));
+    ASSERT_TRUE(host.dispatch(HeartbeatTimeout{}));
+  }
+  ASSERT_EQ(host.node().durable.applied, 1u);
+  // This pre-read heartbeat is not evidence for the read, even after commit.
+  auto begin = host.dispatch(BeginRead{74});
+  ASSERT_TRUE(begin);
+  EXPECT_TRUE(begin.value().reads.empty());
+  auto old = *host.node().volatile_state.peers.at("b").in_flight;
+  auto stale = host.dispatch(RecvAppendReply{{2, "b", true, 0, old.request_id, old.prev}});
+  ASSERT_TRUE(stale);
+  EXPECT_TRUE(stale.value().reads.empty());
+  ASSERT_TRUE(host.dispatch(HeartbeatTimeout{}));
+  auto fresh = *host.node().volatile_state.peers.at("b").in_flight;
+  auto ready = host.dispatch(RecvAppendReply{{2, "b", true, 0, fresh.request_id, fresh.prev}});
+  ASSERT_TRUE(ready);
+  ASSERT_EQ(ready.value().reads.size(), 1u);
+  EXPECT_EQ(ready.value().reads.front().status, ReadStatus::Ready);
+  EXPECT_EQ(ready.value().reads.front().index, 1u);
+  EXPECT_EQ(host.store().engine().state().receipts.at("create").index, 1u);
+}
+
 TEST_F(RuntimeHostTest, FailedMetadataPublishesNoVoteAndRequiresRealDiskRecovery) {
   {
     auto host = RuntimeHost::open({"a", {"b"}}, path, 0, true);
