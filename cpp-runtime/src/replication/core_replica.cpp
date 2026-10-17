@@ -395,7 +395,7 @@ void CoreReplica::handle(const protocol::Frame& frame, const std::string& transp
         return;
     }
     input = raft::RecvAppendReply{{m.value().term, m.value().follower_id, m.value().success,
-                                   m.value().hint_index, frame.correlation}};
+                                   m.value().hint_index, frame.correlation, m.value().match_index}};
   } else if (frame.type == protocol::MessageType::InstallSnapshot) {
     auto m = protocol::decode_install_snapshot(frame.payload);
     if (m && m.value().leader_id == transport_peer) on_snapshot(m.value(), frame.correlation);

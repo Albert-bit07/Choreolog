@@ -90,6 +90,7 @@ void send_append(const Config& config, Node& state, const Durable& log, const st
   AppendEntries message{log.term,           config.self, prev, *prev_term,
                         std::move(entries), log.commit,  id};
   progress.in_flight = Probe{id, log.term, prev, message.entries.size(), message};
+  if (state.volatile_state.read) state.volatile_state.read->probes.insert_or_assign(peer, id);
   out.push_back(Outbound{peer, std::move(message)});
 }
 
@@ -102,7 +103,11 @@ void become_leader(const Config& config, Node& state, Effects& effects) {
   }
 }
 
-void step_down(Node& state) {
+void step_down(Node& state, Effects& effects) {
+  if (state.volatile_state.read) {
+    effects.read = ReadResult{state.volatile_state.read->context, ReadStatus::NotLeader};
+    state.volatile_state.read.reset();
+  }
   state.volatile_state.role = Role::Follower;
   state.volatile_state.votes.clear();
   for (auto& [peer, progress] : state.volatile_state.peers) {
@@ -132,6 +137,17 @@ std::uint64_t highest_committable(const Config& config, const Node& state) {
   return d.commit;
 }
 
+// A completed quorum round is usable only once its captured committed prefix
+// has been applied. No persistence is introduced solely to perform a read.
+void complete_read(const Config& config, Node& state, Effects& effects) {
+  auto& read = state.volatile_state.read;
+  if (read && state.volatile_state.role == Role::Leader && read->term == state.durable.term &&
+      read->acknowledgements.size() >= quorum(config) && state.durable.applied >= read->index) {
+    effects.read = ReadResult{read->context, ReadStatus::Ready, read->term, read->index};
+    read.reset();
+  }
+}
+
 }  // namespace
 
 Node initial(const Config& config) {
@@ -147,9 +163,10 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
 
   if (!valid_durable(state.durable) || (state.pending && !valid_durable(state.pending->target))) {
     state.pending.reset();
-    step_down(state);
+    step_down(state, effects);
     state.halted = true;
     effects.halt = true;
+    if (effects.read) effects.read->status = ReadStatus::Unavailable;
     return {std::move(state), std::move(effects)};
   }
 
@@ -161,6 +178,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       effects.send_now = std::move(pending.after);
       effects.apply = std::move(pending.apply_after);
       effects.snapshot_needed = std::move(pending.snapshot_after);
+      complete_read(config, state, effects);
       if (pending.self_vote) {
         state.volatile_state.votes.insert(config.self);
         if (state.volatile_state.votes.size() >= quorum(config)) {
@@ -173,18 +191,48 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
   if (const auto* failed = std::get_if<PersistFailed>(&input)) {
     if (state.pending && state.pending->token == failed->token && !state.halted) {
       state.pending.reset();
-      step_down(state);
+      step_down(state, effects);
       state.halted = true;
       effects.halt = true;
+      if (effects.read) effects.read->status = ReadStatus::Unavailable;
     }
     return {std::move(state), std::move(effects)};
   }
   if (std::holds_alternative<Restart>(input)) {
     // The host must rehydrate durable from disk before constructing this Node.
     // Staged changes, in-flight probes and queued effects never survive.
+    if (state.volatile_state.read)
+      effects.read = ReadResult{state.volatile_state.read->context, ReadStatus::Cancelled};
     state.pending.reset();
     state.halted = false;
     state.volatile_state = initial(config).volatile_state;
+    return {std::move(state), std::move(effects)};
+  }
+  if (const auto* cancel = std::get_if<CancelRead>(&input)) {
+    if (state.volatile_state.read && state.volatile_state.read->context == cancel->context) {
+      effects.read = ReadResult{cancel->context, ReadStatus::Cancelled};
+      state.volatile_state.read.reset();
+    }
+    return {std::move(state), std::move(effects)};
+  }
+  if (const auto* read = std::get_if<BeginRead>(&input)) {
+    if (state.halted || state.pending) {
+      effects.read =
+          ReadResult{read->context, state.halted ? ReadStatus::Unavailable : ReadStatus::Busy};
+    } else if (state.volatile_state.read) {
+      effects.read = ReadResult{read->context, ReadStatus::Busy};
+    } else if (state.volatile_state.role != Role::Leader) {
+      effects.read = ReadResult{read->context, ReadStatus::NotLeader};
+    } else if (state.durable.commit == 0 ||
+               term_at(state.durable, state.durable.commit) != state.durable.term) {
+      effects.read = ReadResult{read->context, ReadStatus::NotReady};
+    } else {
+      state.volatile_state.read =
+          ReadBarrier{read->context, state.durable.term, state.durable.commit, {config.self}, {}};
+      for (const auto& peer : config.peers)
+        send_append(config, state, state.durable, peer, effects.send_now, effects.snapshot_needed);
+      complete_read(config, state, effects);
+    }
     return {std::move(state), std::move(effects)};
   }
   if (state.halted || state.pending) {
@@ -233,7 +281,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       target.term = m.term;
       target.voted_for.reset();
     }
-    step_down(state);
+    step_down(state, effects);
     if (!m.ready) {
       if (target != state.durable) begin_write(state, effects, std::move(target));
       return {std::move(state), std::move(effects)};
@@ -272,7 +320,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       auto target = state.durable;
       target.term = m.term;
       target.voted_for.reset();
-      step_down(state);
+      step_down(state, effects);
       begin_write(state, effects, std::move(target));
     } else if (m.term == state.durable.term && state.volatile_state.role == Role::Leader) {
       auto& progress = state.volatile_state.peers.at(m.follower);
@@ -294,7 +342,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       Durable target = state.durable;
       ++target.term;
       target.voted_for = config.self;
-      step_down(state);
+      step_down(state, effects);
       state.volatile_state.role = Role::Candidate;
       std::vector<Outbound> after;
       after.reserve(config.peers.size());
@@ -322,7 +370,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
     if (m.term > target.term) {
       target.term = m.term;
       target.voted_for.reset();
-      step_down(state);
+      step_down(state, effects);
     }
     const bool grant = (!target.voted_for || target.voted_for == m.candidate) &&
                        up_to_date(target, m.last_term, m.last_index);
@@ -347,7 +395,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       Durable target = state.durable;
       target.term = m.term;
       target.voted_for.reset();
-      step_down(state);
+      step_down(state, effects);
       begin_write(state, effects, std::move(target));
     } else if (m.term == state.durable.term && m.granted &&
                state.volatile_state.role == Role::Candidate &&
@@ -424,7 +472,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       target.term = m.term;
       target.voted_for.reset();
     }
-    step_down(state);
+    step_down(state, effects);
     const auto prev_term = term_at(target, m.prev_index);
     const bool prev_ok = prev_term && *prev_term == m.prev_term;
     bool success = prev_ok;
@@ -494,7 +542,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       Durable target = state.durable;
       target.term = m.term;
       target.voted_for.reset();
-      step_down(state);
+      step_down(state, effects);
       begin_write(state, effects, std::move(target));
     } else if (state.volatile_state.role == Role::Leader && m.term == state.durable.term) {
       auto it = state.volatile_state.peers.find(m.follower);
@@ -506,6 +554,13 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
         const auto probe = *in_flight;
         in_flight.reset();
         if (m.success) {
+          auto& read = state.volatile_state.read;
+          if (read) {
+            const auto fresh = read->probes.find(m.follower);
+            if (fresh != read->probes.end() && fresh->second == m.request_id &&
+                m.matched == probe.prev + probe.count)
+              read->acknowledgements.insert(m.follower);
+          }
           // Match derives from the SENT request, never the follower's extra suffix.
           progress.match = std::max(progress.match, probe.prev + probe.count);
           progress.next = std::max(progress.next, progress.match + 1);
@@ -520,6 +575,7 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
         }
       }
     }
+    complete_read(config, state, effects);
     return {std::move(state), std::move(effects)};
   }
 
