@@ -266,9 +266,16 @@ class PeerTlsTest : public testing::Test {
   std::unique_ptr<Identity> ca;
   std::unique_ptr<Identity> other_ca;
 
+  virtual runtime::ConsensusEngine backend() const { return runtime::ConsensusEngine::Legacy; }
+  void check_identity_binding();
+  void check_certificate_rejections();
+  void check_plaintext_rejection();
+  void check_failover_recovery();
+
   void SetUp() override {
     root = std::filesystem::temp_directory_path() /
            (std::string("choreoos-peer-tls-") +
+            testing::UnitTest::GetInstance()->current_test_info()->test_suite_name() + "-" +
             testing::UnitTest::GetInstance()->current_test_info()->name());
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root);
@@ -289,6 +296,8 @@ class PeerTlsTest : public testing::Test {
     runtime::NodeConfig result;
     result.id = ids[index];
     result.leader_id = "node-a";
+    result.consensus_engine = backend();
+    result.elections = backend() == runtime::ConsensusEngine::Transition;
     result.data = root / ids[index];
     result.port = endpoints[index];
     result.heartbeat_ms = 50;
@@ -316,7 +325,12 @@ class PeerTlsTest : public testing::Test {
   }
 };
 
-TEST_F(PeerTlsTest, TrustedCertificateCanSendPeerRpcButCannotChangeItsClaimedIdentity) {
+class TransitionPeerTlsTest : public PeerTlsTest {
+ protected:
+  runtime::ConsensusEngine backend() const override { return runtime::ConsensusEngine::Transition; }
+};
+
+void PeerTlsTest::check_identity_binding() {
   auto value = config(0);
   value.elections = true;
   value.heartbeat_ms = 10000;
@@ -334,7 +348,15 @@ TEST_F(PeerTlsTest, TrustedCertificateCanSendPeerRpcButCannotChangeItsClaimedIde
   EXPECT_EQ(after.value().term, 7u);
 }
 
-TEST_F(PeerTlsTest, UntrustedExpiredUnknownAndAmbiguousCertificatesAreRejected) {
+TEST_F(PeerTlsTest, TrustedCertificateCanSendPeerRpcButCannotChangeItsClaimedIdentity) {
+  check_identity_binding();
+}
+
+TEST_F(TransitionPeerTlsTest, TrustedCertificateCanSendPeerRpcButCannotChangeItsClaimedIdentity) {
+  check_identity_binding();
+}
+
+void PeerTlsTest::check_certificate_rejections() {
   auto untrusted = issue("node-b", other_ca.get());
   save_identity(root, "untrusted", *untrusted);
   auto expired = issue("node-b", ca.get(), true);
@@ -371,7 +393,15 @@ TEST_F(PeerTlsTest, UntrustedExpiredUnknownAndAmbiguousCertificatesAreRejected) 
   EXPECT_TRUE(std::make_shared<Probe>(root, "node-b", endpoints[3], "node-b", "node-b")->run());
 }
 
-TEST_F(PeerTlsTest, PlaintextHandshakeCannotBypassCertificateAuthentication) {
+TEST_F(PeerTlsTest, UntrustedExpiredUnknownAndAmbiguousCertificatesAreRejected) {
+  check_certificate_rejections();
+}
+
+TEST_F(TransitionPeerTlsTest, UntrustedExpiredUnknownAndAmbiguousCertificatesAreRejected) {
+  check_certificate_rejections();
+}
+
+void PeerTlsTest::check_plaintext_rejection() {
   auto value = config(0);
   value.elections = true;
   value.heartbeat_ms = 10000;
@@ -409,6 +439,14 @@ TEST_F(PeerTlsTest, PlaintextHandshakeCannotBypassCertificateAuthentication) {
   EXPECT_EQ(status.value().term, 1u);
 }
 
+TEST_F(PeerTlsTest, PlaintextHandshakeCannotBypassCertificateAuthentication) {
+  check_plaintext_rejection();
+}
+
+TEST_F(TransitionPeerTlsTest, PlaintextHandshakeCannotBypassCertificateAuthentication) {
+  check_plaintext_rejection();
+}
+
 TEST_F(PeerTlsTest, InvalidLocalIdentityAndProgrammaticConfigFailBeforeOpeningTheStore) {
   auto value = config(0);
   value.host = "0.0.0.0";
@@ -437,7 +475,7 @@ TEST_F(PeerTlsTest, InvalidLocalIdentityAndProgrammaticConfigFailBeforeOpeningTh
   EXPECT_FALSE(std::filesystem::exists(value.data));
 }
 
-TEST_F(PeerTlsTest, LeaderFailureAndDiskRecoveryConvergeOverAuthenticatedChannels) {
+void PeerTlsTest::check_failover_recovery() {
   std::array<runtime::NodeConfig, 3> configs{config(0), config(1), config(2)};
   std::array<std::unique_ptr<RunningNode>, 3> live;
   for (std::size_t i = 0; i < live.size(); ++i) {
@@ -517,6 +555,14 @@ TEST_F(PeerTlsTest, LeaderFailureAndDiskRecoveryConvergeOverAuthenticatedChannel
     std::this_thread::sleep_for(25ms);
   }
   EXPECT_TRUE(converged);
+}
+
+TEST_F(PeerTlsTest, LeaderFailureAndDiskRecoveryConvergeOverAuthenticatedChannels) {
+  check_failover_recovery();
+}
+
+TEST_F(TransitionPeerTlsTest, LeaderFailureAndDiskRecoveryConvergeOverAuthenticatedChannels) {
+  check_failover_recovery();
 }
 
 TEST_F(PeerTlsTest, OutboundCertificateMustMatchTheDialedMemberEvenWhenItIsAnotherKnownPeer) {

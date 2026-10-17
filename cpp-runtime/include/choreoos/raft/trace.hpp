@@ -14,8 +14,8 @@ namespace choreoos::raft {
 [[nodiscard]] const char* trace_action(const Input& input);
 
 // One valid v1 NDJSON line; the caller owns sequencing and durable I/O.
-// Throws std::invalid_argument for snapshot boundaries or CompactCommitted,
-// including no-op compaction: the v1 trace/model has no relation for either.
+// Throws std::invalid_argument for snapshot boundaries, CompactCommitted or
+// snapshot inputs, including no-ops: the v1 model has no relation for these.
 [[nodiscard]] std::string trace_line(const Config& config, const Node& state, const Input& input,
                                      std::uint64_t sequence);
 

@@ -38,7 +38,8 @@ const char* message_kind(const WireMessage& message) {
   if (std::holds_alternative<RequestVote>(message)) return "RVReq";
   if (std::holds_alternative<VoteReply>(message)) return "RVResp";
   if (std::holds_alternative<AppendEntries>(message)) return "AEReq";
-  return "AEResp";
+  if (std::holds_alternative<AppendReply>(message)) return "AEResp";
+  throw std::invalid_argument("v1 trace harness cannot map snapshot messages");
 }
 
 bool positive_response(const WireMessage& message) {

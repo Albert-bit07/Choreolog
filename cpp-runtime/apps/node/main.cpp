@@ -1,5 +1,5 @@
-// One cluster process. The leader is fixed by the config file.
-// This process replicates the log. It does not elect a leader.
+// One cluster process, with configured fixed-leader or election behavior.
+// consensus_engine selects the legacy or transition-core runtime backend.
 
 #include <filesystem>
 #include <fstream>
@@ -24,14 +24,19 @@ int main(int argc, char** argv) {
     std::cerr << server.error().to_string() << '\n';
     return 1;
   }
+  const auto engine =
+      config.value().consensus_engine == choreoos::runtime::ConsensusEngine::Transition
+          ? "transition"
+          : "legacy";
   const auto ready = config.value().data / "ready";
   std::filesystem::create_directories(config.value().data);
   {
     std::ofstream mark{ready};
     mark << "choreoos-node " << choreoos::core::version() << " id=" << config.value().id
-         << " port=" << server.value()->port() << '\n';
+         << " port=" << server.value()->port() << " consensus_engine=" << engine << '\n';
   }
-  std::cout << "ready id=" << config.value().id << " port=" << server.value()->port() << '\n';
+  std::cout << "ready id=" << config.value().id << " port=" << server.value()->port()
+            << " consensus_engine=" << engine << '\n';
   server.value()->run();
   std::filesystem::remove(ready);
   return 0;

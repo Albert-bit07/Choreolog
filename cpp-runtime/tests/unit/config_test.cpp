@@ -22,8 +22,38 @@ TEST(ConfigTest, TimingDefaultsMatchTheOriginalHardcodedValues) {
   auto config = load("listen: 127.0.0.1:7101\n");
   ASSERT_TRUE(config) << config.error().to_string();
   EXPECT_EQ(config.value().heartbeat_ms, 50u);
+  EXPECT_EQ(config.value().snapshot_every, 100u);
   EXPECT_EQ(config.value().election_timeout_min, 3u);
   EXPECT_EQ(config.value().election_timeout_max, 6u);
+}
+
+TEST(ConfigTest, TransitionBackendIsExplicitAndRequiresElections) {
+  auto legacy = load("listen: 127.0.0.1:7101\n");
+  ASSERT_TRUE(legacy);
+  EXPECT_EQ(legacy.value().consensus_engine, ConsensusEngine::Legacy);
+  auto selected = load("consensus_engine: transition\nelections: true\n");
+  ASSERT_TRUE(selected);
+  EXPECT_EQ(selected.value().consensus_engine, ConsensusEngine::Transition);
+  EXPECT_FALSE(load("consensus_engine: transition\nelections: false\n"));
+  EXPECT_FALSE(load("consensus_engine: transitional\nelections: true\n"));
+  EXPECT_FALSE(load("consensus_engine: TRANSITION\nelections: true\n"));
+}
+
+TEST(ConfigTest, TransitionRemoteNetworkingRequiresPeerTls) {
+  const std::string selected = "consensus_engine: transition\nelections: true\n";
+  EXPECT_FALSE(load(selected + "listen: 0.0.0.0:7101\n"));
+  EXPECT_FALSE(load(selected + "peer: node-2@198.51.100.2:7102\n"));
+  EXPECT_FALSE(load(selected + "peer: node-2@localhost:7102\n"));
+  EXPECT_TRUE(load(selected + "peer: node-2@127.0.0.1:7102\n"));
+}
+
+TEST(ConfigTest, SnapshotIntervalIsExplicitlyBoundedAndCanBeDisabled) {
+  auto selected = load("snapshot_every: 3\n");
+  ASSERT_TRUE(selected);
+  EXPECT_EQ(selected.value().snapshot_every, 3u);
+  EXPECT_TRUE(load("snapshot_every: 0\n"));
+  EXPECT_FALSE(load("snapshot_every: 100001\n"));
+  EXPECT_FALSE(load("snapshot_every: many\n"));
 }
 
 TEST(ConfigTest, TimingKeysAreRead) {

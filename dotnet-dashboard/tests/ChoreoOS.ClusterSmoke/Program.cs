@@ -5,9 +5,15 @@ using ChoreoOS.Client;
 using Choreoos.Management.V1;
 using Grpc.Core;
 
-if (args.Length != 2)
+if (args.Length < 2 || args.Length > 3)
 {
-    throw new ArgumentException("usage: ChoreoOS.ClusterSmoke <choreoos-node> <choreoos-management>");
+    throw new ArgumentException("usage: ChoreoOS.ClusterSmoke <choreoos-node> <choreoos-management> [legacy|transition]");
+}
+
+var consensusEngine = args.Length == 3 ? args[2] : "legacy";
+if (consensusEngine is not ("legacy" or "transition"))
+{
+    throw new ArgumentException("consensus engine must be legacy or transition");
 }
 
 var nodeBinary = Path.GetFullPath(args[0]);
@@ -47,7 +53,7 @@ foreach (var node in nodes)
     File.WriteAllText(node.ConfigFile,
         $"id: {node.Id}\nleader: node-1\ndata: {Path.Combine(root, node.Id)}\n" +
         $"listen: 127.0.0.1:{node.TcpPort}\npeers: {peers}\n" +
-        $"elections: true\nrng_seed: {11 + Array.IndexOf(nodes, node) * 7}\n" +
+        $"consensus_engine: {consensusEngine}\nelections: true\nrng_seed: {11 + Array.IndexOf(nodes, node) * 7}\n" +
         "heartbeat_ms: 100\nelection_timeout_min: 6\nelection_timeout_max: 12\n");
 }
 

@@ -19,7 +19,7 @@
 #include "choreoos/protocol/codec.hpp"
 #include "choreoos/protocol/command_codec.hpp"
 #include "choreoos/protocol/frame.hpp"
-#include "choreoos/replication/replica.hpp"
+#include "choreoos/replication/runtime_replica.hpp"
 #include "choreoos/state/error.hpp"
 
 namespace choreoos::network {
@@ -57,7 +57,8 @@ choreoos::protocol::ClientResponse response_from(const choreoos::replication::En
 struct NodeServer::Impl {
   struct Session;
 
-  Impl(choreoos::runtime::NodeConfig node_config, choreoos::replication::Replica opened_replica,
+  Impl(choreoos::runtime::NodeConfig node_config,
+       choreoos::replication::RuntimeReplica opened_replica,
        std::unique_ptr<boost::asio::ssl::context> context)
       : config(std::move(node_config)),
         replica(std::move(opened_replica)),
@@ -112,7 +113,7 @@ struct NodeServer::Impl {
   }
 
   choreoos::runtime::NodeConfig config;
-  choreoos::replication::Replica replica;
+  choreoos::replication::RuntimeReplica replica;
   std::unique_ptr<boost::asio::ssl::context> tls_context;
   boost::asio::io_context io;
   boost::asio::strand<boost::asio::io_context::executor_type> strand;
@@ -835,7 +836,9 @@ void NodeServer::Impl::on_management(const std::shared_ptr<Session>& session,
     description << "used_snapshot=" << report.used_snapshot
                 << " replayed_after_snapshot=" << report.replayed_after_snapshot
                 << " truncated_tail_bytes=" << report.truncated_tail_bytes
-                << " commit_index=" << replica.store().commit_index().value();
+                << " commit_index=" << replica.store().commit_index().value()
+                << " consensus_engine=" << replica.engine_name()
+                << " halt_reason=" << replica.failure_reason().substr(0, 512);
     reply.recovery_report = description.str();
   } else if (request.value().operation == "drop_peer" ||
              request.value().operation == "delay_peer" || request.value().operation == "heal" ||
@@ -948,6 +951,8 @@ void NodeServer::Impl::dispatch(const std::shared_ptr<Session>& session,
 choreoos::state::Result<std::unique_ptr<NodeServer>> NodeServer::open(
     const choreoos::runtime::NodeConfig& config) {
   try {
+    if (auto valid = choreoos::runtime::validate_consensus_config(config); !valid)
+      return valid.error();
     if (auto valid = choreoos::runtime::validate_peer_tls_config(config); !valid)
       return valid.error();
     auto context = make_peer_tls_context(config);
@@ -957,13 +962,15 @@ choreoos::state::Result<std::unique_ptr<NodeServer>> NodeServer::open(
     replica_config.leader_id = config.leader_id;
     replica_config.directory = config.data;
     replica_config.elections = config.elections;
+    replica_config.snapshot_every = config.snapshot_every;
     replica_config.rng_seed = config.rng_seed == 0 ? 1 : config.rng_seed;
     replica_config.election_timeout_min = static_cast<int>(config.election_timeout_min);
     replica_config.election_timeout_max = static_cast<int>(config.election_timeout_max);
     for (const auto& peer : config.peers) {
       replica_config.peers.push_back(peer.id);
     }
-    auto replica = choreoos::replication::Replica::open(replica_config);
+    auto replica = choreoos::replication::RuntimeReplica::open(
+        replica_config, config.consensus_engine == choreoos::runtime::ConsensusEngine::Transition);
     if (!replica) {
       return replica.error();
     }

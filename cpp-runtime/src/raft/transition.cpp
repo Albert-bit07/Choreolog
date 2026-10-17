@@ -64,9 +64,15 @@ void send_append(const Config& config, Node& state, const Durable& log, const st
     return;
   }
   auto& progress = it->second;
+  if (progress.snapshot_in_flight) {
+    snapshots.push_back(*progress.snapshot_in_flight);
+    return;
+  }
   const auto next = std::max<std::uint64_t>(1, progress.next);
   if (next <= log.snapshot_index) {
-    snapshots.push_back({peer, log.snapshot_index, log.snapshot_term});
+    SnapshotNeeded request{peer, log.snapshot_index, log.snapshot_term, state.next_request_id++};
+    progress.snapshot_in_flight = request;
+    snapshots.push_back(std::move(request));
     return;
   }
   if (next > last_index(log) + 1) {
@@ -102,6 +108,7 @@ void step_down(Node& state) {
   for (auto& [peer, progress] : state.volatile_state.peers) {
     (void)peer;
     progress.in_flight.reset();
+    progress.snapshot_in_flight.reset();
   }
 }
 
@@ -201,6 +208,83 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
     for (auto offset = removed; offset < durable.log.size(); ++offset)
       target.log.push_back(durable.log[offset]);
     begin_write(state, effects, std::move(target), {}, {}, false, {}, PersistKind::LocalCompaction);
+    return {std::move(state), std::move(effects)};
+  }
+
+  if (const auto* incoming = std::get_if<RecvSnapshot>(&input)) {
+    const auto& m = incoming->message;
+    if (!known_peer(state, m.leader) || m.term == 0 || m.index == 0 ||
+        m.index == std::numeric_limits<std::uint64_t>::max() || m.snapshot_term == 0 ||
+        m.snapshot_term > m.term)
+      return {std::move(state), std::move(effects)};
+    const auto committed_term = term_at(state.durable, state.durable.commit);
+    if (m.index > state.durable.commit && committed_term && m.snapshot_term < *committed_term)
+      return {std::move(state), std::move(effects)};
+    auto reply = [&](bool success) {
+      return Outbound{m.leader, SnapshotReply{state.durable.term, config.self, success,
+                                              success ? m.index : 0, m.request_id}};
+    };
+    if (m.term < state.durable.term) {
+      effects.send_now.push_back(reply(false));
+      return {std::move(state), std::move(effects)};
+    }
+    Durable target = state.durable;
+    if (m.term > target.term) {
+      target.term = m.term;
+      target.voted_for.reset();
+    }
+    step_down(state);
+    if (!m.ready) {
+      if (target != state.durable) begin_write(state, effects, std::move(target));
+      return {std::move(state), std::move(effects)};
+    }
+    bool installed = false;
+    if (m.index > target.commit) {
+      EntryLog suffix;
+      if (term_at(target, m.index) == std::optional<std::uint64_t>{m.snapshot_term}) {
+        const auto begin = static_cast<std::size_t>(m.index - target.snapshot_index);
+        for (auto offset = begin; offset < target.log.size(); ++offset)
+          suffix.push_back(target.log[offset]);
+      }
+      target.snapshot_index = m.index;
+      target.snapshot_term = m.snapshot_term;
+      target.log = std::move(suffix);
+      target.commit = target.applied = m.index;
+      installed = true;
+    }
+    const bool success =
+        installed || term_at(target, m.index) == std::optional<std::uint64_t>{m.snapshot_term};
+    auto response = reply(success);
+    std::get<SnapshotReply>(response.message).term = target.term;
+    if (target != state.durable) {
+      begin_write(state, effects, std::move(target), {std::move(response)}, {}, false, {},
+                  installed ? PersistKind::SnapshotInstall : PersistKind::StateUpdate);
+    } else {
+      effects.send_now.push_back(std::move(response));
+    }
+    return {std::move(state), std::move(effects)};
+  }
+
+  if (const auto* incoming = std::get_if<RecvSnapshotReply>(&input)) {
+    const auto& m = incoming->message;
+    if (!known_peer(state, m.follower)) return {std::move(state), std::move(effects)};
+    if (m.term > state.durable.term) {
+      auto target = state.durable;
+      target.term = m.term;
+      target.voted_for.reset();
+      step_down(state);
+      begin_write(state, effects, std::move(target));
+    } else if (m.term == state.durable.term && state.volatile_state.role == Role::Leader) {
+      auto& progress = state.volatile_state.peers.at(m.follower);
+      const auto& probe = progress.snapshot_in_flight;
+      if (probe && probe->request_id == m.request_id && (!m.success || probe->index == m.index)) {
+        if (m.success) {
+          progress.match = std::max(progress.match, probe->index);
+          progress.next = progress.match + 1;
+        }
+        progress.snapshot_in_flight.reset();
+      }
+    }
     return {std::move(state), std::move(effects)};
   }
 
@@ -391,7 +475,8 @@ std::pair<Node, Effects> step(const Config& config, Node state, const Input& inp
       target.log = state.durable.log;
       target.commit = state.durable.commit;
     }
-    Outbound reply{m.leader, AppendReply{target.term, config.self, success, hint, m.request_id}};
+    Outbound reply{m.leader, AppendReply{target.term, config.self, success, hint, m.request_id,
+                                         success ? m.prev_index + m.entries.size() : 0}};
     if (target != state.durable) {
       begin_write(state, effects, std::move(target), {std::move(reply)});
     } else {

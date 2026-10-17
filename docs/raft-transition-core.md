@@ -1,9 +1,10 @@
 # Experimental Raft transition core (PR #10, phase A)
 
-Status: **merged PR #10, side-by-side experimental implementation**. The authoritative consensus
-implementation is still `choreoos::replication::Replica`. This module is a
-separate C++20 library component and is not wired to the production node, TCP
-transport, persistence store, snapshot recovery, or gRPC gateway.
+Status: the pure C++20 core is available through the selectable
+[transition runtime](transition-runtime.md), including real storage, TCP/mTLS,
+snapshots and management. Legacy `replication::Replica` remains the default.
+The core function still performs no I/O and has no machine-checked production
+refinement proof.
 
 ## Pure transition boundary
 
@@ -35,21 +36,17 @@ tests are `cpp-runtime/tests/unit/raft_transition_test.cpp`.
 
 ## Important implementation gaps
 
-1. **No production host integration.** An isolated
-   [FileEngine write executor](raft-file-engine-adapter.md) exists, but no
-   dispatcher, retransmission scheduler or core connection to `Replica` does.
-2. **Application atomicity remains unspecified.** The `ApplyCommitted` path
-   currently updates `durable.applied` with a persistence request and releases
-   an application effect only after completion. This is not sufficient to
-   guarantee recovered application state unless the host atomically checkpoints
-   the deterministic applied state together with the applied index, or can
-   reliably replay the committed prefix on recovery. Production code must
-   establish this before integration.
-3. **Recovered snapshot offsets are supported in the C++ core**, through
-   explicit absolute-index boundary/suffix semantics. Snapshot transfer
-   and installation remain absent. Explicit
-   [durable local compaction](raft-local-compaction.md) is available after
-   application catches up; the formal model still stores complete logs. See [offset scope](raft-snapshot-offsets.md).
+1. **Runtime integration is selectable.** RuntimeHost dispatches validated
+   FileEngine writes, application confirmation and maintenance; CoreReplica maps
+   clocks and framed messages. The default remains legacy during rollout.
+2. **Application mapping is explicit.** FileEngine applies at durable commit;
+   core apply effects confirm that result and are never replayed into Engine.
+   Effects/client completion wait for verified persistence and application.
+   Recovery derives both commit and applied from actual disk replay. This is a
+   tested host contract, not a formal atomicity/refinement proof.
+3. **Snapshot lifecycle is integrated.** Recovered offsets, local compaction,
+   persisted installation and correlated chunk catch-up are supported. The
+   snapshot-aware formal model/relation remains open. See the runtime guide.
 4. **No model-to-code proof.** New unit tests characterize the transition
    contract but do not mechanically replay `ChoreoRaft.tla` behaviors. The
    model's larger multi-term replication failure space is also not exhaustively
@@ -71,8 +68,8 @@ does not activate the new Raft behavior. Merged PR #11 adds bounded
 trace-contract tests, and merged PR #12 adds an isolated atomic checkpoint
 adapter with real filesystem recovery tests. Neither is wired to the
 production `Replica` or proves TLA+ refinement; real WAL/event mapping,
-atomic choreography application checkpoints and the staged runtime migration
-remain outstanding. See [verification scope](raft-verification.md) and
+the selectable runtime integration is implemented separately through FileEngine,
+while snapshot-aware formal refinement remains outstanding. See [verification scope](raft-verification.md) and
 [storage correspondence audit](raft-storage-audit.md).
 
 ## Deterministic trace projection (first PR #10 conformance prerequisite)

@@ -1,8 +1,9 @@
 # Recovered snapshot offsets in the experimental Raft core
 
 The pure `raft::step` core now supports a recovered snapshot boundary and a
-retained suffix. This does not activate the core in production, implement
-snapshot transfer/install or extend the existing TLA+ model.
+retained suffix. The selectable [transition runtime](transition-runtime.md) now supplies storage,
+local compaction and snapshot transfer/install. The existing TLA+ model is not
+extended by these C++ changes.
 
 ## Representation and transitions
 
@@ -80,8 +81,8 @@ write before the test releases its vote requests. This is a narrow test host;
 it does not map every protocol persistence/application transition to production.
 
 [Durable local compaction](raft-local-compaction.md) now has an explicit
-persistence-gated transition. Remaining work includes snapshot installation
-transitions, host snapshot transfer/correlation, the FileEngine commit/apply
-mapping, production host integration, a reviewed snapshot-aware formal model,
-and independently checked state/action/stuttering correspondence. Shared-code
+persistence-gated transition. Snapshot installation, transfer/correlation and
+the FileEngine commit/apply host mapping are implemented in the selectable
+runtime. Remaining work includes a reviewed snapshot-aware formal model and
+independently checked state/action/stuttering correspondence. Shared-code
 tests establish bounded behavior, not a production consensus proof.
