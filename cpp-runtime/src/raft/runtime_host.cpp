@@ -94,6 +94,7 @@ state::Result<void> RuntimeHost::persist(const PersistRequest& request,
 
 state::Result<void> RuntimeHost::collect(Effects effects, HostEffects& output) {
   if (effects.halt) return invalid("transition core halted");
+  if (effects.read) output.reads.push_back(*effects.read);
   output.capacity_exhausted = output.capacity_exhausted || effects.capacity_exhausted;
   output.send.insert(output.send.end(), std::make_move_iterator(effects.send_now.begin()),
                      std::make_move_iterator(effects.send_now.end()));

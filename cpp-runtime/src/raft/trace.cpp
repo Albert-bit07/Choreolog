@@ -71,6 +71,10 @@ const char* trace_action(const Input& input) {
           return "SendAppend";
         else if constexpr (std::is_same_v<T, ClientPropose>)
           return "ClientPropose";
+        else if constexpr (std::is_same_v<T, BeginRead>)
+          return "BeginRead";
+        else if constexpr (std::is_same_v<T, CancelRead>)
+          return "CancelRead";
         else if constexpr (std::is_same_v<T, RecvRequestVote>)
           return "HandleRVReq";
         else if constexpr (std::is_same_v<T, RecvVoteReply>)
@@ -104,12 +108,13 @@ std::string trace_line(const Config& config, const Node& state, const Input& inp
   // mem is staged while disk is the last acknowledged durability boundary.
   const auto& mem = state.pending ? state.pending->target : state.durable;
   const auto& disk = state.durable;
-  if (std::holds_alternative<CompactCommitted>(input) ||
+  if (std::holds_alternative<BeginRead>(input) || std::holds_alternative<CancelRead>(input) ||
+      state.volatile_state.read || std::holds_alternative<CompactCommitted>(input) ||
       std::holds_alternative<RecvSnapshot>(input) ||
       std::holds_alternative<RecvSnapshotReply>(input) || mem.snapshot_index != 0 ||
       mem.snapshot_term != 0 || disk.snapshot_index != 0 || disk.snapshot_term != 0)
     throw std::invalid_argument(
-        "v1 Raft trace projection does not support snapshots or local compaction");
+        "v1 Raft trace projection does not support reads, snapshots or local compaction");
   std::ostringstream out;
   out << "{\"v\":1,\"seq\":" << sequence << ",\"node\":";
   quoted(out, config.self);

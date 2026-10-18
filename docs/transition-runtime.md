@@ -32,6 +32,8 @@ Node startup and the `ready` file name the selected backend. The recovery
 management reply includes `consensus_engine` and a bounded `halt_reason`.
 A ready process still needs to hear a leader or win an election before serving
 writes. Status/state queries remain local observations, not quorum read barriers.
+The [core read-barrier primitive](raft-read-barriers.md) is available to the
+storage host; public management API integration remains a separate step.
 
 ## Durable/application mapping
 
