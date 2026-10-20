@@ -1,6 +1,6 @@
 # Agent progress ledger
 
-Latest checkpoint: `agent/t1-b-tlc-export-20261020`, from main
+Latest checkpoint: `agent/t1-b-replay-20261020`, based on export PR #27, from main
 `3265f4af76f9f3eae7daf825a24c9c6a31bbd5c1`. User now authorizes merges after all exact-head checks are green and task
 acceptance is verified. PR #25 merged under that authorization as
 `c19169ed3538aa3d513c2ef5691b12d90947227e`; no direct main push/deployment authorized.
@@ -52,13 +52,17 @@ ptrace/task errors. Local runs use ASan/UBSan without leaks; CI retains
 - #26 synced head 4c657543cd7a0f3571ab154ccdcb922a1263e098 passed five CI
   jobs (39502431789) and TLC (39502432094). Merged under user authorization
   as 3265f4af76f9f3eae7daf825a24c9c6a31bbd5c1; integrated, diagnostic scope only.
-- Export slice: local gates pass; PR creation and exact-head hosted CI pending.
+- Export slice: PR #27 head 19cad222cefdb04a9207faafb2824029436c68c1.
+  Local gates pass. TLC run 39504905569 passed; artifact 12302079273
+  downloaded and verified: all seven behaviors, 15 variables/state. Archive
+  SHA256 e7dc846907ecb8d2eaa0d5f9485aa2862c0c9fe721ee487312db712d2c5bf1aa.
+  CI run 39504905349 pending; do not merge before every exact-head job passes.
 - Conditional merge authorization received: green exact-head checks plus acceptance
   verification. Recheck live main before merge and validate any changed integration.
 
 ## Next 3 actions
-1. Complete export slice broad gates and fresh TLC witness export, then prepare
-   a PR; verify exact-head CI and uploaded behaviors before merge.
+1. Inspect PR #27 remaining CI run 39504905349, verify live main/head, then
+   mark ready and merge only if all checks pass. Artifacts already inspected.
 2. Implement actual normalized TLC-to-C++ replay with precise projection and
    justified stuttering, including divergence regressions and snapshot mapping.
 3. Complete combined bounded-model and migration gates, then T1-C onwards.
@@ -93,3 +97,25 @@ built node/CLI artifacts. After freeing only reproducible build products,
 rebuilding and restoring executable mode on those owned ELF binaries, the
 single process check and full 278-test sanitizer run passed. No source check or
 assertion was removed. Local LSan remains unsupported; CI leak checks retained.
+
+
+## Replay branch resume details
+Current checkout `agent/t1-b-replay-20261020` starts at PR #27's exact head.
+No replay implementation is present yet. Local export merge commit e7d53c0 is
+preserved under checkpoint/tlc-export-local-e7d53c0; its tree equals canonical
+19cad22 (92583644725d6b2c01e3a752f77e2d1041787f14). No unique code discarded.
+Normal build products were removed after validation to free disk. Rebuild with
+-g0 and manifest install disabled, reusing build/linux-gcc/vcpkg_installed.
+Sanitizer build remains available; ASAN_OPTIONS=detect_leaks=0 is required for
+local discovery and tests. Disk currently nearly full; never delete source,
+checkpoints or installed dependencies. Full accepted combined log summaries:
+results/raw/t1-b-tlc-export-20261020/ctest-combined.log (286,34.33s) and
+ctest-sanitizers-final.log (284,51.44s). An earlier overly broad CatchUp regex
+selected 283; final rerun used exact ^CatchUpTest exclusion and includes TCP.
+Hosted ZIP is in the same ignored raw directory, verified against artifact digest.
+
+A fresh leader witness has generic source locations at line 410 for every
+noninitial step: locations alone cannot select protocol actions. Derive and
+validate semantic deltas, or introduce reviewed action annotation, before input
+normalization. Term/vote write granularity and separate BecomeLeader remain
+explicit mapping obligations. No field dropping or fabricated stuttering.
