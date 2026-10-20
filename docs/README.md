@@ -37,6 +37,7 @@
 - [Project plan](../PLAN.md)
 - [Tasks](../TASKS.md)
 - [Agent progress and next actions](AGENT_STATE.md)
+- [Master execution charter and full prioritized roadmap](agent-execution-charter.md)
 
 Tests, reproduced process behavior and formal properties are separate evidence.
 A green seed is evidence, not a proof. The current runtime is Raft-like;
