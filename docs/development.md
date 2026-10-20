@@ -65,6 +65,35 @@ Run the current CLI foundation:
 
 CI independently builds with Ninja on current Windows and Ubuntu runners.
 
-## Current Raft development (merged PR #10)
+## Current Raft development
 
-The pure transition core is in `cpp-runtime/include/choreoos/raft/transition.hpp` and `cpp-runtime/src/raft/transition.cpp`, with focused GoogleTests in `cpp-runtime/tests/unit/raft_transition_test.cpp`. It is an **experimental** library component: existing CLI, TCP nodes and gRPC gateway still use `replication::Replica`. The new core is built by the ordinary CMake targets and passed formatting, Windows/Linux tests and sanitizer CI in PR #10 before merge. The bounded TLA+ models and their scope limitations are in [`formal/raft/README.md`](../formal/raft/README.md).
+The pure core in `cpp-runtime/src/raft/transition.cpp` is hosted by RuntimeHost
+and CoreReplica on real nodes when `consensus_engine: transition` is selected.
+Legacy remains the default. See [runtime ownership and migration](transition-runtime.md)
+and the [field/persistence inventory](consensus-field-inventory.md).
+The read-barrier primitive exists; public reads still observe local state.
+
+For Linux, bootstrap the vcpkg revision in `vcpkg.json`, export `VCPKG_ROOT`,
+then use the checked-in presets (CMake >= 3.28 and Ninja):
+
+```sh
+cmake --preset linux-gcc
+cmake --build --preset linux-gcc
+ctest --preset linux-gcc
+cmake --preset linux-sanitizers
+cmake --build --preset linux-sanitizers
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+  ctest --preset linux-sanitizers -E '^CatchUpTest'
+```
+
+The two CatchUp stress tests are included in the normal suite; their sanitizer
+exclusion matches CI. Use clang-format 18 for touched C++ files and the
+clang-tidy-18 command in `.github/workflows/ci.yml` for the affected sources.
+Windows/Linux CI uses Ninja; the local Windows preset uses VS 2019.
+
+The management gateway requires a separate configure with
+`CHOREOOS_BUILD_MANAGEMENT_API=ON` and protobuf/gRPC development packages.
+CI installs .NET 8, builds the generated C# client and runs real three-process
+failover/retry checks against **both** backends. Dashboard and Temporal worker
+implementation remain separate milestones. Consult the workflow for exact
+commands; SDK availability on one workstation is not project completion status.
