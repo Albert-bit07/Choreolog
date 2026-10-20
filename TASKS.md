@@ -616,3 +616,15 @@ Exit criterion: demonstrations clearly identify whether recovery came from C++ r
 - The [field inventory](docs/consensus-field-inventory.md) maps current persistence ordering and protocol boundaries to regression tests. [The ledger](docs/AGENT_STATE.md) records current-run evidence and PR integration separately.
 
 **Next correctness work:** T1-A baseline and source audit, then snapshot-aware trace/model conformance, combined bounded multi-term replication, dual-backend migration gates and public quorum reads. Receipt retention, exhaustive lost-write testing, management auth, reproducible benchmarks and the terminal failover demo remain required. Dashboard and Temporal work follow Tier 1; no pending item is silently dropped.
+
+
+### Master Prompt v3 execution checkpoint (2026-10-20)
+
+- [x] T1-A reproduced baseline and field/persistence audit (PR #25 merged).
+- [x] T1-B snapshot diagnostic trace prerequisite (PR #26 merged); v1 remains compatible.
+- [ ] T1-B full model-to-C++ replay/refinement: typed actual TLC behavior export
+      is under validation; [observed mapping gaps](docs/raft-model-mapping-gaps.md)
+      remain explicit. Export/diagnostic checks are not refinement.
+- [ ] Remaining combined-model, migration, public-read, benchmark, durability,
+      security and terminal-demo gates remain required as recorded in
+      [AGENT_STATE](docs/AGENT_STATE.md) and the complete execution charter.

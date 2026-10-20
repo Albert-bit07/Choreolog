@@ -5,10 +5,14 @@ on:
     paths:
       - 'formal/raft/**'
       - '.github/workflows/raft-model.yml'
+      - 'scripts/export_tlc_trace.py'
+      - 'scripts/tests/test_export_tlc_trace.py'
   pull_request:
     paths:
       - 'formal/raft/**'
       - '.github/workflows/raft-model.yml'
+      - 'scripts/export_tlc_trace.py'
+      - 'scripts/tests/test_export_tlc_trace.py'
 
 permissions:
   contents: read
@@ -155,3 +159,31 @@ jobs:
             echo "::error::No offline crash state reached; TLC exit code $result"
             exit 1
           fi
+
+      - name: Export full model-generated witness behaviors
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tlc-behaviors"
+          for witness in \
+            'NoDifferentTermLeadersWitness:ReachTwoLeadersDifferentTerms.cfg:two-term-witness.txt' \
+            'ElectionSafety:NegativeNonDurableVote.cfg:negative-vote.txt' \
+            'NoLeaderWitness:ReachLeader.cfg:witness-Leader.txt' \
+            'NoReplicationWitness:ReachReplication.cfg:witness-Replication.txt' \
+            'NoCommitWitness:ReachCommit.cfg:witness-Commit.txt' \
+            'NoApplicationWitness:ReachApplication.cfg:witness-Application.txt' \
+            'NoOfflineWitness:ReachOffline.cfg:reach-offline.txt'; do
+            IFS=: read -r invariant config log <<< "$witness"
+            python3 scripts/export_tlc_trace.py \
+              --log "$RUNNER_TEMP/$log" \
+              --model formal/raft/ChoreoRaft.tla \
+              --config "formal/raft/$config" --invariant "$invariant" \
+              --output "$RUNNER_TEMP/tlc-behaviors/$config.json"
+          done
+
+      - name: Preserve model-generated behaviors for replay work
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-witness-behaviors
+          path: ${{ runner.temp }}/tlc-behaviors/*.json
+          if-no-files-found: error

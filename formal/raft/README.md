@@ -64,7 +64,6 @@ SHA-256 before running TLC. The pinned digest is
 | `Drop` | `SimulatedNetwork` loss/partition behavior |
 
 The unified `ChoreoRaft.tla` now covers several of these transitions under separately scoped bounds. PR #10 adds an experimental C++ transition core; implementation trace conformance is still future work. Do not represent a green TLC run as proof of the C++ implementation.
-Do not represent a green TLC run as proof of the C++ implementation.
 
 ## Bounded replication model (next V1 slice)
 
@@ -102,4 +101,12 @@ The CI workflow successfully exhausted three **separate** finite profiles: elect
 
 ## Experimental C++ transition boundary (PR #10)
 
-`cpp-runtime/include/choreoos/raft/transition.hpp` and `cpp-runtime/src/raft/transition.cpp` introduce a pure, testable state transition interface. The currently deployed runtime is still `replication::Replica`; the new core is not wired into network/storage adapters. Snapshot integration, trace schema replay, combined multi-term replication faults, and implementation conformance remain to be done. See [the persistence audit](../../docs/raft-storage-audit.md).
+`cpp-runtime/include/choreoos/raft/transition.hpp` and `cpp-runtime/src/raft/transition.cpp` introduce a pure, testable state transition interface. The selectable [transition runtime](../../docs/transition-runtime.md) hosts the core on real storage/TCP/mTLS; legacy `replication::Replica` remains the default. Model-generated trace replay, snapshot-aware formal mapping, combined multi-term replication faults and implementation conformance remain unfinished. See [the persistence audit](../../docs/raft-storage-audit.md).
+
+## Model-generated behavior artifacts
+
+CI now exports its seven existing witness/counterexample behaviors as typed
+JSON artifacts for subsequent replay work. See [the export format and limits](../../docs/tlc-behavior-export.md)
+and [observed model/core mapping gaps](../../docs/raft-model-mapping-gaps.md).
+Export preserves context and provenance; it does not establish C++ replay or
+refinement. The model bounds and invariants above are unchanged.
