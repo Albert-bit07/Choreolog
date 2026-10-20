@@ -50,9 +50,10 @@ crash model form a trusted/assumed boundary unless covered separately.
 implements a pure `step(Config, Node, Input)` with persistence, messaging and
 application effect intents and corresponding GoogleTests. It is compiled
 separately from legacy `replication::Replica`; the selectable runtime now hosts
-it with real I/O, without establishing a formal refinement mapping. The eventual host must
-persist dependent term/vote/log changes before releasing associated effects,
-including on failure/restart.
+it with real I/O, without establishing a formal refinement mapping. RuntimeHost persists and verifies dependent term/vote/log changes before
+releasing effects; failure requires reopening disk. See the
+[field and persistence inventory](consensus-field-inventory.md) for the current
+source audit and executable boundary regressions.
 
 ## Raft safety properties
 
@@ -96,9 +97,10 @@ security. Each future addition extends the specification before code.
 - [x] Three two-versus-one partitions tested; PR #3 merged after CI success.
 - [x] Run Windows and Linux CI, sanitizer builds and repeatable fault tests
       on main (earlier CI passes). Preserve failing seed and network schedule.
-- [ ] Inventory every consensus-changing field and persist-before-reply edge.
-- [ ] Record current protocol deviations as executable, regression-tested
-      issues rather than modifying behavior to satisfy a weak test.
+- [x] Inventory consensus-changing fields and persist-before-reply edges in
+      [the source audit](consensus-field-inventory.md).
+- [x] Map current deviations and refusals to executable regression tests in
+      the inventory; missing features remain unfinished gates.
 
 ### V1 — Specify the protocol
 - [x] Add `formal/raft/Election.tla`, `Replication.tla` and
@@ -115,7 +117,7 @@ security. Each future addition extends the specification before code.
 ### V2 — Make the implementation auditable
 - [x] Introduce an **experimental** pure transition core with explicit
       persistence and send effects alongside the existing `Replica`
-      (PR #10 merged; not integrated).
+      (PR #10 core; PR #22 real-node integration, still opt-in).
 - [ ] Add protocol trace events with term, role, log indices, message cause
       and durable completion boundaries.
 - [x] Add a **bounded C++ trace-contract checker and seeded negative cases**

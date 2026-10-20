@@ -1,7 +1,8 @@
 # Raft transition conformance (PR #11, bounded test phase)
 
 **Status:** experimental C++ core + independent safety-contract checker. The
-deployed TCP `replication::Replica` does not use the new transition core.
+legacy TCP `replication::Replica` remains separate; the selectable transition
+backend hosts the core through RuntimeHost/CoreReplica on real nodes.
 This suite is **not** a mechanically verified refinement of
 `formal/raft/ChoreoRaft.tla`.
 
