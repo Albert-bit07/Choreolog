@@ -21,14 +21,20 @@ void require(bool condition, const char* why) {
   }
 }
 
+PersistToken persist_token(const Effects& effects) {
+  if (!effects.persist) throw std::runtime_error("missing persistence intent");
+  return effects.persist->token;
+}
+
 Config config_for(const std::string& id) {
   if (id == "a") return {"a", {"b", "c"}};
   if (id == "b") return {"b", {"a", "c"}};
   return {"c", {"a", "b"}};
 }
 
-std::string projection(const Config& cfg, const Node& node) {
-  const auto document = trace_line(cfg, node, Restart{}, 0);
+std::string projection(const Config& cfg, const Node& node, bool v2) {
+  const auto document =
+      v2 ? trace_line_v2(cfg, node, Restart{}, 0) : trace_line(cfg, node, Restart{}, 0);
   const auto start = document.find("\"post\":");
   require(start != std::string::npos, "missing post projection");
   return document.substr(start + 7, document.size() - start - 8);
@@ -39,12 +45,13 @@ const char* message_kind(const WireMessage& message) {
   if (std::holds_alternative<VoteReply>(message)) return "RVResp";
   if (std::holds_alternative<AppendEntries>(message)) return "AEReq";
   if (std::holds_alternative<AppendReply>(message)) return "AEResp";
-  throw std::invalid_argument("v1 trace harness cannot map snapshot messages");
+  return "SnapshotReply";
 }
 
 bool positive_response(const WireMessage& message) {
   if (const auto* vote = std::get_if<VoteReply>(&message)) return vote->granted;
   if (const auto* append = std::get_if<AppendReply>(&message)) return append->success;
+  if (const auto* snapshot = std::get_if<SnapshotReply>(&message)) return snapshot->success;
   return false;
 }
 
@@ -52,7 +59,9 @@ struct Harness {
   std::string scenario;
   std::map<std::string, Node> nodes;
   std::uint64_t seq = 0;
-  explicit Harness(std::string name) : scenario(std::move(name)) {
+  bool v2 = false;
+  explicit Harness(std::string name, bool snapshots = false)
+      : scenario(std::move(name)), v2(snapshots) {
     for (const auto* id : {"a", "b", "c"}) nodes.emplace(id, initial(config_for(id)));
   }
 
@@ -60,11 +69,12 @@ struct Harness {
     const auto cfg = config_for(id);
     const Node before = nodes.at(id);
     auto [after, effects] = step(cfg, before, input);
-    std::string trace = trace_line(cfg, after, input, seq++);
+    std::string trace =
+        v2 ? trace_line_v2(cfg, after, input, seq++) : trace_line(cfg, after, input, seq++);
     require(trace.size() > 1 && trace.back() == '}', "invalid trace object");
     trace.pop_back();
     trace += ",\"scenario\":\"" + scenario + "\",\"pre\":";
-    trace += projection(cfg, before);
+    trace += projection(cfg, before, v2);
     trace += ",\"pending_before\":";
     trace += before.pending ? std::to_string(before.pending->token) : "null";
     trace += ",\"pending_after\":";
@@ -78,7 +88,7 @@ struct Harness {
       trace += "null";
     }
     trace += ",\"effects\":{\"persist\":";
-    trace += effects.persist ? std::to_string(effects.persist->token) : "null";
+    trace += effects.persist ? std::to_string(persist_token(effects)) : "null";
     trace += ",\"send\":[";
     for (std::size_t i = 0; i < effects.send_now.size(); ++i) {
       if (i != 0) trace += ',';
@@ -87,9 +97,29 @@ struct Harness {
       trace += message_kind(message.message);
       trace += "\",\"positive\":";
       trace += positive_response(message.message) ? "true" : "false";
+      if (v2) {
+        if (const auto* snapshot = std::get_if<SnapshotReply>(&message.message)) {
+          trace += ",\"index\":" + std::to_string(snapshot->index);
+          trace += ",\"request_id\":" + std::to_string(snapshot->request_id);
+        }
+      }
       trace += "}";
     }
-    trace += "],\"apply\":" + std::to_string(effects.apply.size());
+    if (v2) {
+      trace += "],\"persist_kind\":";
+      if (!effects.persist)
+        trace += "null";
+      else if (effects.persist->kind == PersistKind::LocalCompaction)
+        trace += "\"LocalCompaction\"";
+      else if (effects.persist->kind == PersistKind::SnapshotInstall)
+        trace += "\"SnapshotInstall\"";
+      else
+        trace += "\"StateUpdate\"";
+      trace += ",\"apply\":";
+    } else {
+      trace += "],\"apply\":";
+    }
+    trace += std::to_string(effects.apply.size());
     trace += ",\"halt\":";
     trace += effects.halt ? "true" : "false";
     trace += "}}";
@@ -105,7 +135,7 @@ void election_replication_commit() {
   require(start.persist.has_value() && start.send_now.empty(), "early RequestVote");
   auto timeout = h.advance("a", HeartbeatTimeout{});
   require(timeout.send_now.empty(), "pending election progressed before fsync");
-  auto voted = h.advance("a", PersistCompleted{start.persist->token});
+  auto voted = h.advance("a", PersistCompleted{persist_token(start)});
   require(voted.send_now.size() == 2, "durable self vote did not release requests");
   RequestVote vote_request{};
   bool found_request = false;
@@ -118,14 +148,14 @@ void election_replication_commit() {
   require(found_request, "missing vote request");
   auto grant = h.advance("b", RecvRequestVote{vote_request});
   require(grant.persist.has_value() && grant.send_now.empty(), "premature vote grant");
-  auto reply = h.advance("b", PersistCompleted{grant.persist->token});
+  auto reply = h.advance("b", PersistCompleted{persist_token(grant)});
   require(reply.send_now.size() == 1, "no durable vote reply");
   auto lead = h.advance("a", RecvVoteReply{std::get<VoteReply>(reply.send_now[0].message)});
   require(h.nodes["a"].volatile_state.role == Role::Leader, "no leader");
   require(lead.send_now.size() == 2, "no initial heartbeats");
   auto proposal = h.advance("a", ClientPropose{"v"});
   require(proposal.persist.has_value() && proposal.send_now.empty(), "append sent before fsync");
-  auto flushed = h.advance("a", PersistCompleted{proposal.persist->token});
+  auto flushed = h.advance("a", PersistCompleted{persist_token(proposal)});
   require(flushed.apply.empty(), "application emitted before commit");
   for (const auto& output : lead.send_now) {
     if (output.to == "b") {
@@ -146,17 +176,17 @@ void election_replication_commit() {
   require(found_append && append.entries.size() == 1, "missing replicated value");
   auto replicated = h.advance("b", RecvAppend{append});
   require(replicated.persist.has_value() && replicated.send_now.empty(), "premature append ack");
-  auto persisted = h.advance("b", PersistCompleted{replicated.persist->token});
+  auto persisted = h.advance("b", PersistCompleted{persist_token(replicated)});
   require(persisted.send_now.size() == 1, "no append acknowledgement");
   auto ack = h.advance("a", RecvAppendReply{std::get<AppendReply>(persisted.send_now[0].message)});
   require(ack.send_now.empty(), "unexpected immediate effect");
   auto commit = h.advance("a", AdvanceCommit{});
   require(commit.persist.has_value(), "missing quorum commit");
-  auto committed = h.advance("a", PersistCompleted{commit.persist->token});
+  auto committed = h.advance("a", PersistCompleted{persist_token(commit)});
   require(committed.apply.empty(), "applied before durable apply checkpoint");
   auto app = h.advance("a", ApplyCommitted{});
   require(app.persist.has_value() && app.apply.empty(), "premature application");
-  auto applied = h.advance("a", PersistCompleted{app.persist->token});
+  auto applied = h.advance("a", PersistCompleted{persist_token(app)});
   require(applied.apply.size() == 1 && applied.apply[0].command == "v", "missing applied value");
 }
 
@@ -164,7 +194,7 @@ void failure_recovery() {
   Harness h{"failed-persist"};
   auto grant = h.advance("b", RecvRequestVote{RequestVote{2, "a", 0, 0, 42}});
   require(grant.persist.has_value() && grant.send_now.empty(), "premature vote grant");
-  const auto token = grant.persist->token;
+  const auto token = persist_token(grant);
   auto wrong = h.advance("b", PersistCompleted{token + 1});
   require(wrong.send_now.empty() && h.nodes["b"].pending.has_value(), "stale completion used");
   auto failed = h.advance("b", PersistFailed{token});
@@ -208,7 +238,7 @@ void uncommitted_repair() {
   require(staged.persist.has_value() && staged.send_now.empty(),
           "follower sent acknowledgement before durable suffix repair");
   require(h.nodes["b"].durable.log.size() == 2, "unacknowledged truncate changed durable log");
-  auto completed = h.advance("b", PersistCompleted{staged.persist->token});
+  auto completed = h.advance("b", PersistCompleted{persist_token(staged)});
   require(h.nodes["b"].durable.log.size() == 1 &&
               h.nodes["b"].durable.log.front().command == "replacement",
           "conflicting uncommitted suffix was not repaired");
@@ -241,10 +271,63 @@ void stale_ack() {
           "obsolete response changed progress");
 }
 
+void snapshot_contract() {
+  auto base = [](Harness& h) {
+    auto& disk = h.nodes.at("b").durable;
+    disk.term = 4;
+    disk.snapshot_index = 5;
+    disk.snapshot_term = 2;
+    disk.log = {{3, "committed"}, {4, "anchor"}, {4, "tail"}};
+    disk.commit = disk.applied = 6;
+  };
+  {
+    Harness h{"compact", true};
+    base(h);
+    auto staged = h.advance("b", CompactCommitted{});
+    require(staged.persist && staged.persist->kind == PersistKind::LocalCompaction,
+            "missing compaction intent");
+    h.advance("b", PersistCompleted{persist_token(staged) + 1});
+    h.advance("b", PersistCompleted{persist_token(staged)});
+    h.advance("b", Restart{});
+  }
+  for (const bool matching : {true, false}) {
+    Harness h{matching ? "install-matching" : "install-conflict", true};
+    base(h);
+    const auto snapshot_term = matching ? 4u : 3u;
+    const SnapshotRequest request{5, "a", 7, snapshot_term, 91};
+    auto term = h.advance("b", RecvSnapshot{SnapshotRequest{5, "a", 7, snapshot_term, 90, false}});
+    require(term.persist && term.send_now.empty(), "incomplete snapshot acknowledged");
+    h.advance("b", PersistCompleted{persist_token(term)});
+    auto install = h.advance("b", RecvSnapshot{request});
+    require(install.persist && install.persist->kind == PersistKind::SnapshotInstall,
+            "missing install intent");
+    h.advance("b", PersistCompleted{persist_token(install) + 1});
+    h.advance("b", PersistCompleted{persist_token(install)});
+    h.advance("b", RecvSnapshot{request});  // Lost final ack: retry is idempotent.
+    h.advance("b", Restart{});
+  }
+  for (const bool compact : {true, false}) {
+    Harness h{compact ? "compact-failed" : "install-failed", true};
+    base(h);
+    const Input input = compact ? Input{CompactCommitted{}}
+                                : Input{RecvSnapshot{SnapshotRequest{5, "a", 7, 4, 91}}};
+    auto staged = h.advance("b", input);
+    require(staged.persist.has_value(), "failure scenario did not stage persistence");
+    h.advance("b", PersistFailed{persist_token(staged)});
+    h.advance("b", HeartbeatTimeout{});
+    h.advance("b", Restart{});
+  }
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   try {
+    if (argc == 2 && std::string(argv[1]) == "--snapshot-contract") {
+      snapshot_contract();
+      return 0;
+    }
+    require(argc == 1, "unknown scenario runner arguments");
     election_replication_commit();
     failure_recovery();
     log_conflict();

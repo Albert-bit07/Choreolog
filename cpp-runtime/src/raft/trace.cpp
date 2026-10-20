@@ -59,6 +59,89 @@ const char* role_name(Role role) noexcept {
   return "Follower";
 }
 
+void write_log(std::ostringstream& out, const EntryLog& log) {
+  out << '[';
+  for (std::size_t i = 0; i < log.size(); ++i) {
+    if (i) out << ',';
+    out << "{\"term\":" << log[i].term << ",\"val\":";
+    quoted(out, log[i].command);
+    out << '}';
+  }
+  out << ']';
+}
+
+void write_durable(std::ostringstream& out, const Durable& state) {
+  out << "{\"term\":" << state.term << ",\"votedFor\":";
+  if (state.voted_for)
+    quoted(out, *state.voted_for);
+  else
+    out << "null";
+  out << ",\"log\":";
+  write_log(out, state.log);
+  out << ",\"commit\":" << state.commit << ",\"applied\":" << state.applied
+      << ",\"snapshot_index\":" << state.snapshot_index
+      << ",\"snapshot_term\":" << state.snapshot_term << '}';
+}
+
+template <typename Message>
+void write_message(std::ostringstream& out, const Message& message) {
+  out << "\"term\":" << message.term;
+  if constexpr (std::is_same_v<Message, RequestVote>) {
+    out << ",\"candidate\":";
+    quoted(out, message.candidate);
+    out << ",\"last_index\":" << message.last_index << ",\"last_term\":" << message.last_term;
+  } else if constexpr (std::is_same_v<Message, VoteReply>) {
+    out << ",\"voter\":";
+    quoted(out, message.voter);
+    out << ",\"granted\":" << (message.granted ? "true" : "false");
+  } else if constexpr (std::is_same_v<Message, AppendEntries>) {
+    out << ",\"leader\":";
+    quoted(out, message.leader);
+    out << ",\"prev_index\":" << message.prev_index << ",\"prev_term\":" << message.prev_term
+        << ",\"entries\":";
+    write_log(out, EntryLog{message.entries});
+    out << ",\"leader_commit\":" << message.leader_commit;
+  } else if constexpr (std::is_same_v<Message, SnapshotRequest>) {
+    out << ",\"leader\":";
+    quoted(out, message.leader);
+    out << ",\"index\":" << message.index << ",\"snapshot_term\":" << message.snapshot_term;
+  } else {
+    out << ",\"follower\":";
+    quoted(out, message.follower);
+    out << ",\"success\":" << (message.success ? "true" : "false");
+    if constexpr (std::is_same_v<Message, AppendReply>)
+      out << ",\"hint\":" << message.hint << ",\"matched\":" << message.matched;
+    else
+      out << ",\"index\":" << message.index;
+  }
+  out << ",\"request_id\":" << message.request_id;
+  if constexpr (std::is_same_v<Message, SnapshotRequest>)
+    out << ",\"ready\":" << (message.ready ? "true" : "false");
+}
+
+void write_input(std::ostringstream& out, const Input& input) {
+  out << '{';
+  std::visit(
+      [&out](const auto& event) {
+        using T = std::decay_t<decltype(event)>;
+        if constexpr (std::is_same_v<T, ClientPropose>) {
+          out << "\"command\":";
+          quoted(out, event.command);
+        } else if constexpr (std::is_same_v<T, PersistCompleted> ||
+                             std::is_same_v<T, PersistFailed>) {
+          out << "\"token\":" << event.token;
+        } else if constexpr (std::is_same_v<T, RecvRequestVote> ||
+                             std::is_same_v<T, RecvVoteReply> || std::is_same_v<T, RecvAppend> ||
+                             std::is_same_v<T, RecvAppendReply> ||
+                             std::is_same_v<T, RecvSnapshot> ||
+                             std::is_same_v<T, RecvSnapshotReply>) {
+          write_message(out, event.message);
+        }
+      },
+      input);
+  out << '}';
+}
+
 }  // namespace
 
 const char* trace_action(const Input& input) {
@@ -137,6 +220,31 @@ std::string trace_line(const Config& config, const Node& state, const Input& inp
   out << "],\"durable\":{\"term\":" << disk.term << ",\"log_len\":" << disk.log.size()
       << ",\"commit\":" << disk.commit << ",\"applied\":" << disk.applied
       << "},\"alive\":" << (state.halted ? "false" : "true") << "}}";
+  return out.str();
+}
+
+std::string trace_line_v2(const Config& config, const Node& state, const Input& input,
+                          std::uint64_t sequence) {
+  if (std::holds_alternative<BeginRead>(input) || std::holds_alternative<CancelRead>(input) ||
+      state.volatile_state.read)
+    throw std::invalid_argument("v2 snapshot trace contract does not support read rounds");
+  std::ostringstream out;
+  out << "{\"v\":2,\"seq\":" << sequence << ",\"node\":";
+  quoted(out, config.self);
+  out << ",\"act\":";
+  quoted(out, trace_action(input));
+  out << ",\"in\":";
+  write_input(out, input);
+  out << ",\"post\":";
+  std::ostringstream projection;
+  write_durable(projection, state.pending ? state.pending->target : state.durable);
+  auto staged = projection.str();
+  staged.pop_back();
+  out << staged << ",\"role\":";
+  quoted(out, role_name(state.volatile_state.role));
+  out << ",\"durable\":";
+  write_durable(out, state.durable);
+  out << ",\"alive\":" << (state.halted ? "false" : "true") << "}}";
   return out.str();
 }
 
