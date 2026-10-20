@@ -628,3 +628,7 @@ Exit criterion: demonstrations clearly identify whether recovery came from C++ r
 - [ ] Remaining combined-model, migration, public-read, benchmark, durability,
       security and terminal-demo gates remain required as recorded in
       [AGENT_STATE](docs/AGENT_STATE.md) and the complete execution charter.
+
+2026-10-20: #27 typed TLC export merged f24073b after all exact-head checks and
+artifact verification. Schedule-driven core harness passes 287 normal/285 local
+ASan+UBSan tests; preparing PR. Actual TLC normalization/correspondence unfinished.

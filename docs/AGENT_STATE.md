@@ -1,7 +1,7 @@
 # Agent progress ledger
 
 Latest checkpoint: `agent/t1-b-replay-20261020`, based on export PR #27, from main
-`3265f4af76f9f3eae7daf825a24c9c6a31bbd5c1`. User now authorizes merges after all exact-head checks are green and task
+`f24073b126d41d99761ecf13ffa8221894ea4d1c`. User now authorizes merges after all exact-head checks are green and task
 acceptance is verified. PR #25 merged under that authorization as
 `c19169ed3538aa3d513c2ef5691b12d90947227e`; no direct main push/deployment authorized.
 Follow the complete user charter on PR #25 (`docs/agent-execution-charter.md`,
@@ -20,7 +20,8 @@ Main all-five CI passed in run 39497829946. Recheck live main/PRs before work.
 |---|---|---|---|---|---|---|---|---|
 | T1-A | Baseline/inventory/docs | DONE | yes | yes | yes | yes | Full baseline/source audit/current docs | PR #25 merged c19169e; 279 normal/277 local ASan+UBSan; all exact-head CI green |
 | T1-B.1a | Snapshot diagnostics | DONE | yes | yes | yes | yes | Golden/v1 compatibility/negative cases/full gates | PR #26 merged 3265f4a; 285 normal/283 local ASan+UBSan; all synced-head CI/TLC green |
-| T1-B.1b-export | Actual TLC behavior export | DOING | yes | yes | partial | no | Typed complete real witnesses, parser tests, CI artifacts | [Exporter](tlc-behavior-export.md); six tests/seven real logs pass; 286 normal/284 local ASan+UBSan; hosted CI pending |
+| T1-B.1b-export | Actual TLC behavior export | DONE | yes | yes | yes | yes | Typed complete real witnesses, parser tests, CI artifacts | [Exporter](tlc-behavior-export.md); six tests/seven real logs pass; 286 normal/284 local ASan+UBSan; PR #27 all exact-head CI/TLC green; merged f24073b |
+| T1-B.1b-driver | Compiled-core schedule input | DOING | yes | yes | partial | no | Actual message delivery and persistence tokens; broad tests, malformed-input failures | Eight tests; 287 normal; 285 ASan/UBSan; PR/hosted CI pending |
 | T1-B.1b-replay | TLC-to-C++ mapping/replay | TODO | no | no | no | no | Normalize inputs, durable completion, message IDs and justified stuttering; negative divergence tests | Export is a prerequisite only |
 | T1-B.2 | Combined bounded models | TODO | no | no | no | no | Multi-term replication/loss/dup/restart, Figure 8/snapshots | Existing scoped profiles only |
 | T1-B.3 | Default migration | TODO | no | no | no | no | Parity, real failover, >=1000 fault seeds, benchmark gate | Legacy remains default |
@@ -56,13 +57,14 @@ ptrace/task errors. Local runs use ASan/UBSan without leaks; CI retains
   Local gates pass. TLC run 39504905569 passed; artifact 12302079273
   downloaded and verified: all seven behaviors, 15 variables/state. Archive
   SHA256 e7dc846907ecb8d2eaa0d5f9485aa2862c0c9fe721ee487312db712d2c5bf1aa.
-  CI run 39504905349 pending; do not merge before every exact-head job passes.
+  CI run 39504905349 passed all five exact-head jobs; merged f24073b
+  under existing authorization. Hosted leak checks passed.
 - Conditional merge authorization received: green exact-head checks plus acceptance
   verification. Recheck live main before merge and validate any changed integration.
 
 ## Next 3 actions
-1. Inspect PR #27 remaining CI run 39504905349, verify live main/head, then
-   mark ready and merge only if all checks pass. Artifacts already inspected.
+1. Finish driver broad gates, sync main f24073b, create draft PR and verify
+   exact-head hosted CI before merge. PR #27 is merged and artifacts verified.
 2. Implement actual normalized TLC-to-C++ replay with precise projection and
    justified stuttering, including divergence regressions and snapshot mapping.
 3. Complete combined bounded-model and migration gates, then T1-C onwards.
@@ -101,7 +103,8 @@ assertion was removed. Local LSan remains unsupported; CI leak checks retained.
 
 ## Replay branch resume details
 Current checkout `agent/t1-b-replay-20261020` starts at PR #27's exact head.
-No replay implementation is present yet. Local export merge commit e7d53c0 is
+The schedule-driven C++ input harness is implemented; model normalization and
+projection correspondence are not. Local export merge commit e7d53c0 is
 preserved under checkpoint/tlc-export-local-e7d53c0; its tree equals canonical
 19cad22 (92583644725d6b2c01e3a752f77e2d1041787f14). No unique code discarded.
 Normal build products were removed after validation to free disk. Rebuild with
@@ -119,3 +122,24 @@ noninitial step: locations alone cannot select protocol actions. Derive and
 validate semantic deltas, or introduce reviewed action annotation, before input
 normalization. Term/vote write granularity and separate BecomeLeader remain
 explicit mapping obligations. No field dropping or fabricated stuttering.
+
+
+## Schedule driver checkpoint
+`--replay-inputs` runs a user-provided schedule against actual C++ nodes. It
+captures emitted WireMessage objects, supports delivery/drop/duplicate without
+inventing replies, uses actual pending persistence tokens, and emits v2 rows.
+Eight checks cover delayed effects, packet identity, halt/restart, quoting and
+replication through durable commit/application/compaction; malformed input fails.
+See docs/raft-replay-inputs.md. No production runtime changes. TLC action
+normalization, full message projection, arbitrary same-bucket reordering,
+physical torn storage and snapshot install inputs remain outside this driver.
+A pre-rebuild regression caught missing advance/apply/compact commands; after
+implementation all eight checks pass. Static analysis first caught a helper-
+guarded optional dereference; explicit guard fixed it. Rechecked with exact CI
+bugprone/performance options (existing enum-size/signature exclusions), strict
+warnings-as-errors: zero reported user-code warnings. Black/clang-format pass.
+Normal full suite 287/287 (34.66s); final sanitizer suite 285/285 (52.99s). Earlier driver
+suite 285/285 (59.30s) passed before the equivalent optional-guard cleanup.
+Normal standalone driver checks rerun after unittest discovery integration fix:
+eight pass. Generic Python discovery runs six exporter tests and explicitly skips
+runner-dependent class; CTest supplies a runner and executes all eight.
