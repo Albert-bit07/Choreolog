@@ -21,7 +21,7 @@ Main all-five CI passed in run 39497829946. Recheck live main/PRs before work.
 | T1-A | Baseline/inventory/docs | DONE | yes | yes | yes | yes | Full baseline/source audit/current docs | PR #25 merged c19169e; 279 normal/277 local ASan+UBSan; all exact-head CI green |
 | T1-B.1a | Snapshot diagnostics | DONE | yes | yes | yes | yes | Golden/v1 compatibility/negative cases/full gates | PR #26 merged 3265f4a; 285 normal/283 local ASan+UBSan; all synced-head CI/TLC green |
 | T1-B.1b-export | Actual TLC behavior export | DONE | yes | yes | yes | yes | Typed complete real witnesses, parser tests, CI artifacts | [Exporter](tlc-behavior-export.md); six tests/seven real logs pass; 286 normal/284 local ASan+UBSan; PR #27 all exact-head CI/TLC green; merged f24073b |
-| T1-B.1b-driver | Compiled-core schedule input | DOING | yes | yes | partial | no | Actual message delivery and persistence tokens; broad tests, malformed-input failures | Eight tests; 287 normal; 285 ASan/UBSan; PR/hosted CI pending |
+| T1-B.1b-driver | Compiled-core schedule input | DOING | yes | yes | partial | no | Actual message delivery and persistence tokens; broad tests, malformed-input failures | Eight tests; 287 normal; 285 ASan/UBSan; PR #28 draft, exact-head hosted CI pending |
 | T1-B.1b-replay | TLC-to-C++ mapping/replay | TODO | no | no | no | no | Normalize inputs, durable completion, message IDs and justified stuttering; negative divergence tests | Export is a prerequisite only |
 | T1-B.2 | Combined bounded models | TODO | no | no | no | no | Multi-term replication/loss/dup/restart, Figure 8/snapshots | Existing scoped profiles only |
 | T1-B.3 | Default migration | TODO | no | no | no | no | Parity, real failover, >=1000 fault seeds, benchmark gate | Legacy remains default |
@@ -63,8 +63,10 @@ ptrace/task errors. Local runs use ASan/UBSan without leaks; CI retains
   verification. Recheck live main before merge and validate any changed integration.
 
 ## Next 3 actions
-1. Finish driver broad gates, sync main f24073b, create draft PR and verify
-   exact-head hosted CI before merge. PR #27 is merged and artifacts verified.
+1. Inspect existing draft PR #28 on agent/t1-b-replay-20261020. Resolve its
+   current canonical head from GitHub metadata, inspect every exact-head CI job,
+   verify live main and scoped acceptance, then mark ready/merge only if green.
+   Do not create a duplicate PR. #27 is merged and artifacts verified.
 2. Implement actual normalized TLC-to-C++ replay with precise projection and
    justified stuttering, including divergence regressions and snapshot mapping.
 3. Complete combined bounded-model and migration gates, then T1-C onwards.
@@ -143,3 +145,29 @@ suite 285/285 (59.30s) passed before the equivalent optional-guard cleanup.
 Normal standalone driver checks rerun after unittest discovery integration fix:
 eight pass. Generic Python discovery runs six exporter tests and explicitly skips
 runner-dependent class; CTest supplies a runner and executes all eight.
+
+
+## Work-session handoff
+PR #28 is open as a draft: https://github.com/Albert-bit07/Choreolog/pull/28.
+Initial published head 615b32506d957b861af42db01824ac83d777ec66 has tree
+f5576da4704e413e17f485da3648b868c6e25ca1, identical to locally validated source.
+This final checkpoint updates only this ledger; resolve current head from the
+PR rather than relying on the initial SHA. Hosted CI must pass on that current
+head before merge. No failures may be waived. Local broad gates and static
+analysis are complete; their commands/limits/results are in the committed report.
+No replay normalization code is partially staged. Next code work is semantic
+TLC action identification (generic line-410 locations are insufficient), a
+reviewed term/vote and heartbeat correspondence, then actual replay comparisons
+with divergence mutations. Never report the schedule driver as refinement.
+
+Workspace checkout retains local equivalent commits; remote API commits have
+identical trees but different metadata SHAs. Verify trees before any reset;
+preserve unique local commits on checkpoint branches. Terminal push lacks
+credentials; use GitHub tree/commit/ref APIs with expected-head leases. No main
+push, force push, deployment, release or settings changes authorized.
+
+Automation remains enabled every two hours: skip active work; resume from main,
+open PR and branch ledgers only when idle can be established. If active/idle
+cannot be reliably determined, leave a reminder rather than run duplicate writers.
+The roadmap is not complete: T1-B mapping/model/migration, T1-C–F and later tiers
+remain unfinished. Stop/pause recurring checks once the whole roadmap is done.
