@@ -25,7 +25,7 @@ python scripts/check_runtime_recovery.py --node build/windows-msvc/cpp-runtime/D
 
 The script creates a `TemporaryDirectory`, kills **only its own child processes**, tests a durable receipt before/after restart and removes **only its own temporary contents**. It does not touch the repository's `node-data` folders or kill a running user cluster. Do not run this against a concurrently modified build tree.
 
-**Expected completion (only if the script actually succeeds):** a single `PASS: transition process writes/recovery, ...` line and zero exit code. On failure, the script prints captured process logs and raises an exception. No example output has been fabricated here. This review did **not execute** these commands because the current workspace cannot clone/build from GitHub.
+**Expected completion (only if the script actually succeeds):** a single `PASS: transition process writes/recovery, ...` line and zero exit code. On failure, the script prints captured process logs and raises an exception. No example output has been fabricated here. The checker passed in the [2026-10-20 Linux baseline](../results/t1-a-baseline-20261020.md). This is process-recovery evidence; no terminal recording or three-node scripted demo is claimed.
 
 ## Suggested recording (about 90 seconds)
 

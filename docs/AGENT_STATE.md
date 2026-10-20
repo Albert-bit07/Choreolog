@@ -2,7 +2,7 @@
 
 Latest implementation checkpoint: `agent/t1-b-snapshot-traces-20261020`, based
 on main `332b11b681a6f2f5d007daa25ba67f0b127e5280`; not integrated on main.
-No merges authorized. User preference: idiomatic, reviewable code matching
+User authorizes merging PRs after exact-head CI is green and acceptance is verified. User preference: idiomatic, reviewable code matching
 repository style; focused functions and comments that explain why.
 
 ## Execution charter and environment
@@ -24,7 +24,7 @@ PR conflicted when this slice began. Inspect live main/PRs again before resuming
 ## Task table
 | ID | Title | Status | Implemented | Tested | Validated | Verified | Acceptance criteria | Evidence |
 |---|---|---|---|---|---|---|---|---|
-| T1-A | Baseline and source audit | DONE | yes | yes | yes | no | Baseline/full suite, inventory, truthful docs | PR #25 report; 279/279 normal, 277/277 local ASan/UBSan; not merged |
+| T1-A | Baseline and source audit | DONE | yes | yes | yes | no | Baseline/full suite, inventory, truthful docs | PR #25 report; 279/279 normal, 277/277 local ASan/UBSan; merged c19169e |
 | T1-B.1a | Snapshot diagnostic traces | DOING | yes | yes | no | no | V2 golden, v1 compatibility, five fixtures, eight negative cases, full gates | [Contract](raft-snapshot-traces.md); [Evidence](../results/t1-b-snapshot-traces-20261020.md); local broad gates pass, remote CI pending |
 | T1-B.1b | TLC trace replay/refinement | TODO | no | no | no | no | Actual TLC behavior ingestion and justified projection/stuttering with negative tests | Separate from diagnostic contracts |
 | T1-B.2 | Combined bounded models | TODO | no | no | no | no | Multi-term replication/loss/dup/restart, Figure 8 and snapshots | Existing scoped profiles only |
@@ -54,8 +54,8 @@ Local ASan/UBSan runs use detect_leaks=0; CI retains detect_leaks=1. See PR #25
 baseline report. This does not justify skipping normal tests or weakening CI.
 
 ## PR integration queue
-- PR #25, head 19478b723a1afc344df50ca439d8583d50ba1d49, base 332b11b:
-  baseline accepted on branch, latest CI pending, draft, not merged.
+- PR #25 merged under user authorization as c19169ed3538aa3d513c2ef5691b12d90947227e.
+  All exact-head checks passed in run 39499897103; integrated on main.
 - Snapshot trace slice: prepared for a draft PR; 285/285 normal and 283/283
   local ASan/UBSan pass. Exact-head remote CI required before ready status.
 - No branch depends on an unmerged code change; no merge authorization.
@@ -74,3 +74,13 @@ v2 eight mutations, strict affected-source clang-tidy and format pass.
 No refinement claim; diagnostic slice waits for exact-head remote CI.
 Next independent eligible work is TLC behavior export/replay on a separate
 branch from current main. It need not depend on merging the diagnostic API.
+
+## Integration checkpoint after authorization
+PR #26 original head f57a752 passed all five jobs in run 39500926900 and TLC
+in 39500927016. PR #25 then merged, moving main to c19169e. This branch merges
+that main update and resolves the shared ledger to preserve both baseline and
+snapshot-slice evidence. The upstream delta is prose only; C++/tests/checkers
+are unchanged. Local doc targets and diff checks pass. Exact new-head CI must
+pass before this PR is merged; the old green result is not reused as new CI.
+The latest independent export/mapping investigation is on
+`agent/t1-b-tlc-export-20261020`; it records the concrete term/vote mapping gap.
