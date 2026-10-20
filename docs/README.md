@@ -44,3 +44,5 @@
 Tests, reproduced process behavior and formal properties are separate evidence.
 A green seed is evidence, not a proof. The current runtime is Raft-like;
 bounded model results do not establish C++ refinement.
+
+- [Compiled-core schedule driver](raft-replay-inputs.md) — actual emitted-message delivery; TLC mapping unfinished.

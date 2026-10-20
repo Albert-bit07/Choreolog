@@ -42,3 +42,11 @@ stuttering is implemented. See `docs/raft-model-mapping-gaps.md` for the concret
 higher-term term/vote staging discrepancy; do not drop fields to force agreement.
 Next: resolve that relation explicitly, then replay behaviors with divergence
 mutations. Remaining T1-B and later roadmap gates remain unfinished.
+
+
+Hosted PR #27 TLC run 39504905569 passed on head 19cad22. Downloaded artifact
+12302079273, SHA256 e7dc846907ecb8d2eaa0d5f9485aa2862c0c9fe721ee487312db712d2c5bf1aa:
+all seven typed JSON behaviors retain 15 variables/state. Hosted offline witness
+has three states (local baseline two); other witness lengths match above.
+Exact-head broad CI run 39504905349 passed all five jobs. PR #27 merged
+as f24073b126d41d99761ecf13ffa8221894ea4d1c under conditional authorization.

@@ -1,7 +1,7 @@
 # Agent progress ledger
 
-Latest checkpoint: `agent/t1-b-tlc-export-20261020`, from main
-`3265f4af76f9f3eae7daf825a24c9c6a31bbd5c1`. User now authorizes merges after all exact-head checks are green and task
+Latest checkpoint: `agent/t1-b-replay-20261020`, based on export PR #27, from main
+`f24073b126d41d99761ecf13ffa8221894ea4d1c`. User now authorizes merges after all exact-head checks are green and task
 acceptance is verified. PR #25 merged under that authorization as
 `c19169ed3538aa3d513c2ef5691b12d90947227e`; no direct main push/deployment authorized.
 Follow the complete user charter on PR #25 (`docs/agent-execution-charter.md`,
@@ -20,7 +20,8 @@ Main all-five CI passed in run 39497829946. Recheck live main/PRs before work.
 |---|---|---|---|---|---|---|---|---|
 | T1-A | Baseline/inventory/docs | DONE | yes | yes | yes | yes | Full baseline/source audit/current docs | PR #25 merged c19169e; 279 normal/277 local ASan+UBSan; all exact-head CI green |
 | T1-B.1a | Snapshot diagnostics | DONE | yes | yes | yes | yes | Golden/v1 compatibility/negative cases/full gates | PR #26 merged 3265f4a; 285 normal/283 local ASan+UBSan; all synced-head CI/TLC green |
-| T1-B.1b-export | Actual TLC behavior export | DOING | yes | yes | partial | no | Typed complete real witnesses, parser tests, CI artifacts | [Exporter](tlc-behavior-export.md); six tests/seven real logs pass; 286 normal/284 local ASan+UBSan; hosted CI pending |
+| T1-B.1b-export | Actual TLC behavior export | DONE | yes | yes | yes | yes | Typed complete real witnesses, parser tests, CI artifacts | [Exporter](tlc-behavior-export.md); six tests/seven real logs pass; 286 normal/284 local ASan+UBSan; PR #27 all exact-head CI/TLC green; merged f24073b |
+| T1-B.1b-driver | Compiled-core schedule input | DOING | yes | yes | partial | no | Actual message delivery and persistence tokens; broad tests, malformed-input failures | Eight tests; 287 normal; 285 ASan/UBSan; PR #28 draft, exact-head hosted CI pending |
 | T1-B.1b-replay | TLC-to-C++ mapping/replay | TODO | no | no | no | no | Normalize inputs, durable completion, message IDs and justified stuttering; negative divergence tests | Export is a prerequisite only |
 | T1-B.2 | Combined bounded models | TODO | no | no | no | no | Multi-term replication/loss/dup/restart, Figure 8/snapshots | Existing scoped profiles only |
 | T1-B.3 | Default migration | TODO | no | no | no | no | Parity, real failover, >=1000 fault seeds, benchmark gate | Legacy remains default |
@@ -52,13 +53,20 @@ ptrace/task errors. Local runs use ASan/UBSan without leaks; CI retains
 - #26 synced head 4c657543cd7a0f3571ab154ccdcb922a1263e098 passed five CI
   jobs (39502431789) and TLC (39502432094). Merged under user authorization
   as 3265f4af76f9f3eae7daf825a24c9c6a31bbd5c1; integrated, diagnostic scope only.
-- Export slice: local gates pass; PR creation and exact-head hosted CI pending.
+- Export slice: PR #27 head 19cad222cefdb04a9207faafb2824029436c68c1.
+  Local gates pass. TLC run 39504905569 passed; artifact 12302079273
+  downloaded and verified: all seven behaviors, 15 variables/state. Archive
+  SHA256 e7dc846907ecb8d2eaa0d5f9485aa2862c0c9fe721ee487312db712d2c5bf1aa.
+  CI run 39504905349 passed all five exact-head jobs; merged f24073b
+  under existing authorization. Hosted leak checks passed.
 - Conditional merge authorization received: green exact-head checks plus acceptance
   verification. Recheck live main before merge and validate any changed integration.
 
 ## Next 3 actions
-1. Complete export slice broad gates and fresh TLC witness export, then prepare
-   a PR; verify exact-head CI and uploaded behaviors before merge.
+1. Inspect existing draft PR #28 on agent/t1-b-replay-20261020. Resolve its
+   current canonical head from GitHub metadata, inspect every exact-head CI job,
+   verify live main and scoped acceptance, then mark ready/merge only if green.
+   Do not create a duplicate PR. #27 is merged and artifacts verified.
 2. Implement actual normalized TLC-to-C++ replay with precise projection and
    justified stuttering, including divergence regressions and snapshot mapping.
 3. Complete combined bounded-model and migration gates, then T1-C onwards.
@@ -93,3 +101,73 @@ built node/CLI artifacts. After freeing only reproducible build products,
 rebuilding and restoring executable mode on those owned ELF binaries, the
 single process check and full 278-test sanitizer run passed. No source check or
 assertion was removed. Local LSan remains unsupported; CI leak checks retained.
+
+
+## Replay branch resume details
+Current checkout `agent/t1-b-replay-20261020` starts at PR #27's exact head.
+The schedule-driven C++ input harness is implemented; model normalization and
+projection correspondence are not. Local export merge commit e7d53c0 is
+preserved under checkpoint/tlc-export-local-e7d53c0; its tree equals canonical
+19cad22 (92583644725d6b2c01e3a752f77e2d1041787f14). No unique code discarded.
+Normal build products were removed after validation to free disk. Rebuild with
+-g0 and manifest install disabled, reusing build/linux-gcc/vcpkg_installed.
+Sanitizer build remains available; ASAN_OPTIONS=detect_leaks=0 is required for
+local discovery and tests. Disk currently nearly full; never delete source,
+checkpoints or installed dependencies. Full accepted combined log summaries:
+results/raw/t1-b-tlc-export-20261020/ctest-combined.log (286,34.33s) and
+ctest-sanitizers-final.log (284,51.44s). An earlier overly broad CatchUp regex
+selected 283; final rerun used exact ^CatchUpTest exclusion and includes TCP.
+Hosted ZIP is in the same ignored raw directory, verified against artifact digest.
+
+A fresh leader witness has generic source locations at line 410 for every
+noninitial step: locations alone cannot select protocol actions. Derive and
+validate semantic deltas, or introduce reviewed action annotation, before input
+normalization. Term/vote write granularity and separate BecomeLeader remain
+explicit mapping obligations. No field dropping or fabricated stuttering.
+
+
+## Schedule driver checkpoint
+`--replay-inputs` runs a user-provided schedule against actual C++ nodes. It
+captures emitted WireMessage objects, supports delivery/drop/duplicate without
+inventing replies, uses actual pending persistence tokens, and emits v2 rows.
+Eight checks cover delayed effects, packet identity, halt/restart, quoting and
+replication through durable commit/application/compaction; malformed input fails.
+See docs/raft-replay-inputs.md. No production runtime changes. TLC action
+normalization, full message projection, arbitrary same-bucket reordering,
+physical torn storage and snapshot install inputs remain outside this driver.
+A pre-rebuild regression caught missing advance/apply/compact commands; after
+implementation all eight checks pass. Static analysis first caught a helper-
+guarded optional dereference; explicit guard fixed it. Rechecked with exact CI
+bugprone/performance options (existing enum-size/signature exclusions), strict
+warnings-as-errors: zero reported user-code warnings. Black/clang-format pass.
+Normal full suite 287/287 (34.66s); final sanitizer suite 285/285 (52.99s). Earlier driver
+suite 285/285 (59.30s) passed before the equivalent optional-guard cleanup.
+Normal standalone driver checks rerun after unittest discovery integration fix:
+eight pass. Generic Python discovery runs six exporter tests and explicitly skips
+runner-dependent class; CTest supplies a runner and executes all eight.
+
+
+## Work-session handoff
+PR #28 is open as a draft: https://github.com/Albert-bit07/Choreolog/pull/28.
+Initial published head 615b32506d957b861af42db01824ac83d777ec66 has tree
+f5576da4704e413e17f485da3648b868c6e25ca1, identical to locally validated source.
+This final checkpoint updates only this ledger; resolve current head from the
+PR rather than relying on the initial SHA. Hosted CI must pass on that current
+head before merge. No failures may be waived. Local broad gates and static
+analysis are complete; their commands/limits/results are in the committed report.
+No replay normalization code is partially staged. Next code work is semantic
+TLC action identification (generic line-410 locations are insufficient), a
+reviewed term/vote and heartbeat correspondence, then actual replay comparisons
+with divergence mutations. Never report the schedule driver as refinement.
+
+Workspace checkout retains local equivalent commits; remote API commits have
+identical trees but different metadata SHAs. Verify trees before any reset;
+preserve unique local commits on checkpoint branches. Terminal push lacks
+credentials; use GitHub tree/commit/ref APIs with expected-head leases. No main
+push, force push, deployment, release or settings changes authorized.
+
+Automation remains enabled every two hours: skip active work; resume from main,
+open PR and branch ledgers only when idle can be established. If active/idle
+cannot be reliably determined, leave a reminder rather than run duplicate writers.
+The roadmap is not complete: T1-B mapping/model/migration, T1-C–F and later tiers
+remain unfinished. Stop/pause recurring checks once the whole roadmap is done.

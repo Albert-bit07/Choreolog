@@ -1,10 +1,14 @@
 // Bounded, reproducible C++ transition scenarios. This is NOT a driver for
 // the production Replica, nor a mechanically generated TLA+ behavior.
+#include <algorithm>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -319,12 +323,103 @@ void snapshot_contract() {
   }
 }
 
+// Schedule input uses actual emitted messages and current write tokens. It
+// cannot manufacture replies or deliver effects before their durability gate.
+void replay_inputs() {
+  Harness h{"replay-inputs", true};
+  struct Queued {
+    std::string from;
+    Outbound output;
+  };
+  std::vector<Queued> network;
+  auto advance = [&](const std::string& actor, const Input& input) {
+    require(h.nodes.contains(actor), "unknown replay actor");
+    auto effects = h.advance(actor, input);
+    for (auto& output : effects.send_now) network.push_back({actor, std::move(output)});
+  };
+  auto delivered = [](const WireMessage& message) -> Input {
+    return std::visit(
+        [](const auto& value) -> Input {
+          using T = std::decay_t<decltype(value)>;
+          if constexpr (std::is_same_v<T, RequestVote>) return RecvRequestVote{value};
+          if constexpr (std::is_same_v<T, VoteReply>) return RecvVoteReply{value};
+          if constexpr (std::is_same_v<T, AppendEntries>) return RecvAppend{value};
+          if constexpr (std::is_same_v<T, AppendReply>) return RecvAppendReply{value};
+          if constexpr (std::is_same_v<T, SnapshotReply>) return RecvSnapshotReply{value};
+        },
+        message);
+  };
+  std::string line;
+  std::size_t count = 0;
+  while (std::getline(std::cin, line)) {
+    require(++count <= 10000 && line.size() <= 65536, "replay schedule limit exceeded");
+    std::istringstream fields(line);
+    std::string operation, actor;
+    require(static_cast<bool>(fields >> operation >> actor), "incomplete replay command");
+    require(h.nodes.contains(actor), "unknown replay actor");
+    // Validate the entire line before invoking a transition.
+    std::string destination, kind, value, extra;
+    if (operation == "deliver" || operation == "drop" || operation == "duplicate") {
+      require(static_cast<bool>(fields >> destination >> kind), "missing delivery context");
+      require(h.nodes.contains(destination), "unknown replay destination");
+    } else if (operation == "propose") {
+      require(static_cast<bool>(fields >> std::quoted(value)), "missing proposal value");
+    }
+    require(!(fields >> extra), "unexpected replay fields");
+    if (operation == "timeout") {
+      advance(actor, ElectionTimeout{});
+    } else if (operation == "heartbeat") {
+      advance(actor, HeartbeatTimeout{});
+    } else if (operation == "propose") {
+      advance(actor, ClientPropose{value});
+    } else if (operation == "advance") {
+      advance(actor, AdvanceCommit{});
+    } else if (operation == "apply") {
+      advance(actor, ApplyCommitted{});
+    } else if (operation == "compact") {
+      advance(actor, CompactCommitted{});
+    } else if (operation == "restart") {
+      advance(actor, Restart{});
+    } else if (operation == "complete" || operation == "fail") {
+      const auto& pending = h.nodes.at(actor).pending;
+      if (!pending) throw std::runtime_error("no pending replay write");
+      const auto token = pending->token;
+      if (operation == "complete")
+        advance(actor, PersistCompleted{token});
+      else
+        advance(actor, PersistFailed{token});
+    } else if (operation == "deliver" || operation == "drop" || operation == "duplicate") {
+      const auto found = std::find_if(network.begin(), network.end(), [&](const auto& queued) {
+        return queued.from == actor && queued.output.to == destination &&
+               kind == message_kind(queued.output.message);
+      });
+      require(found != network.end(), "replay message is not available");
+      const auto message = found->output.message;
+      if (operation == "duplicate") {
+        const auto copy = *found;
+        network.push_back(copy);
+      } else {
+        network.erase(found);
+        if (operation == "deliver") advance(destination, delivered(message));
+      }
+    } else {
+      throw std::runtime_error("unknown replay operation");
+    }
+  }
+  require(count != 0, "empty replay schedule");
+  require(!std::cin.bad(), "cannot read replay schedule");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   try {
     if (argc == 2 && std::string(argv[1]) == "--snapshot-contract") {
       snapshot_contract();
+      return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--replay-inputs") {
+      replay_inputs();
       return 0;
     }
     require(argc == 1, "unknown scenario runner arguments");

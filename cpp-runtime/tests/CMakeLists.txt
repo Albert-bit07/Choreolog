@@ -104,3 +104,11 @@ add_test(
   COMMAND "${Python3_EXECUTABLE}"
           "${PROJECT_SOURCE_DIR}/scripts/tests/test_export_tlc_trace.py"
 )
+
+add_test(
+  NAME raft-replay-input-tests
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/tests/test_raft_replay_inputs.py"
+          "$<TARGET_FILE:choreoos-raft-conformance>"
+)
+set_tests_properties(raft-replay-input-tests PROPERTIES TIMEOUT 90)

@@ -43,6 +43,11 @@ metadata writes or omit vote comparisons solely to make a trace pass.
 
 ## Other obligations visible in current source
 
+- `BecomeLeader` updates role/epoch/progress without sending heartbeats. C++
+  promotes during vote-reply handling and immediately emits two AppendEntries.
+  The actual nine-state leader witness ends before any model `SendAE`; role
+  and network correspondence therefore need explicit extra model steps, not
+  silent message dropping.
 - The model gives AppendEntries replies a leadership epoch; C++ correlates
   exact outstanding probes. Normalize message identity/coverage explicitly.
 - Model `AdvanceCommit` updates knowledge, then `PersistCommit` persists it;
