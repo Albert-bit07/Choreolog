@@ -21,6 +21,8 @@
 - [Pure transition core](raft-transition-core.md)
 - [Trace contract and refinement limits](raft-conformance.md)
 - [Bounded TLA+ models](../formal/raft/README.md)
+- [Actual TLC behavior export](tlc-behavior-export.md)
+- [Observed model/core projection gaps](raft-model-mapping-gaps.md)
 - [Quorum read primitive; public integration unfinished](raft-read-barriers.md)
 
 ## Storage correspondence and snapshots

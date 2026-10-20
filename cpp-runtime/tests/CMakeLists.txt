@@ -96,3 +96,11 @@ add_test(
           --snapshot-contract --self-test
 )
 set_tests_properties(raft-snapshot-trace-contract PROPERTIES TIMEOUT 90)
+
+# Parsing full TLC output must reject unsupported/truncated states rather than
+# inventing missing model context. No Java needed for these parser regressions.
+add_test(
+  NAME tlc-behavior-export-tests
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/tests/test_export_tlc_trace.py"
+)

@@ -1,86 +1,95 @@
 # Agent progress ledger
 
-Latest implementation checkpoint: `agent/t1-b-snapshot-traces-20261020`, based
-on main `332b11b681a6f2f5d007daa25ba67f0b127e5280`; not integrated on main.
-User authorizes merging PRs after exact-head CI is green and acceptance is verified. User preference: idiomatic, reviewable code matching
-repository style; focused functions and comments that explain why.
+Latest checkpoint: `agent/t1-b-tlc-export-20261020`, from main
+`3265f4af76f9f3eae7daf825a24c9c6a31bbd5c1`. User now authorizes merges after all exact-head checks are green and task
+acceptance is verified. PR #25 merged under that authorization as
+`c19169ed3538aa3d513c2ef5691b12d90947227e`; no direct main push/deployment authorized.
+Follow the complete user charter on PR #25 (`docs/agent-execution-charter.md`,
+Sections 0–4) before resuming. Keep code idiomatic, focused and reviewable.
 
-## Execution charter and environment
-The full user charter and baseline source inventory are preserved on
-[PR #25](https://github.com/Albert-bit07/Choreolog/pull/25), branch
-`agent/t1-a-baseline-20261020` (`docs/agent-execution-charter.md`). Read Sections
-0–4 before resuming. This branch is independent of that unmerged prose work.
-Linux, GCC 13.3, CMake 4.4.4, Ninja 1.13.2; clang-format/tidy 18.1.8;
-pinned vcpkg 6e856794a; Java 17 and SHA-verified TLC 1.7.4. .NET/Docker absent.
-Git clone/fetch and GitHub connector work; terminal push lacks credentials.
-Save with connected tree/commit/ref APIs; never expose credentials.
-
-## Repo state at session start
-Main started at 2eb118e (PR #23). PR #24 was merged externally as 332b11b;
-only presentation docs changed. This agent performed no merge.
-Main 332b11b passed all five CI jobs in run 39497829946. No open implementation
-PR conflicted when this slice began. Inspect live main/PRs again before resuming.
+## Environment and repo state
+Linux GCC 13.3, CMake 4.4.4/Ninja 1.13.2; format/tidy 18.1.8; pinned vcpkg
+6e856794a. Java 17, SHA-verified TLC 1.7.4 available. .NET/Docker absent.
+Terminal git fetch/clone works, push has no credentials; GitHub tree/commit/ref
+connector saves branches without exposing credentials.
+Main initially 2eb118e. PR #24 merged externally as 332b11b, prose only.
+Main all-five CI passed in run 39497829946. Recheck live main/PRs before work.
 
 ## Task table
 | ID | Title | Status | Implemented | Tested | Validated | Verified | Acceptance criteria | Evidence |
 |---|---|---|---|---|---|---|---|---|
-| T1-A | Baseline and source audit | DONE | yes | yes | yes | no | Baseline/full suite, inventory, truthful docs | PR #25 report; 279/279 normal, 277/277 local ASan/UBSan; merged c19169e |
-| T1-B.1a | Snapshot diagnostic traces | DOING | yes | yes | no | no | V2 golden, v1 compatibility, five fixtures, eight negative cases, full gates | [Contract](raft-snapshot-traces.md); [Evidence](../results/t1-b-snapshot-traces-20261020.md); local broad gates pass, remote CI pending |
-| T1-B.1b | TLC trace replay/refinement | TODO | no | no | no | no | Actual TLC behavior ingestion and justified projection/stuttering with negative tests | Separate from diagnostic contracts |
-| T1-B.2 | Combined bounded models | TODO | no | no | no | no | Multi-term replication/loss/dup/restart, Figure 8 and snapshots | Existing scoped profiles only |
-| T1-B.3 | Default transition backend | TODO | no | no | no | no | Dual-backend parity, process failover, 1000 seeded schedules, benchmark gate | Legacy remains default |
-| T1-C | Public linearizable reads/checker | TODO | partial | no | no | no | Public quorum path, minority-old-leader/election tests, known-bad histories | Primitive from PR #23 only |
-| T1-D | Benchmarks/profile | TODO | no | no | no | no | Release baseline/profile and evidence-based optimization decision | No new performance claim |
-| T1-E | Durability/security | TODO | no | no | no | no | Bounded receipts, lost-write harness, management auth | Unfinished |
-| T1-F | Metrics and real failover demo | TODO | no | no | no | no | One command, three processes, recovery/state assertions and captured output | Unfinished |
+| T1-A | Baseline/inventory/docs | DONE | yes | yes | yes | yes | Full baseline/source audit/current docs | PR #25 merged c19169e; 279 normal/277 local ASan+UBSan; all exact-head CI green |
+| T1-B.1a | Snapshot diagnostics | DONE | yes | yes | yes | yes | Golden/v1 compatibility/negative cases/full gates | PR #26 merged 3265f4a; 285 normal/283 local ASan+UBSan; all synced-head CI/TLC green |
+| T1-B.1b-export | Actual TLC behavior export | DOING | yes | yes | partial | no | Typed complete real witnesses, parser tests, CI artifacts | [Exporter](tlc-behavior-export.md); six tests/seven real logs pass; 286 normal/284 local ASan+UBSan; hosted CI pending |
+| T1-B.1b-replay | TLC-to-C++ mapping/replay | TODO | no | no | no | no | Normalize inputs, durable completion, message IDs and justified stuttering; negative divergence tests | Export is a prerequisite only |
+| T1-B.2 | Combined bounded models | TODO | no | no | no | no | Multi-term replication/loss/dup/restart, Figure 8/snapshots | Existing scoped profiles only |
+| T1-B.3 | Default migration | TODO | no | no | no | no | Parity, real failover, >=1000 fault seeds, benchmark gate | Legacy remains default |
+| T1-C | Public read consistency/history checker | TODO | partial | no | no | no | Quorum read API, partition/election tests, stale-read mutation | Primitive only from PR #23 |
+| T1-D | Benchmarks/profile | TODO | no | no | no | no | Reproduced baseline/profile/optimization decision | Unfinished |
+| T1-E | Retention/power-loss/management auth | TODO | no | no | no | no | Specs, formats/fixtures, seeded/crash/security tests | Unfinished |
+| T1-F | Metrics/three-process terminal demo | TODO | no | no | no | no | One-command failover, recovery/hash assertions and captured output | Unfinished |
 | T2-A/B/C | Dashboard/Temporal/packaging | TODO | no | no | no | no | Tier 1 gate first | Deferred |
-| T3 | Research/stretch | TODO | no | no | no | no | Precise proof scope before implementation | Deferred |
+| T3 | Research/stretch | TODO | no | no | no | no | Precise proof boundary first | Deferred |
 
-## Decisions log
-- Risk: high, because diagnostics/checkers can misstate correctness.
-- Invariant: only matching durable completion publishes snapshot boundaries and
-  releases dependent replies; compaction preserves exact suffix, install retains
-  it only for an agreeing anchor; durable absolute indexes never regress.
-- Add v2 alongside v1, preserving v1 bytes and refusal behavior. No persistence,
-  node wire, storage or consensus behavior change; pure core remains untouched.
-- Public read diagnostics stay unsupported. Snapshot trace checking does not
-  imply TLC refinement, snapshot payload validation or general safety proof.
+## Decisions and scope
+- High risk: correctness evidence parser and CI can misstate what was checked.
+- Preserve full TLC states/types and provenance; reject ambiguous/truncated
+  syntax rather than invent missing values. No eval, no inferred action mapping.
+- This adds export/CI artifacts on integrated main after PRs #25/#26;
+  no production runtime changes.
+- No model/invariant/bounds, runtime, format or persistence ordering changed.
+- Export does not satisfy C++ replay or refinement; snapshots remain unmodeled.
 
 ## Blockers and limitations
-No roadmap blocker established. Local LSan cannot inspect sandbox task
-threads. Three reproductions: default gtest discovery, verbose LSAN retry,
-minimal ASan `int main(){return 0;}`. All fail with LSan fatal task/ptrace errors.
-Local ASan/UBSan runs use detect_leaks=0; CI retains detect_leaks=1. See PR #25
-baseline report. This does not justify skipping normal tests or weakening CI.
+No roadmap blocker established. Local LSan cannot inspect /proc task threads:
+default discovery, verbose retry and minimal ASan program reproduce fatal
+ptrace/task errors. Local runs use ASan/UBSan without leaks; CI retains
+`detect_leaks=1`. No checks/assertions/seeds/timeouts weakened. See PR #25.
 
 ## PR integration queue
-- PR #25 merged under user authorization as c19169ed3538aa3d513c2ef5691b12d90947227e.
-  All exact-head checks passed in run 39499897103; integrated on main.
-- Snapshot trace slice: prepared for a draft PR; 285/285 normal and 283/283
-  local ASan/UBSan pass. Exact-head remote CI required before ready status.
-- No branch depends on an unmerged code change; no merge authorization.
+- #25: `19478b723a1afc344df50ca439d8583d50ba1d49`, all five exact-head checks
+  green in run 39499897103. Merged as c19169ed3538aa3d513c2ef5691b12d90947227e; integrated on main.
+- #26 synced head 4c657543cd7a0f3571ab154ccdcb922a1263e098 passed five CI
+  jobs (39502431789) and TLC (39502432094). Merged under user authorization
+  as 3265f4af76f9f3eae7daf825a24c9c6a31bbd5c1; integrated, diagnostic scope only.
+- Export slice: local gates pass; PR creation and exact-head hosted CI pending.
+- Conditional merge authorization received: green exact-head checks plus acceptance
+  verification. Recheck live main before merge and validate any changed integration.
 
 ## Next 3 actions
-1. Run full normal/sanitizer gates and targeted clang-tidy on the snapshot slice;
-   preserve any failure and compare current main before preparing its PR.
-2. Implement TLC behavior export/replay and a precise model projection, including
-   snapshots/compaction and justified stuttering; diagnose mismatches honestly.
-3. Complete bounded-model and migration gates in order, then public read work.
+1. Complete export slice broad gates and fresh TLC witness export, then prepare
+   a PR; verify exact-head CI and uploaded behaviors before merge.
+2. Implement actual normalized TLC-to-C++ replay with precise projection and
+   justified stuttering, including divergence regressions and snapshot mapping.
+3. Complete combined bounded-model and migration gates, then T1-C onwards.
 
-## Implementation checkpoint
-[Evidence](../results/t1-b-snapshot-traces-20261020.md): full normal 285/285
-(35.20s), local ASan/UBSan 283/283 (50.35s), 8 trace unit tests, v1 six and
-v2 eight mutations, strict affected-source clang-tidy and format pass.
-No refinement claim; diagnostic slice waits for exact-head remote CI.
-Next independent eligible work is TLC behavior export/replay on a separate
-branch from current main. It need not depend on merging the diagnostic API.
+## Mapping investigation checkpoint
+Actual nine-state leader witness versus compiled C++ shows different staged/
+durable term+vote granularity; see [paired observations](raft-model-mapping-gaps.md).
+No comparison was weakened and no stuttering claim was invented. The next
+replay change must explicitly represent/justify this relation (or review a
+compound model action), preserving negative durable-vote detection.
 
-## Integration checkpoint after authorization
-PR #26 original head f57a752 passed all five jobs in run 39500926900 and TLC
-in 39500927016. PR #25 then merged, moving main to c19169e. This branch merges
-that main update and resolves the shared ledger to preserve both baseline and
-snapshot-slice evidence. The upstream delta is prose only; C++/tests/checkers
-are unchanged. Local doc targets and diff checks pass. Exact new-head CI must
-pass before this PR is merged; the old green result is not reused as new CI.
-The latest independent export/mapping investigation is on
-`agent/t1-b-tlc-export-20261020`; it records the concrete term/vote mapping gap.
+## Current integration and scheduling checkpoint
+Merged live main 3265f4a into export branch. Resolved CTest append conflict by
+keeping both the snapshot contract and exporter tests, including v2 unit cases.
+Consolidated this ledger; full charter and prior evidence are now on main.
+User's 2026-10-20 conditional merge authorization supersedes the charter's
+original per-PR merge prohibition: merge only after exact-head green checks and
+verified scope acceptance. No direct main push, deployments or releases.
+A two-hour resume-check automation is configured. It skips active work and
+resumes from the latest ledger when idle can be confirmed; if activity cannot
+be reliably determined it provides a resume reminder instead of duplicating
+writers. Do not promise uninterrupted execution beyond a run.
+
+Local export-only baseline (before this integration): 280 normal (34.50s),
+278 ASan/UBSan (52.96s), six parser regressions, seven real behaviors and a fresh
+20-state application witness. Combined validation passed: 286 normal (34.33s), 284 ASan/UBSan (51.44s),
+only the two existing ^CatchUpTest exclusions. Normal Debug used -g0 for disk
+space; assertions/strict warnings retained. Benchmarks disabled locally.
+See results/t1-b-tlc-export-20261020.md. Raw logs are ignored; summary committed.
+Disk-full failures are preserved: sanitizer process recovery hit non-executable
+built node/CLI artifacts. After freeing only reproducible build products,
+rebuilding and restoring executable mode on those owned ELF binaries, the
+single process check and full 278-test sanitizer run passed. No source check or
+assertion was removed. Local LSan remains unsupported; CI leak checks retained.
