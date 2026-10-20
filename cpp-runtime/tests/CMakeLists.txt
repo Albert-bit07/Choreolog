@@ -23,6 +23,7 @@ add_executable(
   unit/file_engine_adapter_test.cpp
   unit/raft_durable_test.cpp
   unit/raft_trace_test.cpp
+  unit/raft_trace_v2_test.cpp
   unit/catchup_test.cpp
   unit/network_capacity_test.cpp
   unit/config_test.cpp
@@ -84,3 +85,14 @@ add_test(
           --replay "$<TARGET_FILE:choreoos-replay>"
 )
 set_tests_properties(transition-runtime-process-recovery PROPERTIES TIMEOUT 120)
+
+# Snapshot-aware diagnostics supplement v1; neither contract claims TLC replay.
+add_test(
+  NAME raft-snapshot-trace-contract
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/check_raft_conformance.py"
+          --runner "$<TARGET_FILE:choreoos-raft-conformance>"
+          --schema "${PROJECT_SOURCE_DIR}/formal/raft/trace-schema.v2.json"
+          --snapshot-contract --self-test
+)
+set_tests_properties(raft-snapshot-trace-contract PROPERTIES TIMEOUT 90)

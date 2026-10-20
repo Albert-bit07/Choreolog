@@ -268,19 +268,27 @@ def main() -> int:
     parser.add_argument("--runner", required=True, help="path to compiled C++ scenario executable")
     parser.add_argument("--schema", required=True, type=pathlib.Path)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--snapshot-contract", action="store_true",
+                        help="check v2 snapshot diagnostics, not TLC refinement")
     args = parser.parse_args()
     schema = json.loads(args.schema.read_text(encoding="utf-8"))
-    execution = subprocess.run([args.runner], capture_output=True, text=True, timeout=60,
+    command = [args.runner] + (["--snapshot-contract"] if args.snapshot_contract else [])
+    execution = subprocess.run(command, capture_output=True, text=True, timeout=60,
                                check=False)
     demand(execution.returncode == 0,
            f"C++ scenario runner failed ({execution.returncode}): {execution.stderr}")
     rows = parse_trace(execution.stdout)
-    counts = validate(rows, schema)
+    if args.snapshot_contract:
+        from raft_snapshot_contract import validate as validator, check_mutants as mutations
+    else:
+        validator, mutations = validate, check_mutants
+    counts = validator(rows, schema)
     if args.self_test:
-        check_mutants(rows, schema)
+        mutations(rows, schema)
     print("Raft trace contract PASS:", ", ".join(f"{name}={count}" for name, count in counts.items()))
     if args.self_test:
-        print("All six deliberately invalid trace mutations were rejected.")
+        count = "eight snapshot" if args.snapshot_contract else "six"
+        print(f"All {count} deliberately invalid trace mutations were rejected.")
     print("Scope: bounded observable safety contract, NOT TLC-to-C++ refinement.")
     return 0
 

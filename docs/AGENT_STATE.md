@@ -1,85 +1,86 @@
 # Agent progress ledger
 
-Execution contract: [Master Prompt v3](agent-execution-charter.md). Read Sections
-0–4 before resuming. User preference: clear, idiomatic code matching local style;
-small functions and comments explaining why. No merges authorized.
+Latest implementation checkpoint: `agent/t1-b-snapshot-traces-20261020`, based
+on main `332b11b681a6f2f5d007daa25ba67f0b127e5280`; not integrated on main.
+User authorizes merging PRs after exact-head CI is green and acceptance is verified. User preference: idiomatic, reviewable code matching
+repository style; focused functions and comments that explain why.
 
-## Environment facts
-Session 2026-10-20. Linux development terminal and GitHub connector accessible.
-GCC 13.3, CMake 4.4.4, Ninja 1.13.2, clang-format 18.1.8.
-Pinned vcpkg `6e856794a` bootstrapped; baseline configure in progress.
-.NET SDK and Docker absent. Java 17.0.20 is available (initial Java absence
-was an unchecked assumption, corrected here). clang-tidy 18.1.8 is installed.
-No full build/CTest result claimed yet.
+## Execution charter and environment
+The full user charter and baseline source inventory are preserved on
+[PR #25](https://github.com/Albert-bit07/Choreolog/pull/25), branch
+`agent/t1-a-baseline-20261020` (`docs/agent-execution-charter.md`). Read Sections
+0–4 before resuming. This branch is independent of that unmerged prose work.
+Linux, GCC 13.3, CMake 4.4.4, Ninja 1.13.2; clang-format/tidy 18.1.8;
+pinned vcpkg 6e856794a; Java 17 and SHA-verified TLC 1.7.4. .NET/Docker absent.
+Git clone/fetch and GitHub connector work; terminal push lacks credentials.
+Save with connected tree/commit/ref APIs; never expose credentials.
 
 ## Repo state at session start
-Main: `2eb118e46c56275fce64fd2c9ed66bb8373b0c37` (PR #23 merged).
-PR #24 is open, draft, head `0a4471ddcb7dd2a483195c5a043ada3f348c1a58`;
-it owns README, technical overview and guided demo prose. Do not duplicate it.
-PR #24 was merged externally during the session as
-`332b11b681a6f2f5d007daa25ba67f0b127e5280`; branch fast-forwarded to it.
-Runtime source is unchanged. No merges performed by this agent or authorized. Latest ledger lives on `agent/t1-a-baseline-20261020`, not main.
+Main started at 2eb118e (PR #23). PR #24 was merged externally as 332b11b;
+only presentation docs changed. This agent performed no merge.
+Main 332b11b passed all five CI jobs in run 39497829946. No open implementation
+PR conflicted when this slice began. Inspect live main/PRs again before resuming.
 
 ## Task table
 | ID | Title | Status | Implemented | Tested | Validated | Verified | Acceptance criteria | Evidence |
 |---|---|---|---|---|---|---|---|---|
-| T1-A | Baseline, CI, truthful docs | DONE | yes | yes | yes | no | Full baseline, inventory, executable deviations, current docs | [Report](../results/t1-a-baseline-20261020.md); [inventory](consensus-field-inventory.md); not merged |
-| T1-B | Consensus/conformance | TODO | partial | no | no | no | Trace v2, bounded models, migration gates | Existing core; evidence reinspection pending |
-| T1-C | Public read consistency | TODO | partial | no | no | no | Public quorum reads and fault history checker | PR #23 provides primitive only |
-| T1-D | Benchmarks/profile | TODO | no | no | no | no | Reproducible report and optimization decision | Pending |
-| T1-E | Durability/security | TODO | no | no | no | no | Bounded receipts, power-loss tests, management auth | Pending |
-| T1-F | Observability/demo | TODO | no | no | no | no | Real three-process failover and convergence assertions | Pending |
-| T2-A/B/C | Product/orchestration/packaging | TODO | no | no | no | no | Tier 1 gate first | Deferred by charter |
-| T3 | Research/stretch | TODO | no | no | no | no | Precisely scoped proof artifacts | Deferred by charter |
+| T1-A | Baseline and source audit | DONE | yes | yes | yes | no | Baseline/full suite, inventory, truthful docs | PR #25 report; 279/279 normal, 277/277 local ASan/UBSan; merged c19169e |
+| T1-B.1a | Snapshot diagnostic traces | DOING | yes | yes | no | no | V2 golden, v1 compatibility, five fixtures, eight negative cases, full gates | [Contract](raft-snapshot-traces.md); [Evidence](../results/t1-b-snapshot-traces-20261020.md); local broad gates pass, remote CI pending |
+| T1-B.1b | TLC trace replay/refinement | TODO | no | no | no | no | Actual TLC behavior ingestion and justified projection/stuttering with negative tests | Separate from diagnostic contracts |
+| T1-B.2 | Combined bounded models | TODO | no | no | no | no | Multi-term replication/loss/dup/restart, Figure 8 and snapshots | Existing scoped profiles only |
+| T1-B.3 | Default transition backend | TODO | no | no | no | no | Dual-backend parity, process failover, 1000 seeded schedules, benchmark gate | Legacy remains default |
+| T1-C | Public linearizable reads/checker | TODO | partial | no | no | no | Public quorum path, minority-old-leader/election tests, known-bad histories | Primitive from PR #23 only |
+| T1-D | Benchmarks/profile | TODO | no | no | no | no | Release baseline/profile and evidence-based optimization decision | No new performance claim |
+| T1-E | Durability/security | TODO | no | no | no | no | Bounded receipts, lost-write harness, management auth | Unfinished |
+| T1-F | Metrics and real failover demo | TODO | no | no | no | no | One command, three processes, recovery/state assertions and captured output | Unfinished |
+| T2-A/B/C | Dashboard/Temporal/packaging | TODO | no | no | no | no | Tier 1 gate first | Deferred |
+| T3 | Research/stretch | TODO | no | no | no | no | Precise proof scope before implementation | Deferred |
 
 ## Decisions log
-- 2026-10-20: Start from live main; keep PR #24's presentation work independent.
-- Evidence columns describe this session's evidence; prior PR claims need reinspection.
+- Risk: high, because diagnostics/checkers can misstate correctness.
+- Invariant: only matching durable completion publishes snapshot boundaries and
+  releases dependent replies; compaction preserves exact suffix, install retains
+  it only for an agreeing anchor; durable absolute indexes never regress.
+- Add v2 alongside v1, preserving v1 bytes and refusal behavior. No persistence,
+  node wire, storage or consensus behavior change; pure core remains untouched.
+- Public read diagnostics stay unsupported. Snapshot trace checking does not
+  imply TLC refinement, snapshot payload validation or general safety proof.
 
-## Blockers
-No roadmap blocker established. Environment setup attempts:
-- Plain `apt-get update` failed with `setgroups (1: Operation not permitted)`.
-- Root-sandbox apt update succeeded; broad install did not progress downloads and
-  was terminated before installation. No system permission escalation requested.
-- Installed CMake/Ninja/format from pip; pinned vcpkg configure initially failed
-  `Could not find pkg-config`. Extracted pkgconf Debian packages locally and
-  restarted configure with a local executable wrapper. Dependency build ongoing.
+## Blockers and limitations
+No roadmap blocker established. Local LSan cannot inspect sandbox task
+threads. Three reproductions: default gtest discovery, verbose LSAN retry,
+minimal ASan `int main(){return 0;}`. All fail with LSan fatal task/ptrace errors.
+Local ASan/UBSan runs use detect_leaks=0; CI retains detect_leaks=1. See PR #25
+baseline report. This does not justify skipping normal tests or weakening CI.
 
 ## PR integration queue
-[PR #25](https://github.com/Albert-bit07/Choreolog/pull/25): DRAFT / VALIDATION
-PENDING, head `fb3ea1e71899861f85ec3f3f272e50a08d268afa`, base `332b11b`.
-No dependency on unmerged work; no runtime behavior changes.
-PR #24 was merged externally; no merge authorization for this agent.
-Main CI on `2eb118e` succeeded: [run 39168201024](https://github.com/Albert-bit07/Choreolog/actions/runs/39168201024).
-PR #23 reviewed head `dca5f46` passed all five jobs in run 39042874728;
-this is historical CI evidence, not local execution or a new formal result.
-Main `332b11b` all five jobs passed in run 39497829946.
+- PR #25 merged under user authorization as c19169ed3538aa3d513c2ef5691b12d90947227e.
+  All exact-head checks passed in run 39499897103; integrated on main.
+- Snapshot trace slice: prepared for a draft PR; 285/285 normal and 283/283
+  local ASan/UBSan pass. Exact-head remote CI required before ready status.
+- No branch depends on an unmerged code change; no merge authorization.
 
 ## Next 3 actions
-1. Finish PR #25 CI on its latest documentation-only head; no merge without authorization.
-2. Continue T1-B snapshot trace slice on independent `agent/t1-b-snapshot-traces-20261020`, based on main `332b11b`.
-3. Add TLC behavior replay/mapping and bounded multi-term model coverage before default migration gates.
+1. Run full normal/sanitizer gates and targeted clang-tidy on the snapshot slice;
+   preserve any failure and compare current main before preparing its PR.
+2. Implement TLC behavior export/replay and a precise model projection, including
+   snapshots/compaction and justified stuttering; diagnose mismatches honestly.
+3. Complete bounded-model and migration gates in order, then public read work.
 
-## Validation in progress
-- Local doc targets and `git diff --check`: pass.
-- GCC strict standalone compilation of existing transition trace runner: pass;
-  checker reports 32 rows across five families and rejects all six mutations.
-- Pinned TLC v1.7.4 SHA-256 matches CI. Existing six positive profiles passed:
-  Election 32,315 distinct states, ElectionTwoTerms 185,762, Replication 62,904,
-  ChoreoRaftCore 5,090, Recovery 88,966, TwoTermElection 46,897.
-  Seven expected invariant counterexamples (negative vote plus six witnesses)
-  returned exit 12 with the required invariant names. These are unchanged
-  existing model profiles, not new combined/snapshot coverage or C++ refinement.
-- Full CMake configure is building pinned OpenSSL after the other dependencies.
-- Direct git push cannot read a GitHub username in this terminal. Connected
-  GitHub tree/commit/ref APIs work; remote tree exactly matched local tree.
-  Local branch was rebased to the connector-created equivalent commit.
+## Implementation checkpoint
+[Evidence](../results/t1-b-snapshot-traces-20261020.md): full normal 285/285
+(35.20s), local ASan/UBSan 283/283 (50.35s), 8 trace unit tests, v1 six and
+v2 eight mutations, strict affected-source clang-tidy and format pass.
+No refinement claim; diagnostic slice waits for exact-head remote CI.
+Next independent eligible work is TLC behavior export/replay on a separate
+branch from current main. It need not depend on merging the diagnostic API.
 
-## Baseline acceptance checkpoint
-Full normal 279/279 (36.53s), local ASan/UBSan 277/277 (50.85s).
-Local leak detection is unsupported: default discovery, verbose retry and a
-minimal ASan program all fail inspecting `/proc/.../task`. No repository check
-was relaxed; CI leak checking passed on main. See the report for exact evidence.
-T1-A acceptance is met on this branch; integrated-on-main remains **no**.
-PR #25 remains a draft until its latest-head CI is checked. T1-B diagnostic
-snapshot trace work is independent and does not depend on merging these docs.
+## Integration checkpoint after authorization
+PR #26 original head f57a752 passed all five jobs in run 39500926900 and TLC
+in 39500927016. PR #25 then merged, moving main to c19169e. This branch merges
+that main update and resolves the shared ledger to preserve both baseline and
+snapshot-slice evidence. The upstream delta is prose only; C++/tests/checkers
+are unchanged. Local doc targets and diff checks pass. Exact new-head CI must
+pass before this PR is merged; the old green result is not reused as new CI.
+The latest independent export/mapping investigation is on
+`agent/t1-b-tlc-export-20261020`; it records the concrete term/vote mapping gap.

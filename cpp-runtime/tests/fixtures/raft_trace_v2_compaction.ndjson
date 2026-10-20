@@ -1,0 +1,1 @@
+{"v":2,"seq":7,"node":"b","act":"CompactCommitted","in":{},"post":{"term":3,"votedFor":null,"log":[],"commit":6,"applied":6,"snapshot_index":6,"snapshot_term":3,"role":"Follower","durable":{"term":3,"votedFor":null,"log":[{"term":3,"val":"committed"}],"commit":6,"applied":6,"snapshot_index":5,"snapshot_term":2},"alive":true}}

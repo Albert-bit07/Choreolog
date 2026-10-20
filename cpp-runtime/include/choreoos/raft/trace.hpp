@@ -20,4 +20,10 @@ namespace choreoos::raft {
 [[nodiscard]] std::string trace_line(const Config& config, const Node& state, const Input& input,
                                      std::uint64_t sequence);
 
+// Snapshot-aware diagnostic contract. Includes complete staged/durable suffixes
+// and replayable input fields. Does not claim a TLC refinement mapping; reads
+// remain unsupported. V1 is unchanged and continues to reject snapshot inputs.
+[[nodiscard]] std::string trace_line_v2(const Config& config, const Node& state, const Input& input,
+                                        std::uint64_t sequence);
+
 }  // namespace choreoos::raft

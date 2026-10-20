@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ChoreoRaft snapshot-aware diagnostic trace v2",
+  "description": "Not a TLC refinement mapping; snapshots carry boundary metadata, not verified application payloads. V1 remains supported separately.",
+  "type": "object",
+  "required": [
+    "v",
+    "seq",
+    "node",
+    "act",
+    "in",
+    "post"
+  ],
+  "properties": {
+    "v": {
+      "const": 2
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "node": {
+      "type": "string"
+    },
+    "act": {
+      "enum": [
+        "Timeout",
+        "BecomeLeader",
+        "PersistCompleted",
+        "PersistFailed",
+        "Crash",
+        "PersistCommit",
+        "Apply",
+        "AdvanceCommit",
+        "ClientPropose",
+        "SendAppend",
+        "UpdateTerm",
+        "HandleRVReq",
+        "HandleRVResp",
+        "HandleAEReq",
+        "HandleAEResp",
+        "DropMsg",
+        "DuplicateMsg",
+        "Restart",
+        "CompactCommitted",
+        "InstallSnapshot",
+        "SnapshotReply"
+      ]
+    },
+    "in": {
+      "type": "object"
+    },
+    "post": {
+      "$ref": "#/$defs/post"
+    },
+    "pre": {
+      "$ref": "#/$defs/post"
+    }
+  },
+  "$defs": {
+    "durable": {
+      "type": "object",
+      "required": [
+        "term",
+        "votedFor",
+        "log",
+        "commit",
+        "applied",
+        "snapshot_index",
+        "snapshot_term"
+      ],
+      "properties": {
+        "term": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "commit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "applied": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "snapshot_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "snapshot_term": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "votedFor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "log": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "term",
+              "val"
+            ],
+            "properties": {
+              "term": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "val": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "post": {
+      "type": "object",
+      "required": [
+        "term",
+        "votedFor",
+        "log",
+        "commit",
+        "applied",
+        "snapshot_index",
+        "snapshot_term",
+        "role",
+        "durable",
+        "alive"
+      ],
+      "properties": {
+        "term": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "commit": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "applied": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "snapshot_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "snapshot_term": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "votedFor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "log": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "term",
+              "val"
+            ],
+            "properties": {
+              "term": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "val": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "role": {
+          "enum": [
+            "Follower",
+            "Candidate",
+            "Leader"
+          ]
+        },
+        "durable": {
+          "$ref": "#/$defs/durable"
+        },
+        "alive": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
