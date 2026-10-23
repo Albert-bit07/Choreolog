@@ -1,5 +1,8 @@
 # Agent progress ledger
 
+> **CURRENT VERIFIED CHECKPOINT — 2026-10-23 17:21 UTC (repository audit).** Live `main` is `dcd96bf63b1dd480e95d92d8502e58ca23ae7371` and there are **zero open PRs**. PR #28 was merged on 2026-10-20 at this main SHA; its former head `3e80913ec0d1968107c3d83bdaa3b8f55705f034` is historical. All five exact-main-head CI checks passed in [push run 39509654255](https://github.com/Albert-bit07/Choreolog/actions/runs/39509654255) (Linux, Windows, management API, API audit, formatting). T1-B.1b schedule-driver implementation is integrated and checked; **TLC-to-C++ replay/refinement remains TODO**, as do bounded combined models, default migration and T1-C onward. This audit did not rerun tests locally. Old draft/CI-pending lines below are retained as dated historical checkpoints, not current state. Next engineering action: normalize actual TLC witnesses to schedule inputs with explicit term/vote and heartbeat correspondence, retaining negative divergence tests.
+
+
 Latest checkpoint: `agent/t1-b-replay-20261020`, based on export PR #27, from main
 `f24073b126d41d99761ecf13ffa8221894ea4d1c`. User now authorizes merges after all exact-head checks are green and task
 acceptance is verified. PR #25 merged under that authorization as
@@ -21,7 +24,7 @@ Main all-five CI passed in run 39497829946. Recheck live main/PRs before work.
 | T1-A | Baseline/inventory/docs | DONE | yes | yes | yes | yes | Full baseline/source audit/current docs | PR #25 merged c19169e; 279 normal/277 local ASan+UBSan; all exact-head CI green |
 | T1-B.1a | Snapshot diagnostics | DONE | yes | yes | yes | yes | Golden/v1 compatibility/negative cases/full gates | PR #26 merged 3265f4a; 285 normal/283 local ASan+UBSan; all synced-head CI/TLC green |
 | T1-B.1b-export | Actual TLC behavior export | DONE | yes | yes | yes | yes | Typed complete real witnesses, parser tests, CI artifacts | [Exporter](tlc-behavior-export.md); six tests/seven real logs pass; 286 normal/284 local ASan+UBSan; PR #27 all exact-head CI/TLC green; merged f24073b |
-| T1-B.1b-driver | Compiled-core schedule input | DOING | yes | yes | partial | no | Actual message delivery and persistence tokens; broad tests, malformed-input failures | Eight tests; 287 normal; 285 ASan/UBSan; PR #28 draft, exact-head hosted CI pending |
+| T1-B.1b-driver | Compiled-core schedule input | DONE (MERGED) | yes | yes | yes (bounded driver) | yes (CI + acceptance) | Actual message delivery and persistence tokens; malformed-input regressions | PR #28 merged dcd96bf; 287 normal/285 selected ASan+UBSan (author report); exact-main-head CI run 39509654255 all five green |
 | T1-B.1b-replay | TLC-to-C++ mapping/replay | TODO | no | no | no | no | Normalize inputs, durable completion, message IDs and justified stuttering; negative divergence tests | Export is a prerequisite only |
 | T1-B.2 | Combined bounded models | TODO | no | no | no | no | Multi-term replication/loss/dup/restart, Figure 8/snapshots | Existing scoped profiles only |
 | T1-B.3 | Default migration | TODO | no | no | no | no | Parity, real failover, >=1000 fault seeds, benchmark gate | Legacy remains default |
@@ -62,14 +65,10 @@ ptrace/task errors. Local runs use ASan/UBSan without leaks; CI retains
 - Conditional merge authorization received: green exact-head checks plus acceptance
   verification. Recheck live main before merge and validate any changed integration.
 
-## Next 3 actions
-1. Inspect existing draft PR #28 on agent/t1-b-replay-20261020. Resolve its
-   current canonical head from GitHub metadata, inspect every exact-head CI job,
-   verify live main and scoped acceptance, then mark ready/merge only if green.
-   Do not create a duplicate PR. #27 is merged and artifacts verified.
-2. Implement actual normalized TLC-to-C++ replay with precise projection and
-   justified stuttering, including divergence regressions and snapshot mapping.
-3. Complete combined bounded-model and migration gates, then T1-C onwards.
+## Next 3 actions (current as of 2026-10-23)
+1. Implement actual TLC witness-to-C++ schedule normalization, explicitly model pending term/vote writes and leader-heartbeat emission, and add negative divergence tests. Do not claim stuttering without a tested abstraction.
+2. Extend bounded model profiles for multi-term replication, loss/duplication/restarts, Figure 8 and snapshot boundaries, retaining exact witnesses and CI artifacts.
+3. Complete default-engine parity/migration gates and then T1-C public read consistency; maintain separate evidence for runtime TCP/disk recovery and model correspondence.
 
 ## Mapping investigation checkpoint
 Actual nine-state leader witness versus compiled C++ shows different staged/
@@ -147,8 +146,8 @@ eight pass. Generic Python discovery runs six exporter tests and explicitly skip
 runner-dependent class; CTest supplies a runner and executes all eight.
 
 
-## Work-session handoff
-PR #28 is open as a draft: https://github.com/Albert-bit07/Choreolog/pull/28.
+## Historical work-session handoff (superseded by current checkpoint above)
+At this older handoff PR #28 was open as a draft: https://github.com/Albert-bit07/Choreolog/pull/28.
 Initial published head 615b32506d957b861af42db01824ac83d777ec66 has tree
 f5576da4704e413e17f485da3648b868c6e25ca1, identical to locally validated source.
 This final checkpoint updates only this ledger; resolve current head from the

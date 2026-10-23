@@ -632,3 +632,13 @@ Exit criterion: demonstrations clearly identify whether recovery came from C++ r
 2026-10-20: #27 typed TLC export merged f24073b after all exact-head checks and
 artifact verification. Schedule-driven core harness passes 287 normal/285 local
 ASan+UBSan tests; preparing PR. Actual TLC normalization/correspondence unfinished.
+
+
+### Repository audit checkpoint — 2026-10-23 (documentation reconciliation)
+
+- [x] PR #28 schedule-driven compiled-core harness merged to `main` at `dcd96bf63b1dd480e95d92d8502e58ca23ae7371` on 2026-10-20; eight driver regression cases, 287 normal and 285 selected sanitizer tests were reported by the implementing run.
+- [x] Exact-main-head push CI [39509654255](https://github.com/Albert-bit07/Choreolog/actions/runs/39509654255) completed successfully across all five jobs (format, Ubuntu, Windows, management-api, api-audit). This checkpoint only inspects GitHub evidence; it does not rerun local tests.
+- [ ] T1-B actual TLC witness normalization and C++ projection/refinement is **not** complete; the staged/durable vote granularity and initial leader-heartbeat differences remain open, as documented in `docs/raft-model-mapping-gaps.md`.
+- [ ] T1-B combined bounded models and default migration, plus T1-C through T1-F, remain outstanding. Legacy consensus stays default and the transition engine opt-in.
+
+The earlier 2026-10-20 "preparing PR" and "CI pending" notes are preserved as dated history, not current status. As of this audit, there were zero open PRs before this documentation-only reconciliation branch was created.
