@@ -106,7 +106,7 @@ struct Harness {
         // Model-to-core comparisons must not accept two indistinguishable
         // RVReq kinds sent to the same peer or with a different term.
         std::ostringstream destination;
-        quoted(destination, message.to);
+        destination << std::quoted(message.to);
         trace += ",\"to\":" + destination.str();
         const auto term = std::visit([](const auto& m) { return m.term; }, message.message);
         const auto id = std::visit([](const auto& m) { return m.request_id; }, message.message);
@@ -114,7 +114,7 @@ struct Harness {
         trace += ",\"request_id\":" + std::to_string(id);
         if (const auto* vote = std::get_if<RequestVote>(&message.message)) {
           std::ostringstream candidate;
-          quoted(candidate, vote->candidate);
+          candidate << std::quoted(vote->candidate);
           trace += ",\"candidate\":" + candidate.str();
           trace += ",\"last_index\":" + std::to_string(vote->last_index);
           trace += ",\"last_term\":" + std::to_string(vote->last_term);
