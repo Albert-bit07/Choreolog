@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 from test_combined_tlc_witness import verify, WitnessMismatch, check_higher_term_envelope
-from tlc_witness_prefix import node_function
+from tlc_witness_prefix import message_bag, node_function
 
 PINNED = {
     False: ("ReachCombinedHandoff.cfg", "e766580a7ca53762b3b3184263176a3f07356572c9ea787429f37b30d233c72f",
@@ -152,6 +152,52 @@ def compare_split_fsync_stutter(doc, staged, synced):
            "model term-only disk state was incorrectly collapsed into C++ state")
 
 
+def model_successor_promotion(doc):
+    """Find the unique actual TLC candidate-to-leader transition for s2."""
+    transitions = []
+    for index, (before, after) in enumerate(zip(doc["states"], doc["states"][1:]), 1):
+        old, new = before["variables"], after["variables"]
+        if (node_function(old["role"])["s2"] == {"$model": "Candidate"} and
+                node_function(new["role"])["s2"] == {"$model": "Leader"}):
+            transitions.append((index, old, new))
+    demand(len(transitions) == 1, "missing or ambiguous model successor promotion")
+    return transitions[0]
+
+
+def compare_model_promotion_to_core_heartbeats(doc, elected):
+    """Relate model promotion to C++ initial sends without inventing model sends.
+
+    BecomeLeader in ChoreoRaft.tla leaves net unchanged. The compiled core
+    immediately emits two AEReq heartbeats on promotion. Only role/term and
+    peer identity correspond; model and core network bags are NOT identical.
+    """
+    _, old, new = model_successor_promotion(doc)
+    model_before = node_function(old["mem"])["s2"]
+    model_after = node_function(new["mem"])["s2"]
+    model_disk_before = node_function(old["disk"])["s2"]
+    model_disk_after = node_function(new["disk"])["s2"]
+    model_alive = node_function(new["alive"])
+    demand(model_before["term"] == model_after["term"] == 2 and
+           model_disk_before == model_disk_after and
+           model_disk_after["term"] == 2 and
+           message_bag(old["net"]) == message_bag(new["net"]),
+           "model promotion unexpectedly changed term, durable state or network")
+    demand(all(model_alive[node] is True for node in ("s1", "s2", "s3")),
+           "model successor promotion has unreviewed offline peers")
+    demand(elected["node"] == "b" and elected["act"] == "HandleRVResp" and
+           elected["post"]["role"] == "Leader" and elected["post"]["term"] == 2,
+           "compiled successor promotion role/term diverged")
+    sends = elected["effects"]["send"]
+    peers = {"s1": "a", "s3": "c"}
+    demand(len(sends) == len(peers) and
+           {message.get("to") for message in sends} == set(peers.values()) and
+           all(message.get("kind") == "AEReq" and message.get("term") == 2 and
+               type(message.get("request_id")) is int and
+               message["request_id"] > 0 for message in sends) and
+           len({message["request_id"] for message in sends}) == len(peers),
+           "compiled initial heartbeat peer identity or correlation diverged")
+
+
 def compare(doc, rows, crash):
     commands = schedule(crash)
     demand(len(rows) == len(commands), "wrong compiled schedule length")
@@ -250,6 +296,7 @@ def compare(doc, rows, crash):
            b_leader["post"]["durable"]["votedFor"] == "b" and
            b_leader["post"]["durable"]["log"] == expected_log,
            "higher-term leader checkpoint diverged")
+    compare_model_promotion_to_core_heartbeats(doc, b_leader)
     heartbeats = b_leader["effects"]["send"]
     demand(len(heartbeats) == 2 and {m.get("to") for m in heartbeats} == {"a", "c"}
            and all(m.get("kind") == "AEReq" and m.get("term") == 2
@@ -398,6 +445,8 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 lambda r: r[16 + offset]["effects"]["send"][0].update(last_index=0),
                 lambda r: r[19 + offset]["post"].update(role="Candidate"),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(to="b"),
+                lambda r: r[19 + offset]["effects"]["send"][0].update(term=1),
+                lambda r: r[19 + offset]["effects"]["send"][1].update(request_id=0),
                 lambda r: r[20 + offset]["post"]["durable"].update(term=1),
                 lambda r: r[20 + offset]["post"]["durable"].update(log=[]),
                 lambda r: r[20 + offset]["post"].update(votedFor="a"),
@@ -415,6 +464,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                     with self.assertRaises(BridgeMismatch):
                         compare(doc, rows, crash)
             phases = check_higher_term_envelope(doc["states"], "s1", "s2")
+            promotion_index, _, _ = model_successor_promotion(doc)
             model_mutations = [
                 lambda d: node_function(d["states"][-1]["variables"]["disk"])["s2"]["log"].update(
                     {"$sequence": []}),
@@ -428,6 +478,11 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                     "s1"].update(votedFor={"$model": "s2"}),
                 lambda d: node_function(d["states"][phases["vote_stage"]]["variables"]["disk"])[
                     "s1"].update(votedFor={"$model": "s2"}),
+                # BecomeLeader is network-stuttering in TLC; unlike C++, it
+                # must not emit heartbeats in the same action.
+                lambda d: d["states"][promotion_index]["variables"].update(net={
+                    "$function": [[{"mtype": "AEReq", "msrc": {"$model": "s2"},
+                                   "mdst": {"$model": "s1"}}, 1]]}),
             ]
             for index, mutate in enumerate(model_mutations, 1):
                 with self.subTest(crash=crash, model_mutation=index):
