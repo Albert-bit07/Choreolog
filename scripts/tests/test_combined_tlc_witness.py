@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tlc_witness_prefix import NODES, REQUIRED, canonical, node_function
+from tlc_witness_prefix import NODES, REQUIRED, canonical, message_bag, node_function
 
 
 class WitnessMismatch(ValueError):
@@ -68,6 +68,72 @@ def leader_for(values, term):
     return actor
 
 
+
+def check_higher_term_envelope(states, primary, successor):
+    """Check actual model term-fsync then vote-fsync, not a C++ lockstep replay."""
+    phases = {}
+    for offset, (old, new) in enumerate(zip(states, states[1:]), 1):
+        before, after = old["variables"], new["variables"]
+        bm, am = node_function(before["mem"])[primary], node_function(after["mem"])[primary]
+        bd, ad = node_function(before["disk"])[primary], node_function(after["disk"])[primary]
+        bp, ap = node_function(before["pending"])[primary], node_function(after["pending"])[primary]
+        if bm["term"] == 1 and am["term"] == 2:
+            require("term_stage" not in phases and am["votedFor"] == {"$model": "Nil"}
+                    and bd == ad and bd["term"] == 1
+                    and isinstance(ap, dict) and "target" in ap
+                    and ap["target"]["term"] == 2
+                    and ap["target"]["votedFor"] == {"$model": "Nil"}
+                    and ap["after"] == {"$set": []}, "invalid higher-term stage")
+            phases["term_stage"] = offset
+        if bd["term"] == 1 and ad["term"] == 2:
+            require("term_sync" not in phases
+                    and ad["votedFor"] == {"$model": "Nil"}
+                    and isinstance(bp, dict) and "target" in bp
+                    and bp["target"]["term"] == 2
+                    and bp["target"]["votedFor"] == {"$model": "Nil"}
+                    and ap == {"$model": "Nil"}
+                    and am["votedFor"] == {"$model": "Nil"}
+                    and message_bag(before["net"]) == message_bag(after["net"]),
+                    "invalid term fsync")
+            phases["term_sync"] = offset
+        if (bm["votedFor"] == {"$model": "Nil"}
+                and am["votedFor"] == {"$model": successor} and am["term"] == 2):
+            require("vote_stage" not in phases and bd == ad and ad["term"] == 2
+                    and ad["votedFor"] == {"$model": "Nil"}
+                    and isinstance(ap, dict) and "target" in ap
+                    and ap["target"]["votedFor"] == {"$model": successor}
+                    and ap["target"]["term"] == 2
+                    and len(ap["after"]["$set"]) == 1,
+                    "invalid higher-term vote stage")
+            reply = ap["after"]["$set"][0]
+            require(reply["mtype"] == "RVResp" and reply["granted"] is True
+                    and reply["mterm"] == 2
+                    and reply["msrc"] == {"$model": primary}
+                    and reply["mdst"] == {"$model": successor},
+                    "invalid deferred higher-term reply")
+            phases["vote_stage"] = offset
+        if (bd["votedFor"] == {"$model": "Nil"}
+                and ad["votedFor"] == {"$model": successor} and ad["term"] == 2):
+            require("vote_sync" not in phases
+                    and isinstance(bp, dict) and "target" in bp
+                    and bp["target"]["votedFor"] == {"$model": successor}
+                    and ap == {"$model": "Nil"} and len(bp["after"]["$set"]) == 1,
+                    "invalid vote fsync")
+            reply = bp["after"]["$set"][0]
+            expected = dict(message_bag(before["net"]))
+            key = canonical(reply)
+            expected[key] = expected.get(key, 0) + 1
+            require(message_bag(after["net"]) == expected,
+                    "vote reply was not released exactly at fsync")
+            phases["vote_sync"] = offset
+    require(set(phases) == {"term_stage", "term_sync", "vote_stage", "vote_sync"},
+            "missing higher-term split-write phase")
+    require(phases["term_stage"] < phases["term_sync"] <
+            phases["vote_stage"] < phases["vote_sync"],
+            "higher-term term/vote durability order diverged")
+    return phases
+
+
 def verify(document, invariant, model, config, crash=False):
     require(isinstance(document, dict) and document.get("v") == 1
             and document.get("kind") == "tlc-text-behavior", "invalid typed export")
@@ -116,6 +182,7 @@ def verify(document, invariant, model, config, crash=False):
             and node_function(before["variables"]["disk"])[primary]["applied"] == 1
             for before, after in zip(states, states[1:])
         ), "no post-handoff offline transition after durable apply")
+    check_higher_term_envelope(states, primary, successor)
     return primary, successor
 
 
@@ -166,6 +233,35 @@ def check_mutations(document, invariant, model, config, crash):
             lambda d: node_function(final(d)["disk"])[primary].update(applied=0),
             lambda d: final(d).update(ghostApplied={"$set": []}),
         ])
+
+    # Mutate the four *actual* higher-term phases in both model witnesses.
+    # Each must be rejected independently; none is silently collapsed into
+    # the C++ combined term/vote persistence callback.
+    phases = check_higher_term_envelope(document["states"], primary, successor)
+
+    def phase_node(d, phase, field):
+        pairs = d["states"][phases[phase]]["variables"][field]["$function"]
+        for pair in pairs:
+            if pair[0] == {"$model": primary}:
+                return pair[1]
+        raise WitnessMismatch("missing primary node in phase mutation")
+
+    mutations.extend([
+        lambda d: phase_node(d, "term_stage", "pending")["target"].update(term=3),
+        lambda d: phase_node(d, "term_stage", "disk").update(term=2),
+        lambda d: phase_node(d, "term_sync", "disk").update(
+            votedFor={"$model": successor}),
+        lambda d: phase_node(d, "vote_stage", "pending").update(after={"$set": []}),
+        lambda d: phase_node(d, "vote_stage", "disk").update(
+            votedFor={"$model": successor}),
+        lambda d: phase_node(d, "vote_sync", "disk").update(
+            votedFor={"$model": "Nil"}),
+        lambda d: d["states"][phases["vote_sync"]]["variables"].update(
+            net=copy.deepcopy(d["states"][phases["vote_stage"]]["variables"]["net"])),
+        lambda d: phase_node(d, "vote_stage", "pending")["target"].update(
+            votedFor={"$model": "Nil"}),
+    ])
+
     for index, change in enumerate(mutations, 1):
         try:
             mutate(change)
