@@ -21,6 +21,76 @@ def run(schedule):
     return result, [json.loads(line) for line in result.stdout.splitlines()]
 
 
+
+TWO_TERM_ELECTION = (
+    ELECTION
+    + "timeout b\ncomplete b\ndeliver b a RVReq\ncomplete a\n"
+    + "deliver a b RVResp\nrestart a\n"
+)
+
+
+def check_two_term_election(rows):
+    """Verify a second leader election preserves higher-term votes across restart.
+
+    This is a compiled-core schedule check, not a TLC refinement proof.
+    """
+    if len(rows) != 11:
+        raise ValueError("unexpected two-term replay length")
+
+    def require(condition, reason):
+        if not condition:
+            raise ValueError(reason)
+
+    require([row["seq"] for row in rows] == list(range(11)),
+            "non-contiguous replay sequence")
+    require(rows[4]["post"]["role"] == "Leader" and
+            rows[4]["post"]["term"] == 1, "first leader was not elected")
+    timed_out, term_synced, vote_staged, vote_synced, elected, restarted = rows[5:]
+    require(timed_out["node"] == "b" and timed_out["act"] == "Timeout" and
+            timed_out["post"]["term"] == 2 and
+            timed_out["post"]["votedFor"] == "b" and
+            timed_out["effects"]["send"] == [], "second election leaked votes before fsync")
+    require(term_synced["node"] == "b" and
+            term_synced["post"]["durable"]["term"] == 2 and
+            term_synced["post"]["durable"]["votedFor"] == "b",
+            "second candidate did not durably self-vote")
+    requests = [msg for msg in term_synced["effects"]["send"]
+                if msg["kind"] == "RVReq" and msg["to"] == "a"]
+    require(len(requests) == 1 and requests[0]["term"] == 2,
+            "second candidate did not send a term-two request")
+    require(vote_staged["node"] == "a" and
+            vote_staged["act"] == "HandleRVReq" and
+            vote_staged["post"]["term"] == 2 and
+            vote_staged["post"]["votedFor"] == "b" and
+            vote_staged["post"]["durable"]["term"] == 1 and
+            vote_staged["post"]["durable"]["votedFor"] == "a" and
+            vote_staged["effects"]["send"] == [],
+            "old leader did not stage a higher-term vote safely")
+    token = vote_staged["pending_after"]
+    require(type(token) is int and token > 0 and
+            vote_staged["effects"]["persist"] == token and
+            vote_synced["pending_before"] == token and
+            vote_synced["pending_after"] is None,
+            "higher-term vote did not preserve fsync token continuity")
+    require(vote_synced["post"]["durable"]["term"] == 2 and
+            vote_synced["post"]["durable"]["votedFor"] == "b",
+            "old leader acknowledged an incorrect durable vote")
+    replies = vote_synced["effects"]["send"]
+    require(len(replies) == 1 and replies[0]["kind"] == "RVResp" and
+            replies[0]["to"] == "b" and replies[0]["term"] == 2 and
+            replies[0]["positive"] is True and
+            replies[0]["request_id"] == requests[0]["request_id"],
+            "higher-term vote reply not correlated with request")
+    require(elected["node"] == "b" and elected["post"]["role"] == "Leader" and
+            elected["post"]["term"] == 2, "second candidate was not elected")
+    require(restarted["node"] == "a" and
+            restarted["post"]["term"] == 2 and
+            restarted["post"]["votedFor"] == "b" and
+            restarted["post"]["durable"]["term"] == 2 and
+            restarted["post"]["durable"]["votedFor"] == "b",
+            "restart forgot acknowledged higher-term vote")
+
+
 class ReplayInputsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -90,6 +160,51 @@ class ReplayInputsTest(unittest.TestCase):
         self.assertEqual(rows[-1]["post"]["durable"]["commit"], 1)
         self.assertEqual(rows[-1]["post"]["durable"]["applied"], 1)
         self.assertEqual(rows[-1]["post"]["durable"]["log"], [])
+
+
+    def test_second_term_election_and_restart_preserve_durable_vote(self):
+        result, rows = run(TWO_TERM_ELECTION)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        check_two_term_election(rows)
+
+    def test_two_term_trace_mutations_are_detected(self):
+        import copy
+
+        result, original = run(TWO_TERM_ELECTION)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        check_two_term_election(original)
+        mutations = [
+            lambda r: r[5]["post"].update(term=1),
+            lambda r: r[5]["effects"].update(send=[{"kind": "RVReq"}]),
+            lambda r: r[6]["post"]["durable"].update(votedFor=None),
+            lambda r: r[7]["post"].update(term=1),
+            lambda r: r[7]["post"].update(votedFor="a"),
+            lambda r: r[7]["post"]["durable"].update(term=2),
+            lambda r: r[7]["effects"].update(send=[{"kind": "RVResp"}]),
+            lambda r: r[8]["post"]["durable"].update(votedFor=None),
+            lambda r: r[8].update(pending_before=-1),
+            lambda r: r[8]["effects"].update(send=[]),
+            lambda r: r[9]["post"].update(role="Candidate"),
+            lambda r: r[10]["post"]["durable"].update(term=1),
+            lambda r: r[10]["post"]["durable"].update(votedFor=None),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                rows = copy.deepcopy(original)
+                mutate(rows)
+                with self.assertRaises(ValueError):
+                    check_two_term_election(rows)
+
+    def test_failed_higher_term_vote_does_not_release_reply(self):
+        schedule = (ELECTION + "timeout b\ncomplete b\ndeliver b a RVReq\n"
+                    "fail a\ndeliver a b RVResp\n")
+        result, rows = run(schedule)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("message is not available", result.stderr)
+        self.assertEqual(len(rows), 9)
+        self.assertEqual(rows[7]["effects"]["send"], [])
+        self.assertEqual(rows[8]["effects"]["send"], [])
+        self.assertFalse(rows[8]["post"]["alive"])
 
     def test_invalid_commands_fail_before_transition(self):
         for command, error in [
