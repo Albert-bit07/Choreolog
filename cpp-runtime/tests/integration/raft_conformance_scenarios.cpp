@@ -108,12 +108,11 @@ struct Harness {
         std::ostringstream destination;
         quoted(destination, message.to);
         trace += ",\"to\":" + destination.str();
-        trace += ",\"term\":" +
-                 std::to_string(std::visit([](const auto& wire) { return wire.term; },
-                                           message.message));
-        trace += ",\"request_id\":" +
-                 std::to_string(std::visit([](const auto& wire) { return wire.request_id; },
-                                           message.message));
+        const auto term = std::visit([](const auto& wire) { return wire.term; }, message.message);
+        const auto id = std::visit([](const auto& wire) { return wire.request_id; },
+                                   message.message);
+        trace += ",\"term\":" + std::to_string(term);
+        trace += ",\"request_id\":" + std::to_string(id);
         if (const auto* vote = std::get_if<RequestVote>(&message.message)) {
           std::ostringstream candidate;
           quoted(candidate, vote->candidate);
