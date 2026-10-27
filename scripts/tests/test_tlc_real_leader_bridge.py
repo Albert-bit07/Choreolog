@@ -32,7 +32,8 @@ def real_witness():
     raw = zlib.decompress(compressed)
     require(hashlib.sha256(raw).hexdigest() == WITNESS_SHA256, 'TLC witness digest mismatch')
     document = json.loads(raw)
-    require(document.get('config') == 'ReachLeader.cfg' and len(document['states']) == 9,
+    require(isinstance(document.get('config'), dict) and
+            document['config'].get('name') == 'ReachLeader.cfg' and len(document['states']) == 9,
             'unexpected archived TLC witness')
     return document
 
