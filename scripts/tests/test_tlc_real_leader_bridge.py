@@ -74,9 +74,10 @@ def check_model_split(witness):
         require(vote_name(node(states[index], 'pending')) == 'Nil',
                 'TLC persistence callback did not clear pending')
     # Preserve the model's actual network-bag behavior across the split write.
-    # UpdateTerm consumes s1's vote request to s2; neither fsync nor vote
-    # staging is allowed to send a reply. Vote fsync adds exactly one reply,
-    # and HandleRVResp consumes it. BecomeLeader does not emit model heartbeats.
+    # UpdateTerm and term fsync leave the vote request in the model bag.
+    # HandleRVReq consumes it while staging the vote. Vote fsync releases
+    # exactly one reply, then HandleRVResp consumes it. BecomeLeader does not
+    # emit model heartbeats.
     bags = [message_bag(state['net']) for state in states]
     request_bag = states[2]['net']
     require(isinstance(request_bag, dict) and set(request_bag) == {'$function'},
@@ -92,9 +93,10 @@ def check_model_split(witness):
     key = canonical(delivered[0])
     require(after_delivery.get(key) == 1, 'missing delivered request in model bag')
     del after_delivery[key]
-    require(bags[3] == after_delivery, 'UpdateTerm model delivery bag divergence')
-    require(bags[4] == bags[3] and bags[5] == bags[4],
-            'term fsync or vote staging changed model network')
+    require(bags[3] == bags[2] and bags[4] == bags[3],
+            'UpdateTerm or term fsync changed model network')
+    require(bags[5] == after_delivery,
+            'HandleRVReq did not consume exactly the delivered vote request')
     added = {k: n - bags[5].get(k, 0) for k, n in bags[6].items()
              if n > bags[5].get(k, 0)}
     require(len(added) == 1 and next(iter(added.values())) == 1,
@@ -203,7 +205,7 @@ class RealTLCLeaderBridgeTests(unittest.TestCase):
             lambda w: node(w['states'][5]['variables'], 'disk').update(votedFor={'$model': 's1'}),
             lambda w: node(w['states'][6]['variables'], 'disk').update(votedFor={'$model': 'Nil'}),
             lambda w: node(w['states'][3]['variables'], 'pending')['target'].update(votedFor={'$model': 's1'}),
-            lambda w: w['states'][3]['variables'].update(net=copy.deepcopy(w['states'][2]['variables']['net'])),
+            lambda w: w['states'][3]['variables'].update(net=copy.deepcopy(w['states'][5]['variables']['net'])),
             lambda w: w['states'][4]['variables'].update(net={'$sequence': []}),
             lambda w: w['states'][5]['variables'].update(net={'$sequence': []}),
             lambda w: w['states'][6]['variables'].update(net=copy.deepcopy(w['states'][5]['variables']['net'])),
