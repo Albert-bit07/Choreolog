@@ -110,3 +110,33 @@ actions; they are **not** sound state-space-preserving reductions of full
 
 Persistence mapping caveats are recorded in
 [docs/raft-storage-audit.md](../../docs/raft-storage-audit.md).
+
+## Proposed bounded combined profile (draft; CI evidence pending)
+
+`ChoreoRaftCombined.cfg` and `ReachCombinedHandoff.cfg` use the existing
+asynchronous `ChoreoRaft.tla` state machine with two terms, one command value,
+one entry per log, two queued messages, and two leadership epochs. The new
+`CombinedSpec` is an **explicit action-subset profile**, not a
+state-space-preserving reduction of unrestricted `Spec`.
+
+The profile designates a term-one proposer and a term-two successor via
+`CHOOSE`; **symmetry is disabled** because the actors are not interchangeable.
+It permits real staged/durable votes, one follower AppendEntries exchange,
+majority commit and application, loss of a third-node vote request, a
+higher-term election, and former-leader crash, failed persistence, and restart.
+It deliberately excludes arbitrary proposer selection, multiple client
+entries, arbitrary AppendEntries retries, duplicated packets, crashes of other
+nodes, and arbitrary message loss. Those remain separate obligations.
+
+The CI gate runs all existing safety invariants and action properties under
+this bounded profile, then requires an actual counterexample to the **negated**
+`NoCombinedHandoffWitness` predicate. That witness must show a committed
+term-one entry and a later term-two leader with the entry durably present.
+The witness does **not** itself prove crash/restart occurred; those actions are
+only enabled in the safety profile. Until both hosted TLC runs complete, there
+is no claim of exhaustive coverage even for this restricted profile. A timeout
+or absent witness is a failure, not a successful safety result.
+
+This model is separate from the compiled C++ fixed-schedule test merged in
+PR #38. No implementation refinement, production filesystem equivalence, or
+unbounded protocol proof is claimed.
