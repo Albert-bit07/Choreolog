@@ -461,9 +461,11 @@ CombinedNext ==
          \/ PersistCommit(CombinedPrimary)
          \/ Apply(CombinedPrimary)
          \/ \E i \in Servers, m \in DOMAIN net :
-              \/ /\ i = CombinedPrimary
-                 /\ m.mtype = "RVReq"
-                 /\ m.msrc = CombinedSuccessor
+              \/ /\ m.mtype = "RVReq"
+                 /\ (\/ /\ i = CombinedSuccessor
+                        /\ m.msrc = CombinedPrimary
+                     \/ /\ i = CombinedPrimary
+                        /\ m.msrc = CombinedSuccessor)
                  /\ UpdateTerm(i, m)
               \/ /\ i \in {CombinedPrimary, CombinedSuccessor}
                  /\ HandleRVReq(i, m)
