@@ -102,9 +102,25 @@ struct Harness {
       trace += "\",\"positive\":";
       trace += positive_response(message.message) ? "true" : "false";
       if (v2) {
+        // Preserve the wire destination and request identity in diagnostic v2.
+        // Model-to-core comparisons must not accept two indistinguishable
+        // RVReq kinds sent to the same peer or with a different term.
+        std::ostringstream destination;
+        destination << std::quoted(message.to);
+        trace += ",\"to\":" + destination.str();
+        const auto term = std::visit([](const auto& m) { return m.term; }, message.message);
+        const auto req_id = std::visit([](const auto& m) { return m.request_id; }, message.message);
+        trace += ",\"term\":" + std::to_string(term);
+        trace += ",\"request_id\":" + std::to_string(req_id);
+        if (const auto* vote = std::get_if<RequestVote>(&message.message)) {
+          std::ostringstream candidate;
+          candidate << std::quoted(vote->candidate);
+          trace += ",\"candidate\":" + candidate.str();
+          trace += ",\"last_index\":" + std::to_string(vote->last_index);
+          trace += ",\"last_term\":" + std::to_string(vote->last_term);
+        }
         if (const auto* snapshot = std::get_if<SnapshotReply>(&message.message)) {
           trace += ",\"index\":" + std::to_string(snapshot->index);
-          trace += ",\"request_id\":" + std::to_string(snapshot->request_id);
         }
       }
       trace += "}";

@@ -287,7 +287,7 @@ def main() -> int:
         mutations(rows, schema)
     print("Raft trace contract PASS:", ", ".join(f"{name}={count}" for name, count in counts.items()))
     if args.self_test:
-        count = "eight snapshot" if args.snapshot_contract else "six"
+        count = "ten snapshot" if args.snapshot_contract else "six"
         print(f"All {count} deliberately invalid trace mutations were rejected.")
     print("Scope: bounded observable safety contract, NOT TLC-to-C++ refinement.")
     return 0
