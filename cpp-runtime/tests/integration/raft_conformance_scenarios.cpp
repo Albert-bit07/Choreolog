@@ -123,7 +123,6 @@ struct Harness {
         }
         if (const auto* snapshot = std::get_if<SnapshotReply>(&message.message)) {
           trace += ",\"index\":" + std::to_string(snapshot->index);
-          trace += ",\"request_id\":" + std::to_string(snapshot->request_id);
         }
       }
       trace += "}";
