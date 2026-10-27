@@ -202,6 +202,57 @@ TEST(RaftDurableTest, InterruptedHigherTermVoteReopensAtActualDiskBoundary) {
   }
 }
 
+// A higher-term election failure must not discard a previously committed log
+// prefix. Both replacement boundaries are checked through a fresh disk reopen.
+TEST(RaftDurableTest, InterruptedHigherTermVotePreservesCommittedPrefixOnDisk) {
+  for (const auto fault : {CheckpointFault::BeforeReplace, CheckpointFault::AfterReplace}) {
+    const bool replaced = fault == CheckpointFault::AfterReplace;
+    const auto path = fresh(replaced ? "prefix-vote-after" : "prefix-vote-before");
+    Durable stable;
+    stable.term = 1;
+    stable.voted_for = "a";
+    stable.log = {{1, "committed-command"}};
+    stable.commit = 1;
+    {
+      auto checkpoint = CheckpointStore::open(path);
+      ASSERT_TRUE(checkpoint);
+      ASSERT_TRUE(checkpoint.value().persist(stable));
+    }
+    {
+      auto opened = DurableNode::open(cfg("a"), path, {.test_mode = true});
+      ASSERT_TRUE(opened);
+      EXPECT_EQ(opened.value().disk(), stable);
+      ASSERT_TRUE(opened.value().inject_next_fault_for_test(fault));
+      const auto failed = opened.value().dispatch(RecvRequestVote{RequestVote{2, "b", 1, 1, 91}});
+      ASSERT_TRUE(failed.error);
+      EXPECT_TRUE(failed.effects.halt);
+      EXPECT_TRUE(failed.effects.send_now.empty());
+      EXPECT_EQ(opened.value().node().durable, stable);
+    }
+
+    auto reopened = DurableNode::open(cfg("a"), path);
+    ASSERT_TRUE(reopened) << reopened.error().to_string();
+    const auto expected_term = replaced ? 2u : 1u;
+    const auto expected_vote = std::optional<std::string>{replaced ? "b" : "a"};
+    EXPECT_EQ(reopened.value().disk().term, expected_term);
+    EXPECT_EQ(reopened.value().disk().voted_for, expected_vote);
+    EXPECT_EQ(reopened.value().disk().log, stable.log);
+    EXPECT_EQ(reopened.value().disk().commit, stable.commit);
+    EXPECT_EQ(reopened.value().disk().applied, stable.applied);
+    EXPECT_EQ(reopened.value().node().volatile_state.role, Role::Follower);
+
+    // A new candidate with an equally fresh log cannot obtain a second vote.
+    const auto competing = reopened.value().dispatch(
+        RecvRequestVote{RequestVote{expected_term, replaced ? "c" : "b", 1, 1, 92}});
+    EXPECT_FALSE(competing.error);
+    ASSERT_EQ(competing.effects.send_now.size(), 1u);
+    EXPECT_FALSE(std::get<VoteReply>(competing.effects.send_now.front().message).granted);
+    EXPECT_EQ(reopened.value().disk().log, stable.log);
+    EXPECT_EQ(reopened.value().disk().commit, stable.commit);
+    std::filesystem::remove_all(path);
+  }
+}
+
 TEST(RaftDurableTest, BadCheckpointChecksumCannotSilentlyResetConsensus) {
   const auto path = fresh("corrupt");
   {
