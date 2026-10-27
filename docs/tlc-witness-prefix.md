@@ -108,3 +108,27 @@ acknowledgements must match the admitted request's destination, term, index,
 and request ID. Two additional negative mutants reject a wrong destination
 or reply term (ten snapshot mutations total). This is a diagnostic schema
 extension, not a change to snapshot installation or production messaging.
+
+## Archived real TLC leader checkpoint bridge (draft)
+
+`scripts/tests/fixtures/reach_leader_tlc_20261020.zlib.b64` stores a compressed,
+SHA-256-verified copy of the actual archived nine-state `ReachLeader.cfg.json`
+witness (artifact 12302079273; uncompressed SHA-256
+`e5273d42f856bd8dbdc265bfc5cef6b0fcce0f18f10c091894a6a78b7ce4015c`).
+`scripts/tests/test_tlc_real_leader_bridge.py` verifies the model's separate
+term-staging, term-fsync, vote-staging, and vote-fsync states. It then drives the
+**compiled** core with `timeout a`, `complete a`, `deliver a b RVReq`,
+`complete b`, and `deliver b a RVResp`. The checker compares the initial
+candidate prefix, the durable granted-vote checkpoint, and the leader role,
+including vote reply destination/term and the two immediate core heartbeats.
+Four model-side and fifteen core-side deliberately corrupted observations must
+fail. It is registered with CTest on Linux, Windows and sanitizer jobs.
+
+**This is checkpoint correspondence, not full TLC refinement.** Model states
+4–6 have no literal matching compiled row because the model stages and fsyncs
+term/vote separately while C++ combines them. Model state 8 is a candidate
+before `BecomeLeader`, while C++ promotes on `HandleRVResp` and sends
+heartbeats immediately. No model network bag is silently equated to C++ wire
+messages. Actual real witness provenance is pinned, but no proof of an
+abstraction relation for intermediate states is asserted. Hosted exact-head CI
+is pending; do not merge without all five green jobs.
