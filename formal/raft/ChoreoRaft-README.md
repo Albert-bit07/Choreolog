@@ -140,3 +140,5 @@ or absent witness is a failure, not a successful safety result.
 This model is separate from the compiled C++ fixed-schedule test merged in
 PR #38. No implementation refinement, production filesystem equivalence, or
 unbounded protocol proof is claimed.
+
+The initial safety run on PR #39 head `d850a22677b083387774aef34ec4ea27092a56a9` exhausted **230 distinct states**, depth 30, with zero remaining and no invariant violation. The handoff witness reached the negated invariant in 25 states, showing the committed entry in the later leader's durable log. An earlier head was correctly rejected because its four-state profile could not process the initial higher-term vote request; `UpdateTerm` for the first follower was restored without weakening the witness. The follow-up `ReachCombinedCrashAfterApply.cfg` now also requires a durable apply and former-leader crash *after* the handoff. **This new reachability gate is not yet CI-verified.** Neither witness establishes an actual restart, and no full refinement is claimed.
