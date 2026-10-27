@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 from test_tlc_witness_core_prefix import ProjectionMismatch, compare_prefix, require
-from tlc_witness_prefix import canonical, node_function, normalize
+from tlc_witness_prefix import canonical, message_bag, node_function, normalize
 
 WITNESS_SHA256 = 'e5273d42f856bd8dbdc265bfc5cef6b0fcce0f18f10c091894a6a78b7ce4015c'
 FIXTURE = HERE / 'fixtures' / 'reach_leader_tlc_20261020.zlib.b64'
@@ -73,6 +73,47 @@ def check_model_split(witness):
     for index in (4, 6):
         require(vote_name(node(states[index], 'pending')) == 'Nil',
                 'TLC persistence callback did not clear pending')
+    # Preserve the model's actual network-bag behavior across the split write.
+    # UpdateTerm and term fsync leave the vote request in the model bag.
+    # HandleRVReq consumes it while staging the vote. Vote fsync releases
+    # exactly one reply, then HandleRVResp consumes it. BecomeLeader does not
+    # emit model heartbeats.
+    bags = [message_bag(state['net']) for state in states]
+    request_bag = states[2]['net']
+    require(isinstance(request_bag, dict) and set(request_bag) == {'$function'},
+            'expected archived vote request bag')
+    delivered = [msg for msg, count in request_bag['$function']
+                 if count == 1 and isinstance(msg, dict) and
+                 msg.get('mtype') == 'RVReq' and
+                 msg.get('msrc') == {'$model': 's1'} and
+                 msg.get('mdst') == {'$model': 's2'} and
+                 msg.get('mterm') == 1]
+    require(len(delivered) == 1, 'ambiguous delivered TLC vote request')
+    after_delivery = dict(bags[2])
+    key = canonical(delivered[0])
+    require(after_delivery.get(key) == 1, 'missing delivered request in model bag')
+    del after_delivery[key]
+    require(bags[3] == bags[2] and bags[4] == bags[3],
+            'UpdateTerm or term fsync changed model network')
+    require(bags[5] == after_delivery,
+            'HandleRVReq did not consume exactly the delivered vote request')
+    added = {k: n - bags[5].get(k, 0) for k, n in bags[6].items()
+             if n > bags[5].get(k, 0)}
+    require(len(added) == 1 and next(iter(added.values())) == 1,
+            'vote fsync did not release exactly one model message')
+    reply_key = next(iter(added))
+    require(bags[6] == {**bags[5], reply_key: bags[5].get(reply_key, 0) + 1},
+            'vote fsync changed unrelated network messages')
+    reply_bag = states[6]['net']
+    replies = [msg for msg, count in reply_bag['$function']
+               if canonical(msg) == reply_key and count == 1]
+    require(len(replies) == 1 and replies[0].get('mtype') == 'RVResp' and
+            replies[0].get('msrc') == {'$model': 's2'} and
+            replies[0].get('mdst') == {'$model': 's1'} and
+            replies[0].get('mterm') == 1,
+            'model durable vote reply routing/term divergence')
+    require(bags[7] == bags[5] and bags[8] == bags[7],
+            'vote reply delivery or leader promotion changed model bag')
     require(vote_name(node(states[7], 'role', 's1')) == 'Candidate' and
             vote_name(node(states[8], 'role', 's1')) == 'Leader',
             'TLC candidate-to-leader split changed')
@@ -110,6 +151,11 @@ def compare_bridge(witness, rows):
             replies[0]['positive'] is True and
             type(replies[0]['request_id']) is int and replies[0]['request_id'] > 0,
             'core vote reply destination/term/grant mismatch')
+    requests = [msg for msg in rows[1]['effects']['send']
+                if msg['kind'] == 'RVReq' and msg['to'] == 'b']
+    require(len(requests) == 1 and
+            replies[0]['request_id'] == requests[0]['request_id'],
+            'core vote reply did not echo the delivered request identity')
     model = witness['states'][6]['variables']
     require((node(model, 'disk')['term'], vote_name(node(model, 'disk')['votedFor'])) ==
             (durable['post']['durable']['term'], 's1'),
@@ -159,6 +205,12 @@ class RealTLCLeaderBridgeTests(unittest.TestCase):
             lambda w: node(w['states'][5]['variables'], 'disk').update(votedFor={'$model': 's1'}),
             lambda w: node(w['states'][6]['variables'], 'disk').update(votedFor={'$model': 'Nil'}),
             lambda w: node(w['states'][3]['variables'], 'pending')['target'].update(votedFor={'$model': 's1'}),
+            lambda w: w['states'][3]['variables'].update(net=copy.deepcopy(w['states'][5]['variables']['net'])),
+            lambda w: w['states'][4]['variables'].update(net={'$sequence': []}),
+            lambda w: w['states'][5]['variables'].update(net={'$sequence': []}),
+            lambda w: w['states'][6]['variables'].update(net=copy.deepcopy(w['states'][5]['variables']['net'])),
+            lambda w: w['states'][7]['variables'].update(net=copy.deepcopy(w['states'][6]['variables']['net'])),
+            lambda w: w['states'][8]['variables'].update(net={'$sequence': []}),
         ]
         for mutate in mutations:
             with self.subTest(mutation=mutate), self.assertRaises(ProjectionMismatch):
@@ -188,6 +240,7 @@ class RealTLCLeaderBridgeTests(unittest.TestCase):
             lambda r: r[3]['effects'].update(send=[]),
             lambda r: r[3]['effects']['send'][0].update(to='c'),
             lambda r: r[3]['effects']['send'][0].update(positive=False),
+            lambda r: r[3]['effects']['send'][0].update(request_id=999999),
             lambda r: r[4]['post'].update(role='Candidate'),
             lambda r: r[4]['effects'].update(send=[]),
             lambda r: r[4]['effects']['send'][0].update(to='a'),

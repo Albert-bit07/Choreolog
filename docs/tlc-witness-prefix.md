@@ -132,3 +132,18 @@ heartbeats immediately. No model network bag is silently equated to C++ wire
 messages. Actual real witness provenance is pinned, but no proof of an
 abstraction relation for intermediate states is asserted. Hosted exact-head CI
 is pending; do not merge without all five green jobs.
+
+## Real witness network-bag conservation (draft follow-up)
+
+The archived nine-state ReachLeader test now additionally compares the model
+network bag across UpdateTerm, term fsync, vote staging, vote fsync, reply
+delivery and BecomeLeader. The exact s1→s2 RequestVote remains in the bag through
+UpdateTerm and term fsync; HandleRVReq consumes it while staging the vote; durable
+vote completion must add exactly one s2→s1 term-1 VoteReply without changing
+other messages; reply delivery removes it; and model BecomeLeader must not
+silently invent heartbeats. The compiled reply must echo the request ID of the
+actual vote request sent to node b. Six model-side and one compiled-side
+negative mutations exercise these new assertions (ten model and sixteen core
+mutations overall). These are scoped network conservation checks, **not** an
+abstraction proof for split term/vote durability or a model-to-wire identity
+mapping. Hosted exact-head CI is required before merging this follow-up.
