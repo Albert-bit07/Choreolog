@@ -81,3 +81,21 @@ exercises an actual compiled transition core but does **not** establish that
 any real TLC witness was replayed, that messages match by identity/destination,
 or that the higher-term term/vote split corresponds. CI results must be
 recorded against the exact PR head before accepting this follow-up.
+
+## Outbound vote identity comparison (next bounded slice)
+
+The v2 replay harness now exposes each emitted message's destination, term,
+request ID, and, for `RVReq`, the candidate and last-log index/term. These are
+diagnostic-only fields added to the existing `effects.send` objects; the
+production wire protocol and v1 trace format are unchanged. The compiled-core
+prefix checker compares the two deferred model vote requests against the actual
+emitted destination/payload set, rejects duplicate destinations and request IDs,
+and requires positive integral request IDs. Eight new negative mutations cover
+wrong/duplicate destinations, wrong candidate/term/freshness and invalid or
+repeated IDs. The model does not assign C++ request IDs, so only uniqueness and
+presence are asserted, not an invented numeric equality.
+
+**Verification boundary:** This remains a synthetic two-transition election
+fixture. No actual TLC witness, higher-term staged-vs-durable split, heartbeat,
+or full-network identity mapping is claimed. Exact-head CI must pass before
+merging this slice.
