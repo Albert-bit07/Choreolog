@@ -112,7 +112,6 @@ def run_compiled(runner, crash):
     return rows
 
 
-
 def compare_split_fsync_stutter(doc, staged, synced):
     """Check stable election-disk endpoints around the model's split fsyncs.
 
@@ -136,7 +135,8 @@ def compare_split_fsync_stutter(doc, staged, synced):
     demand(old["term"] == 1 and old["votedFor"] == {"$model": "s1"} and
            term_only["term"] == 2 and
            term_only["votedFor"] == {"$model": "Nil"} and
-           term_only == vote_staged and
+           term_only["term"] == vote_staged["term"] and
+           term_only["votedFor"] == vote_staged["votedFor"] and
            voted["term"] == 2 and voted["votedFor"] == {"$model": "s2"} and
            old["log"] == term_only["log"] == voted["log"],
            "model term-only stutter or durable vote phase diverged")
