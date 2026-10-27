@@ -253,6 +253,85 @@ TEST(RaftDurableTest, InterruptedHigherTermVotePreservesCommittedPrefixOnDisk) {
   }
 }
 
+// A stale candidate's higher term must be persisted without granting its
+// vote. An interrupted replacement can leave either the old term/self-vote or
+// the new term/no vote, but neither may lose a committed prefix or leak a reply.
+TEST(RaftDurableTest, StaleHigherTermVoteRecoverySeparatesTermFromVote) {
+  for (const auto fault : {CheckpointFault::BeforeReplace, CheckpointFault::AfterReplace}) {
+    const bool replaced = fault == CheckpointFault::AfterReplace;
+    const auto path = fresh(replaced ? "stale-vote-after" : "stale-vote-before");
+    Durable stable;
+    stable.term = 2;
+    stable.voted_for = "a";
+    stable.log = {{1, "committed"}, {2, "uncommitted"}};
+    stable.commit = 1;
+    {
+      auto checkpoint = CheckpointStore::open(path);
+      ASSERT_TRUE(checkpoint);
+      ASSERT_TRUE(checkpoint.value().persist(stable));
+    }
+    {
+      auto opened = DurableNode::open(cfg("a"), path, {.test_mode = true});
+      ASSERT_TRUE(opened);
+      ASSERT_TRUE(opened.value().inject_next_fault_for_test(fault));
+      // Candidate b is missing the newer uncommitted term-2 suffix.
+      const auto failed = opened.value().dispatch(RecvRequestVote{RequestVote{3, "b", 1, 1, 101}});
+      ASSERT_TRUE(failed.error);
+      EXPECT_TRUE(failed.effects.halt);
+      EXPECT_TRUE(failed.effects.send_now.empty());
+      EXPECT_EQ(opened.value().node().durable, stable);
+    }
+
+    auto reopened = DurableNode::open(cfg("a"), path);
+    ASSERT_TRUE(reopened) << reopened.error().to_string();
+    const auto expected_term = replaced ? 3u : 2u;
+    const auto expected_vote =
+        replaced ? std::optional<std::string>{} : std::optional<std::string>{"a"};
+    EXPECT_EQ(reopened.value().disk().term, expected_term);
+    EXPECT_EQ(reopened.value().disk().voted_for, expected_vote);
+    EXPECT_EQ(reopened.value().disk().log, stable.log);
+    EXPECT_EQ(reopened.value().disk().commit, stable.commit);
+    EXPECT_EQ(reopened.value().disk().applied, stable.applied);
+
+    // A candidate still missing the suffix cannot get a vote, even if the
+    // higher term survived the interrupted replacement.
+    const auto stale = reopened.value().dispatch(RecvRequestVote{RequestVote{3, "b", 1, 1, 102}});
+    ASSERT_FALSE(stale.error);
+    ASSERT_EQ(stale.effects.send_now.size(), 1u);
+    const auto& denied = std::get<VoteReply>(stale.effects.send_now.front().message);
+    EXPECT_FALSE(denied.granted);
+    EXPECT_EQ(denied.request_id, 102u);
+    EXPECT_EQ(reopened.value().disk().voted_for, expected_vote);
+
+    // An up-to-date candidate may be granted term 3 only after its vote is
+    // durably written, with the original request identity preserved.
+    const auto fresh_vote =
+        reopened.value().dispatch(RecvRequestVote{RequestVote{3, "c", 2, 2, 103}});
+    ASSERT_FALSE(fresh_vote.error);
+    ASSERT_EQ(fresh_vote.effects.send_now.size(), 1u);
+    EXPECT_EQ(fresh_vote.effects.send_now.front().to, "c");
+    const auto& granted = std::get<VoteReply>(fresh_vote.effects.send_now.front().message);
+    EXPECT_TRUE(granted.granted);
+    EXPECT_EQ(granted.term, 3u);
+    EXPECT_EQ(granted.request_id, 103u);
+    EXPECT_EQ(reopened.value().disk().term, 3u);
+    EXPECT_EQ(reopened.value().disk().voted_for, std::optional<std::string>{"c"});
+
+    auto final_reopen = DurableNode::open(cfg("a"), path);
+    ASSERT_TRUE(final_reopen) << final_reopen.error().to_string();
+    EXPECT_EQ(final_reopen.value().disk().term, 3u);
+    EXPECT_EQ(final_reopen.value().disk().voted_for, std::optional<std::string>{"c"});
+    EXPECT_EQ(final_reopen.value().disk().log, stable.log);
+    EXPECT_EQ(final_reopen.value().disk().commit, stable.commit);
+    const auto competing =
+        final_reopen.value().dispatch(RecvRequestVote{RequestVote{3, "b", 2, 2, 104}});
+    ASSERT_FALSE(competing.error);
+    ASSERT_EQ(competing.effects.send_now.size(), 1u);
+    EXPECT_FALSE(std::get<VoteReply>(competing.effects.send_now.front().message).granted);
+    std::filesystem::remove_all(path);
+  }
+}
+
 TEST(RaftDurableTest, BadCheckpointChecksumCannotSilentlyResetConsensus) {
   const auto path = fresh("corrupt");
   {
