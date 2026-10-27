@@ -58,3 +58,21 @@ must be resolved explicitly; this driver does not hide them.
 ## Two-term election and restart replay (draft)
 
 The `raft-replay-input-tests` suite now includes a bounded **compiled-core** two-term election schedule: elect `a` in term 1, then durably elect `b` in term 2 using `a`'s higher-term vote, and restart `a` from acknowledged disk. It checks that the higher-term request does not release a vote before fsync, the reply preserves the actual request ID, `b` becomes leader, and `a` retains durable term 2/vote `b` after restart. Thirteen independently corrupted trace observations and a failed-write/no-reply schedule are negative cases. This is a precursor to T1-B.2, **not** a TLC model check, exhaustive fault exploration, or refinement proof. Exact-head CI is pending.
+
+## Replication plus higher-term handoff (draft; CI not yet verified)
+
+The bounded compiled-core schedule `REPLICATED_HANDOFF` extends the earlier
+two-term test with a dropped third-node election request, a durably replicated
+entry on `b`, durable commit/application on `a`, a term-two election of `b`,
+and restart of `a`. It checks the term-two candidate's advertised last-log
+index/term, no vote reply before the higher-term fsync, callback identity,
+vote reply/request correlation, and survival of the acknowledged log, commit,
+apply and vote after restart. Twelve deliberately corrupted observations must
+be rejected by the checker.
+
+This combines election, message loss, replication and recovery in **one fixed
+compiled-core schedule**. It is not a TLC combined model, a search over fault
+interleavings, a crash/reopen of production storage, or a refinement proof.
+Hosted exact-head CI must pass before this change can be merged. The next
+formal work is a bounded TLC model/configuration combining these behaviors,
+with explicit model/implementation correspondence obligations.
