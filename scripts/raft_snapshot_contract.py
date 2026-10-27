@@ -231,6 +231,8 @@ def validate(rows: list[dict], schema: dict) -> dict[str, int]:
                                 {
                                     "kind": "SnapshotReply",
                                     "positive": True,
+                                    "to": request["leader"],
+                                    "term": post["term"],
                                     "index": request["index"],
                                     "request_id": request["request_id"],
                                 }
@@ -272,6 +274,8 @@ def validate(rows: list[dict], schema: dict) -> dict[str, int]:
                         {
                             "kind": "SnapshotReply",
                             "positive": True,
+                            "to": request["leader"],
+                            "term": post["term"],
                             "index": request["index"],
                             "request_id": request["request_id"],
                         }
@@ -336,6 +340,18 @@ def check_mutants(rows: list[dict], schema: dict) -> None:
             "install-matching",
             "PersistCompleted",
             lambda r: r["effects"]["send"][0].update(index=8),
+            "acknowledgement differs",
+        ),
+        (
+            "install-matching",
+            "PersistCompleted",
+            lambda r: r["effects"]["send"][0].update(to="c"),
+            "acknowledgement differs",
+        ),
+        (
+            "install-matching",
+            "PersistCompleted",
+            lambda r: r["effects"]["send"][0].update(term=6),
             "acknowledgement differs",
         ),
     ]
