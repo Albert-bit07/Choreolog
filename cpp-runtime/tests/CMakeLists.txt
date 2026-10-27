@@ -139,3 +139,17 @@ add_test(
           "$<TARGET_FILE:choreoos-raft-conformance>"
 )
 set_tests_properties(tlc-real-leader-bridge-tests PROPERTIES TIMEOUT 90)
+
+# Actual model-generated combined two-term witnesses, SHA-pinned from the
+# exact-head formal TLC artifact. This compares selected compiled durability,
+# log and message checkpoints, NOT lockstep refinement or unrestricted safety.
+add_test(
+  NAME tlc-combined-core-bridge-tests
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/tests/test_tlc_combined_core_bridge.py"
+          "$<TARGET_FILE:choreoos-raft-conformance>"
+          "${PROJECT_SOURCE_DIR}/formal/raft/ChoreoRaft.tla"
+          "${PROJECT_SOURCE_DIR}/formal/raft/ReachCombinedHandoff.cfg"
+          "${PROJECT_SOURCE_DIR}/formal/raft/ReachCombinedCrashAfterApply.cfg"
+)
+set_tests_properties(tlc-combined-core-bridge-tests PROPERTIES TIMEOUT 120)
