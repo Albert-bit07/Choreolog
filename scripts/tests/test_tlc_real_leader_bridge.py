@@ -119,8 +119,80 @@ def check_model_split(witness):
             'TLC candidate-to-leader split changed')
 
 
+
+def check_write_collapse(witness, rows):
+    """Check a bounded split-write-to-atomic-write envelope, not state refinement.
+
+    TLC stages and fsyncs the term before it stages and fsyncs the vote.
+    The C++ core stages one combined term/vote target and durably installs it
+    in one callback. Intermediate TLC states are checked explicitly, not
+    discarded or mislabeled as identical C++ states.
+    """
+    require(len(witness['states']) == 9 and len(rows) >= 4,
+            'write-collapse comparison requires nine TLC states and four core rows')
+
+    def phase(index):
+        values = witness['states'][index]['variables']
+        mem, disk = node(values, 'mem'), node(values, 'disk')
+        return (mem['term'], vote_name(mem['votedFor']),
+                disk['term'], vote_name(disk['votedFor']))
+
+    old, term_staged, term_synced, vote_staged, vote_synced = [
+        phase(index) for index in range(2, 7)
+    ]
+    require(vote_synced[0] == vote_synced[2] > old[0] and
+            old[1] == old[3] == 'Nil' and
+            vote_synced[1] == vote_synced[3] == 's1',
+            'unsupported write-collapse endpoints')
+    new_term, new_vote, _, _ = vote_synced
+    require([old, term_staged, term_synced, vote_staged, vote_synced] == [
+        old,
+        (new_term, 'Nil', old[2], 'Nil'),
+        (new_term, 'Nil', new_term, 'Nil'),
+        (new_term, new_vote, new_term, 'Nil'),
+        (new_term, new_vote, new_term, new_vote),
+    ], 'model term/vote writes are not in the reviewed split order')
+
+    term_pending = node(witness['states'][3]['variables'], 'pending')
+    vote_pending = node(witness['states'][5]['variables'], 'pending')
+    require(isinstance(term_pending, dict) and isinstance(vote_pending, dict) and
+            term_pending['target']['term'] == new_term and
+            vote_name(term_pending['target']['votedFor']) == 'Nil' and
+            vote_pending['target']['term'] == new_term and
+            vote_name(vote_pending['target']['votedFor']) == new_vote,
+            'model split write target differs from combined core target')
+
+    staged, synced = rows[2:4]
+    require(staged['act'] == 'HandleRVReq' and synced['act'] == 'PersistCompleted' and
+            staged['node'] == synced['node'] == 'b',
+            'unexpected combined-core write actions')
+    stage_post, sync_post = staged['post'], synced['post']
+    require((stage_post['term'], stage_post['votedFor'],
+             stage_post['durable']['term'], stage_post['durable']['votedFor']) ==
+            (new_term, 'a', old[2], None),
+            'combined core staged write or old durable state diverged')
+    require((sync_post['term'], sync_post['votedFor'],
+             sync_post['durable']['term'], sync_post['durable']['votedFor']) ==
+            (new_term, 'a', new_term, 'a'),
+            'combined core did not atomically install the term and vote')
+    require(staged['pending_before'] is None and
+            type(staged['pending_after']) is int and staged['pending_after'] > 0 and
+            staged['effects']['persist'] == staged['pending_after'] and
+            staged['effects']['send'] == [] and
+            synced['pending_before'] == staged['pending_after'] and
+            synced['pending_after'] is None and
+            synced['effects']['persist'] is None,
+            'combined core write token or fsync boundary diverged')
+    require(len(synced['effects']['send']) == 1 and
+            synced['effects']['send'][0]['kind'] == 'RVResp' and
+            synced['effects']['send'][0]['positive'] is True,
+            'combined core did not defer the granted reply until durable vote')
+
+
+
 def compare_bridge(witness, rows):
     check_model_split(witness)
+    check_write_collapse(witness, rows)
     require(len(rows) == 5, 'wrong number of compiled core steps')
     compare_prefix({**witness, 'states': witness['states'][:3]}, rows[:2])
     for index, actor, action in ((2, 'b', 'HandleRVReq'),
@@ -217,6 +289,32 @@ class RealTLCLeaderBridgeTests(unittest.TestCase):
                 altered = copy.deepcopy(witness)
                 mutate(altered)
                 check_model_split(altered)
+
+    def test_split_write_collapse_envelope_rejects_divergences(self):
+        if RUNNER is None:
+            self.skipTest('compiled C++ runner not supplied')
+        witness = real_witness()
+        rows = run_core()
+        check_write_collapse(witness, rows)
+        mutations = [
+            lambda w, r: node(w['states'][3]['variables'], 'mem').update(term=0),
+            lambda w, r: node(w['states'][4]['variables'], 'disk').update(term=0),
+            lambda w, r: node(w['states'][5]['variables'], 'mem').update(votedFor={'$model': 'Nil'}),
+            lambda w, r: node(w['states'][6]['variables'], 'disk').update(votedFor={'$model': 'Nil'}),
+            lambda w, r: node(w['states'][3]['variables'], 'pending')['target'].update(votedFor={'$model': 's1'}),
+            lambda w, r: node(w['states'][5]['variables'], 'pending')['target'].update(term=2),
+            lambda w, r: r[2]['post']['durable'].update(term=1),
+            lambda w, r: r[3]['post']['durable'].update(votedFor=None),
+            lambda w, r: r[2].update(pending_after=None),
+            lambda w, r: r[3].update(pending_before=999),
+            lambda w, r: r[2]['effects'].update(send=[{'kind': 'RVResp'}]),
+            lambda w, r: r[3]['effects'].update(send=[]),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate), self.assertRaises(ProjectionMismatch):
+                changed_witness, changed_rows = copy.deepcopy(witness), copy.deepcopy(rows)
+                mutate(changed_witness, changed_rows)
+                check_write_collapse(changed_witness, changed_rows)
 
     def test_compiled_bridge_matches_selected_real_witness_checkpoints(self):
         if RUNNER is None:
