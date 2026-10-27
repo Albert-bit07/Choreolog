@@ -147,3 +147,21 @@ negative mutations exercise these new assertions (ten model and sixteen core
 mutations overall). These are scoped network conservation checks, **not** an
 abstraction proof for split term/vote durability or a model-to-wire identity
 mapping. Hosted exact-head CI is required before merging this follow-up.
+
+
+## Explicit split-write / combined-fsync envelope (draft)
+
+The archived nine-state leader witness now has an explicit *bounded
+write-collapse envelope* in `check_write_collapse`. It checks **all five**
+model snapshots surrounding UpdateTerm, term fsync, HandleRVReq, and vote fsync,
+including the separate pending term-only and term-plus-vote targets. Against
+the compiled core it requires a single staged term/vote target, old durable
+state until the persistence callback, one continuous pending token, and
+atomic installation of the durable term/vote before the granted reply is
+released. Twelve negative mutations independently corrupt intermediate model
+writes, pending targets, staged/durable core values, persistence tokens and
+premature/missing replies.
+
+This is a reviewed **envelope for one archived election witness**, not a
+general forward simulation, stuttering proof, or a claim that model states
+4–6 equal C++ states. Hosted exact-head CI must pass before merge.
