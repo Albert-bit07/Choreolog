@@ -296,7 +296,8 @@ class ReplayInputsTest(unittest.TestCase):
             lambda r: r[11]["post"]["durable"].update(log=[]),
             lambda r: r[16]["post"]["durable"].update(commit=0),
             lambda r: r[16]["post"]["durable"].update(applied=0),
-            lambda r: r[18]["effects"]["send"][0].update(last_index=0),
+            lambda r: next(m for m in r[18]["effects"]["send"]
+                           if m["kind"] == "RVReq" and m["to"] == "a").update(last_index=0),
             lambda r: r[19]["post"]["durable"].update(term=2),
             lambda r: r[19]["effects"].update(send=[{"kind": "RVResp"}]),
             lambda r: r[20]["post"]["durable"].update(votedFor="a"),
