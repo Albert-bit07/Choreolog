@@ -64,3 +64,20 @@ mutations); CI additionally runs them through CTest on supported platforms.
 Next: implement a reviewed mapping for `UpdateTerm` and durable term/vote
 completion, then connect normalized schedules to the compiled runner and
 compare explicitly defined correspondence checkpoints with negative mutants.
+
+## Bounded compiled-core projection check (follow-up branch)
+
+The new `tlc-witness-core-prefix-tests` CTest entry invokes the **compiled**
+`choreoos-raft-conformance --replay-inputs` runner with the two commands
+produced by the synthetic typed witness fixture. It checks the actor's staged
+term/vote, role, availability, durable term/vote, commit/apply indexes, empty
+logs, pending persistence-token continuity, no premature vote requests, and
+the two vote requests released after completion. Twelve independently
+corrupted C++ output mutations must be rejected. The normalizer's existing
+typed-state checks remain unchanged.
+
+**Scope:** The fixture is synthetic, not an archived TLC witness. This test
+exercises an actual compiled transition core but does **not** establish that
+any real TLC witness was replayed, that messages match by identity/destination,
+or that the higher-term term/vote split corresponds. CI results must be
+recorded against the exact PR head before accepting this follow-up.
