@@ -243,6 +243,50 @@ def compare(doc, rows, crash):
     # Crash witness's final offline action is NOT a compiled restart test.
 
 
+
+def interrupted_vote_schedule(crash):
+    """Restart the former leader after staging, but before fsyncing, term-two vote."""
+    return schedule(crash)[:-3] + ["restart a"]
+
+
+def compare_interrupted_vote(rows, crash):
+    """A staged vote must not become durable or emit a reply across restart.
+
+    This is a compiled-core crash-boundary test, not a TLC Restart action or
+    production disk-reopen test. The model's split term/vote fsyncs are not
+    collapsed into a claim of intermediate-state equivalence.
+    """
+    commands = interrupted_vote_schedule(crash)
+    demand(len(rows) == len(commands), "interrupted vote schedule length diverged")
+    staged, restarted = rows[-2:]
+    offset = 2 if crash else 0
+    demand(staged.get("v") == 2 and staged.get("seq") == 17 + offset and
+           staged.get("node") == "a" and staged.get("act") == "HandleRVReq" and
+           restarted.get("v") == 2 and restarted.get("seq") == 18 + offset and
+           restarted.get("node") == "a" and restarted.get("act") == "Restart",
+           "interrupted vote transition identity diverged")
+    durable = staged["post"]["durable"]
+    expected_log = [{"term": 1, "val": "v1"}]
+    demand(staged["post"]["term"] == 2 and staged["post"]["votedFor"] == "b" and
+           durable["term"] == 1 and durable["votedFor"] == "a" and
+           durable["log"] == expected_log and durable["commit"] == 1 and
+           durable["applied"] == (1 if crash else 0) and
+           staged["effects"]["send"] == [] and
+           staged["effects"]["persist"] == staged["pending_after"] and
+           type(staged["pending_after"]) is int and staged["pending_after"] > 0,
+           "interrupted vote was already durable or replied before fsync")
+    demand(restarted["pending_before"] == staged["pending_after"] and
+           restarted["pending_after"] is None and
+           restarted["post"]["durable"] == durable and
+           restarted["post"]["term"] == 1 and
+           restarted["post"]["votedFor"] == "a" and
+           restarted["post"]["role"] == "Follower" and
+           restarted["effects"]["send"] == [] and
+           restarted["effects"]["persist"] is None and
+           restarted["effects"]["halt"] is False,
+           "restart retained an unacknowledged vote or leaked deferred effects")
+
+
 class CombinedCoreBridgeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -253,6 +297,48 @@ class CombinedCoreBridgeTests(unittest.TestCase):
             with self.subTest(crash=crash):
                 doc = witness(crash, MODEL, CRASH_CONFIG if crash else HANDOFF_CONFIG)
                 compare(doc, run_compiled(RUNNER, crash), crash)
+
+    def test_interrupted_higher_term_vote_does_not_survive_restart(self):
+        for crash in (False, True):
+            with self.subTest(crash=crash):
+                # Verify the actual model artifact before exercising the
+                # separate compiled-core interruption boundary.
+                witness(crash, MODEL, CRASH_CONFIG if crash else HANDOFF_CONFIG)
+                commands = interrupted_vote_schedule(crash)
+                result = subprocess.run(
+                    [str(RUNNER), "--replay-inputs"],
+                    input="\n".join(commands) + "\n",
+                    capture_output=True, text=True, timeout=30, check=False)
+                demand(result.returncode == 0,
+                       "interrupted compiled schedule failed: " + result.stderr.strip())
+                rows = [json.loads(line) for line in result.stdout.splitlines()]
+                compare_interrupted_vote(rows, crash)
+                mutations = [
+                    lambda r: r[-2]["effects"].update(send=[{"kind": "RVResp"}]),
+                    lambda r: r[-1]["post"]["durable"].update(term=2),
+                    lambda r: r[-1]["post"]["durable"].update(votedFor="b"),
+                    lambda r: r[-1]["post"].update(votedFor="b"),
+                    lambda r: r[-1].update(pending_after=r[-2]["pending_after"]),
+                    lambda r: r[-1]["effects"].update(send=[{"kind": "RVResp"}]),
+                    lambda r: r[-1]["effects"].update(persist=99),
+                    lambda r: r[-1]["post"]["durable"].update(log=[]),
+                    lambda r: r[-1]["post"]["durable"].update(applied=2),
+                ]
+                for index, mutate in enumerate(mutations, 1):
+                    with self.subTest(crash=crash, mutation=index):
+                        changed = copy.deepcopy(rows)
+                        mutate(changed)
+                        with self.assertRaises(BridgeMismatch):
+                            compare_interrupted_vote(changed, crash)
+                # The old persistence callback is no longer available after
+                # restart; the driver must not invent a completion.
+                invalid = subprocess.run(
+                    [str(RUNNER), "--replay-inputs"],
+                    input="\n".join(commands + ["complete a"]) + "\n",
+                    capture_output=True, text=True, timeout=30, check=False)
+                demand(invalid.returncode != 0 and
+                       "pending" in invalid.stderr.lower(),
+                       "stale persistence completion unexpectedly accepted")
 
     def test_negative_model_and_core_divergences(self):
         for crash in (False, True):
