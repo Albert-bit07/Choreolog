@@ -13,6 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 import sys
 import unittest
 import zlib
@@ -40,6 +41,24 @@ def demand(ok, why):
         raise BridgeMismatch(why)
 
 
+def normalized_source(path, digest):
+    """Verify exact source bytes, allowing only Git checkout CRLF translation.
+
+    TLC generated the artifact from LF source. On Windows, Git may check out
+    text files with CRLF; reject any other byte change rather than skipping
+    source-provenance verification on that platform.
+    """
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() == digest:
+        return raw
+    demand(b"\r\n" in raw and b"\r" not in raw.replace(b"\r\n", b""),
+           "source differs from pinned TLC source beyond CRLF translation")
+    restored = raw.replace(b"\r\n", b"\n")
+    demand(hashlib.sha256(restored).hexdigest() == digest,
+           "source hash mismatch after CRLF restoration")
+    return restored
+
+
 def witness(crash, model, config):
     name, digest, invariant = PINNED[crash]
     fixture = HERE / "fixtures" / ("combined_crash_20261027.zlib.b64" if crash
@@ -50,7 +69,12 @@ def witness(crash, model, config):
     doc = json.loads(raw)
     demand(doc.get("config", {}).get("name") == name, "wrong witness configuration")
     try:
-        actors = verify(doc, invariant, model, config, crash=crash)
+        with tempfile.TemporaryDirectory(prefix="choreo-tlc-source-") as temp:
+            checked_model = Path(temp) / model.name
+            checked_config = Path(temp) / config.name
+            checked_model.write_bytes(normalized_source(model, doc["model"]["sha256"]))
+            checked_config.write_bytes(normalized_source(config, doc["config"]["sha256"]))
+            actors = verify(doc, invariant, checked_model, checked_config, crash=crash)
     except (WitnessMismatch, KeyError, TypeError, ValueError) as exc:
         raise BridgeMismatch(f"model witness failed semantic verification: {exc}") from exc
     demand(actors == ("s1", "s2"), "unreviewed model leader assignment")
