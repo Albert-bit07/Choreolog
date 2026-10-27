@@ -94,7 +94,7 @@ jobs:
         working-directory: formal/raft
         run: |
           set -euo pipefail
-          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \\
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config ChoreoRaftCombined.cfg -workers 2 ChoreoRaft.tla
 
       - name: Require committed-entry higher-term handoff witness
@@ -103,8 +103,8 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \\
-            -config ReachCombinedHandoff.cfg -workers 2 ChoreoRaft.tla \\
+          timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ReachCombinedHandoff.cfg -workers 2 ChoreoRaft.tla \
             > "$RUNNER_TEMP/combined-handoff.txt" 2>&1
           result=$?
           set -e
