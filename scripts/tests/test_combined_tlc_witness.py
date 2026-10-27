@@ -33,6 +33,7 @@ def source_matches(actual, path):
 
 def model_set(value):
     require(isinstance(value, dict) and set(value) == {"$set"}, "expected typed set")
+    require(isinstance(value["$set"], list), "malformed typed set")
     return value["$set"]
 
 
@@ -119,22 +120,6 @@ def check_mutations(document, invariant, model, config, crash):
         raise WitnessMismatch("negative witness mutation was accepted")
     def final(changed):
         return changed["states"][-1]["variables"]
-    mutations = [
-        lambda d: final(d).update(ghostCommitted={"$set": []}),
-        lambda d: dict(final(d)["ghostLeaders"]["$function"])[2].update(**{"$set": []}),
-        lambda d: node_function(final(d)["role"])[successor].update(**{"$model": "Follower"}),
-        lambda d: node_function(final(d)["disk"])[successor]["log"].update(**{"$sequence": []}),
-        lambda d: d["model"].update(sha256="0" * 64),
-        lambda d: final(d).update(unexpected=1),
-    ]
-    if crash:
-        mutations.extend([
-            lambda d: node_function(final(d)["alive"]).__setitem__(primary, True),
-            lambda d: node_function(final(d)["disk"])[primary].update(commit=0),
-            lambda d: node_function(final(d)["disk"])[primary].update(applied=0),
-            lambda d: final(d).update(ghostApplied={"$set": []}),
-        ])
-    # node_function returns a new dictionary: mutate the actual typed pairs.
     def replace_node(d, field, actor, value):
         pairs = final(d)[field]["$function"]
         for pair in pairs:
@@ -142,9 +127,24 @@ def check_mutations(document, invariant, model, config, crash):
                 pair[1] = value
                 return
         raise WitnessMismatch("missing node in mutation fixture")
-    mutations[2] = lambda d: replace_node(d, "role", successor, {"$model": "Follower"})
+
+    mutations = [
+        lambda d: final(d).update(ghostCommitted={"$set": []}),
+        lambda d: dict(final(d)["ghostLeaders"]["$function"])[2].update(
+            {"$set": []}),
+        lambda d: replace_node(d, "role", successor, {"$model": "Follower"}),
+        lambda d: node_function(final(d)["disk"])[successor]["log"].update(
+            {"$sequence": []}),
+        lambda d: d["model"].update(sha256="0" * 64),
+        lambda d: final(d).update(unexpected=1),
+    ]
     if crash:
-        mutations[6] = lambda d: replace_node(d, "alive", primary, True)
+        mutations.extend([
+            lambda d: replace_node(d, "alive", primary, True),
+            lambda d: node_function(final(d)["disk"])[primary].update(commit=0),
+            lambda d: node_function(final(d)["disk"])[primary].update(applied=0),
+            lambda d: final(d).update(ghostApplied={"$set": []}),
+        ])
     for index, change in enumerate(mutations, 1):
         try:
             mutate(change)
