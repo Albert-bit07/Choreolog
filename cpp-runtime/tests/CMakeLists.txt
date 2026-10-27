@@ -119,3 +119,13 @@ add_test(
   COMMAND "${Python3_EXECUTABLE}"
           "${PROJECT_SOURCE_DIR}/scripts/tests/test_tlc_witness_prefix.py"
 )
+
+# Bounded compiled-core/model projection check with negative divergence mutations.
+# This uses a synthetic typed witness; it is NOT a full TLC refinement proof.
+add_test(
+  NAME tlc-witness-core-prefix-tests
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/tests/test_tlc_witness_core_prefix.py"
+          "$<TARGET_FILE:choreoos-raft-conformance>"
+)
+set_tests_properties(tlc-witness-core-prefix-tests PROPERTIES TIMEOUT 90)
