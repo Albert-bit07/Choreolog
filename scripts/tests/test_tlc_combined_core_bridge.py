@@ -21,7 +21,7 @@ import zlib
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
-from test_combined_tlc_witness import verify, WitnessMismatch
+from test_combined_tlc_witness import verify, WitnessMismatch, check_higher_term_envelope
 from tlc_witness_prefix import node_function
 
 PINNED = {
@@ -112,6 +112,46 @@ def run_compiled(runner, crash):
     return rows
 
 
+def compare_split_fsync_stutter(doc, staged, synced):
+    """Check stable election-disk endpoints around the model's split fsyncs.
+
+    TLC exposes a durable term-only intermediate state; the compiled core
+    combines term and vote into one checkpoint. That intermediate state is
+    intentionally *not* equated to either compiled durable checkpoint.
+    This is a bounded stuttering projection, not an action-level proof.
+    """
+    try:
+        phases = check_higher_term_envelope(doc["states"], "s1", "s2")
+    except WitnessMismatch as exc:
+        raise BridgeMismatch(f"invalid split-fsync model envelope: {exc}") from exc
+
+    def disk_at(state_index):
+        return node_function(doc["states"][state_index]["variables"]["disk"])["s1"]
+
+    old = disk_at(phases["term_stage"] - 1)
+    term_only = disk_at(phases["term_sync"])
+    vote_staged = disk_at(phases["vote_stage"])
+    voted = disk_at(phases["vote_sync"])
+    demand(old["term"] == 1 and old["votedFor"] == {"$model": "s1"} and
+           term_only["term"] == 2 and
+           term_only["votedFor"] == {"$model": "Nil"} and
+           term_only["term"] == vote_staged["term"] and
+           term_only["votedFor"] == vote_staged["votedFor"] and
+           voted["term"] == 2 and voted["votedFor"] == {"$model": "s2"} and
+           old["log"] == term_only["log"] == voted["log"],
+           "model term-only stutter or durable vote phase diverged")
+    before, after = staged["post"]["durable"], synced["post"]["durable"]
+    demand(before["term"] == old["term"] and before["votedFor"] == "a" and
+           after["term"] == voted["term"] and after["votedFor"] == "b" and
+           staged["effects"]["send"] == [] and
+           staged["pending_after"] == synced["pending_before"] and
+           synced["pending_after"] is None,
+           "compiled combined write does not span stable model election endpoints")
+    demand(term_only["term"] != before["term"] and
+           term_only["votedFor"] != voted["votedFor"],
+           "model term-only disk state was incorrectly collapsed into C++ state")
+
+
 def compare(doc, rows, crash):
     commands = schedule(crash)
     demand(len(rows) == len(commands), "wrong compiled schedule length")
@@ -170,6 +210,7 @@ def compare(doc, rows, crash):
 
     offset = 2 if crash else 0
     b_timeout, b_fsync, a_grant, a_fsync, b_leader = rows[15 + offset:20 + offset]
+    compare_split_fsync_stutter(doc, a_grant, a_fsync)
     demand(b_timeout["node"] == b_fsync["node"] == b_leader["node"] == "b" and
            b_timeout["post"]["term"] == 2 and
            b_timeout["post"]["durable"]["term"] == 1 and
@@ -373,11 +414,20 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                     mutate(rows)
                     with self.assertRaises(BridgeMismatch):
                         compare(doc, rows, crash)
+            phases = check_higher_term_envelope(doc["states"], "s1", "s2")
             model_mutations = [
                 lambda d: node_function(d["states"][-1]["variables"]["disk"])["s2"]["log"].update(
                     {"$sequence": []}),
                 lambda d: node_function(d["states"][-1]["variables"]["disk"])["s1"].update(
                     votedFor={"$model": "Nil"}),
+                # Mutate the actual model's intermediate split-fsync states,
+                # not just the final witness checkpoint.
+                lambda d: node_function(d["states"][phases["term_sync"]]["variables"]["disk"])[
+                    "s1"].update(term=1),
+                lambda d: node_function(d["states"][phases["term_sync"]]["variables"]["disk"])[
+                    "s1"].update(votedFor={"$model": "s2"}),
+                lambda d: node_function(d["states"][phases["vote_stage"]]["variables"]["disk"])[
+                    "s1"].update(votedFor={"$model": "s2"}),
             ]
             for index, mutate in enumerate(model_mutations, 1):
                 with self.subTest(crash=crash, model_mutation=index):
