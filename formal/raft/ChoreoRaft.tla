@@ -430,6 +430,74 @@ ElectionNext ==
   \/ \E i \in Servers : Crash(i) \/ PersistFailed(i) \/ Restart(i)
 ElectionSpec == Init /\ [][ElectionNext]_vars
 
+\* Restricted *combined* safety profile: one term-one proposer and one
+\* term-two successor, with a real durable replicated entry, delayed/dropped
+\* election messages, and a possible crash/restart of the former leader.
+\* This is a deliberately scoped action subset, not a reduction of full Spec.
+\* CHOOSE designates actors; symmetry MUST be disabled in its TLC config.
+CombinedPrimary == CHOOSE i \in Servers : TRUE
+CombinedSuccessor == CHOOSE i \in Servers \ {CombinedPrimary} : TRUE
+CombinedThird == CHOOSE i \in Servers \ {CombinedPrimary, CombinedSuccessor} : TRUE
+CombinedValue == CHOOSE v \in Values : TRUE
+
+CombinedNext ==
+  \/ /\ UNCHANGED alive
+     /\ (\/ /\ mem[CombinedPrimary].term = 0
+            /\ Timeout(CombinedPrimary)
+         \/ /\ ghostCommitted # {}
+            /\ Len(disk[CombinedSuccessor].log) = 1
+            /\ mem[CombinedSuccessor].term < MaxTerm
+            /\ Timeout(CombinedSuccessor)
+         \/ \E i \in Servers : PersistCompleted(i)
+         \/ \E i \in {CombinedPrimary, CombinedSuccessor} : BecomeLeader(i)
+         \/ /\ role[CombinedPrimary] = Leader
+            /\ mem[CombinedPrimary].term = 1
+            /\ Len(mem[CombinedPrimary].log) = 0
+            /\ ClientPropose(CombinedPrimary, CombinedValue)
+         \/ /\ role[CombinedPrimary] = Leader
+            /\ Len(mem[CombinedPrimary].log) = 1
+            /\ CoreSendAppend(CombinedPrimary, CombinedSuccessor)
+         \/ AdvanceCommit(CombinedPrimary)
+         \/ PersistCommit(CombinedPrimary)
+         \/ Apply(CombinedPrimary)
+         \/ \E i \in Servers, m \in DOMAIN net :
+              \/ /\ i = CombinedPrimary
+                 /\ m.mtype = "RVReq"
+                 /\ m.msrc = CombinedSuccessor
+                 /\ UpdateTerm(i, m)
+              \/ /\ i \in {CombinedPrimary, CombinedSuccessor}
+                 /\ HandleRVReq(i, m)
+              \/ /\ i \in {CombinedPrimary, CombinedSuccessor}
+                 /\ HandleRVResp(i, m)
+              \/ /\ i = CombinedSuccessor
+                 /\ HandleAEReq(i, m)
+              \/ /\ i = CombinedPrimary
+                 /\ HandleAEResp(i, m)
+         \/ \E m \in DOMAIN net :
+              /\ m.mtype = "RVReq"
+              /\ m.msrc = CombinedPrimary
+              /\ m.mdst = CombinedThird
+              /\ DropMsg(m))
+  \/ /\ role[CombinedSuccessor] = Leader
+     /\ Crash(CombinedPrimary)
+  \/ /\ mem[CombinedPrimary].term = 2
+     /\ PersistFailed(CombinedPrimary)
+  \/ /\ ~alive[CombinedPrimary]
+     /\ Restart(CombinedPrimary)
+
+CombinedSpec == Init /\ [][CombinedNext]_vars
+
+\* A reachability smoke test, not a temporal liveness claim. It requires
+\* a term-one committed entry and a later term-two leader holding that entry.
+SomeCombinedHandoff ==
+  /\ ghostCommitted # {}
+  /\ ghostLeaders[1] # {}
+  /\ ghostLeaders[2] # {}
+  /\ role[CombinedSuccessor] = Leader
+  /\ Len(disk[CombinedSuccessor].log) = 1
+NoCombinedHandoffWitness == ~SomeCombinedHandoff
+
+--------------------------------------------------------------------------
 Next ==
   \/ /\ UNCHANGED alive /\ ActiveNext
   \/ \E i \in Servers : Crash(i) \/ PersistFailed(i) \/ Restart(i)
