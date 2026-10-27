@@ -301,7 +301,8 @@ TEST(RaftDurableTest, StaleHigherTermVoteRecoverySeparatesTermFromVote) {
     const auto& denied = std::get<VoteReply>(stale.effects.send_now.front().message);
     EXPECT_FALSE(denied.granted);
     EXPECT_EQ(denied.request_id, 102u);
-    EXPECT_EQ(reopened.value().disk().voted_for, expected_vote);
+    EXPECT_EQ(reopened.value().disk().term, 3u);
+    EXPECT_EQ(reopened.value().disk().voted_for, std::optional<std::string>{});
 
     // An up-to-date candidate may be granted term 3 only after its vote is
     // durably written, with the original request identity preserved.
