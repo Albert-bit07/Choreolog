@@ -114,6 +114,23 @@ jobs:
             exit 1
           fi
 
+      - name: Require applied-entry post-handoff crash witness
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ReachCombinedCrashAfterApply.cfg -workers 2 ChoreoRaft.tla \
+            > "$RUNNER_TEMP/combined-crash.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/combined-crash.txt"
+          if [[ $result -ne 12 ]] || ! grep -Fq 'Invariant NoCombinedCrashAfterApplyWitness is violated' "$RUNNER_TEMP/combined-crash.txt"; then
+            echo "::error::Combined applied-entry crash witness missing; TLC exit code $result"
+            exit 1
+          fi
+
       - name: Verify leadership changes across terms
         shell: bash
         working-directory: formal/raft
