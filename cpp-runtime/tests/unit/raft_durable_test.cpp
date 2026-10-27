@@ -333,6 +333,84 @@ TEST(RaftDurableTest, StaleHigherTermVoteRecoverySeparatesTermFromVote) {
   }
 }
 
+// After a stale higher-term request durably records the new term without a
+// vote, a separate up-to-date request can fail while writing its grant. The
+// replacement boundary determines whether that grant survived, but a failed
+// dispatch must never send a positive reply.
+TEST(RaftDurableTest, InterruptedGrantAfterDurableTermOnlyRecovery) {
+  for (const auto fault : {CheckpointFault::BeforeReplace, CheckpointFault::AfterReplace}) {
+    const bool replaced = fault == CheckpointFault::AfterReplace;
+    const auto path = fresh(replaced ? "post-term-grant-after" : "post-term-grant-before");
+    Durable initial;
+    initial.term = 2;
+    initial.voted_for = "a";
+    initial.log = {{1, "committed"}, {2, "uncommitted"}};
+    initial.commit = 1;
+    {
+      auto checkpoint = CheckpointStore::open(path);
+      ASSERT_TRUE(checkpoint);
+      ASSERT_TRUE(checkpoint.value().persist(initial));
+    }
+    {
+      auto opened = DurableNode::open(cfg("a"), path, {.test_mode = true});
+      ASSERT_TRUE(opened);
+      const auto stale =
+          opened.value().dispatch(RecvRequestVote{RequestVote{3, "b", 1, 1, 201}});
+      ASSERT_FALSE(stale.error);
+      ASSERT_EQ(stale.effects.send_now.size(), 1u);
+      const auto& denied = std::get<VoteReply>(stale.effects.send_now.front().message);
+      EXPECT_FALSE(denied.granted);
+      EXPECT_EQ(denied.term, 3u);
+      EXPECT_EQ(denied.request_id, 201u);
+      EXPECT_EQ(opened.value().disk().term, 3u);
+      EXPECT_EQ(opened.value().disk().voted_for, std::optional<std::string>{});
+      EXPECT_EQ(opened.value().disk().log, initial.log);
+      EXPECT_EQ(opened.value().disk().commit, initial.commit);
+
+      ASSERT_TRUE(opened.value().inject_next_fault_for_test(fault));
+      const auto failed =
+          opened.value().dispatch(RecvRequestVote{RequestVote{3, "c", 2, 2, 202}});
+      ASSERT_TRUE(failed.error);
+      EXPECT_TRUE(failed.effects.halt);
+      EXPECT_TRUE(failed.effects.send_now.empty());
+      EXPECT_EQ(opened.value().node().durable.term, 3u);
+      EXPECT_EQ(opened.value().node().durable.voted_for, std::optional<std::string>{});
+    }
+
+    auto reopened = DurableNode::open(cfg("a"), path);
+    ASSERT_TRUE(reopened) << reopened.error().to_string();
+    EXPECT_EQ(reopened.value().disk().term, 3u);
+    EXPECT_EQ(reopened.value().disk().voted_for,
+              replaced ? std::optional<std::string>{"c"} : std::optional<std::string>{});
+    EXPECT_EQ(reopened.value().disk().log, initial.log);
+    EXPECT_EQ(reopened.value().disk().commit, initial.commit);
+    EXPECT_EQ(reopened.value().disk().applied, initial.applied);
+
+    // The same-term candidate d can receive a vote only when the failed
+    // replacement left the vote slot empty. An already-durable vote for c
+    // must exclude a second candidate even though c never received a reply.
+    const auto competing =
+        reopened.value().dispatch(RecvRequestVote{RequestVote{3, "d", 2, 2, 203}});
+    ASSERT_FALSE(competing.error);
+    ASSERT_EQ(competing.effects.send_now.size(), 1u);
+    EXPECT_EQ(competing.effects.send_now.front().to, "d");
+    const auto& reply = std::get<VoteReply>(competing.effects.send_now.front().message);
+    EXPECT_EQ(reply.term, 3u);
+    EXPECT_EQ(reply.request_id, 203u);
+    EXPECT_EQ(reply.granted, !replaced);
+    const auto final_vote = std::optional<std::string>{replaced ? "c" : "d"};
+    EXPECT_EQ(reopened.value().disk().voted_for, final_vote);
+
+    auto final_reopen = DurableNode::open(cfg("a"), path);
+    ASSERT_TRUE(final_reopen) << final_reopen.error().to_string();
+    EXPECT_EQ(final_reopen.value().disk().term, 3u);
+    EXPECT_EQ(final_reopen.value().disk().voted_for, final_vote);
+    EXPECT_EQ(final_reopen.value().disk().log, initial.log);
+    EXPECT_EQ(final_reopen.value().disk().commit, initial.commit);
+    std::filesystem::remove_all(path);
+  }
+}
+
 TEST(RaftDurableTest, BadCheckpointChecksumCannotSilentlyResetConsensus) {
   const auto path = fresh("corrupt");
   {
