@@ -99,3 +99,12 @@ presence are asserted, not an invented numeric equality.
 fixture. No actual TLC witness, higher-term staged-vs-durable split, heartbeat,
 or full-network identity mapping is claimed. Exact-head CI must pass before
 merging this slice.
+
+### Existing snapshot contract compatibility
+
+Adding v2 outbound destination/term fields also changes diagnostic snapshot
+reply objects. The existing snapshot trace contract is kept **strict**:
+acknowledgements must match the admitted request's destination, term, index,
+and request ID. Two additional negative mutants reject a wrong destination
+or reply term (ten snapshot mutations total). This is a diagnostic schema
+extension, not a change to snapshot installation or production messaging.
