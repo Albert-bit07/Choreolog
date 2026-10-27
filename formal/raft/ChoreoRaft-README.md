@@ -160,3 +160,22 @@ still a CI failure. This is **not** a C++ correspondence or refinement proof.
 These assertions and the generated JSON artifact require exact-head hosted CI
 before the follow-up PR may be accepted. The existing older draft paragraphs
 above are retained as dated historical records.
+
+## Combined TLC split higher-term write envelope (draft, CI pending)
+
+The typed 25-state handoff and 30-state durable-apply/crash witnesses are now
+checked for four **ordered** transitions of the original leader: `UpdateTerm`
+stages term 2 with a nil vote; the first `PersistCompleted` makes only that
+term durable; `HandleRVReq` stages the vote for the successor while keeping the
+positive response deferred; and the second `PersistCompleted` durably writes
+the vote and releases exactly one corresponding network reply. The checker
+compares typed model-state deltas and the message bag, not TLC source-line
+labels. Eight new negative mutations per witness deliberately corrupt these
+intermediate states, pending targets or message release. The model witness
+validator now rejects 32 mutations total if the proposed branch passes CI.
+
+**Boundary:** This tests the actual model-generated witness transitions, not
+C++ execution. The compiled core combines the term/vote durable write, so
+these intermediate states cannot be equated one-for-one. A separately reviewed
+checkpoint relation remains necessary before claiming implementation
+correspondence or refinement. Exact-head CI is required before merge.
