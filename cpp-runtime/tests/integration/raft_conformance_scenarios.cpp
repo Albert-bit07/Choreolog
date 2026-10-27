@@ -107,19 +107,19 @@ struct Harness {
         // RVReq kinds sent to the same peer or with a different term.
         std::ostringstream destination;
         quoted(destination, message.to);
-        trace += ",\\"to\\":" + destination.str();
-        trace += ",\\"term\\":" +
+        trace += ",\"to\":" + destination.str();
+        trace += ",\"term\":" +
                  std::to_string(std::visit([](const auto& wire) { return wire.term; },
                                            message.message));
-        trace += ",\\"request_id\\":" +
+        trace += ",\"request_id\":" +
                  std::to_string(std::visit([](const auto& wire) { return wire.request_id; },
                                            message.message));
         if (const auto* vote = std::get_if<RequestVote>(&message.message)) {
           std::ostringstream candidate;
           quoted(candidate, vote->candidate);
-          trace += ",\\"candidate\\":" + candidate.str();
-          trace += ",\\"last_index\\":" + std::to_string(vote->last_index);
-          trace += ",\\"last_term\\":" + std::to_string(vote->last_term);
+          trace += ",\"candidate\":" + candidate.str();
+          trace += ",\"last_index\":" + std::to_string(vote->last_index);
+          trace += ",\"last_term\":" + std::to_string(vote->last_term);
         }
         if (const auto* snapshot = std::get_if<SnapshotReply>(&message.message)) {
           trace += ",\"index\":" + std::to_string(snapshot->index);
