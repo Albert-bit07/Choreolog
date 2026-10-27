@@ -151,7 +151,7 @@ logs using the existing typed trace exporter. A new Python validator checks
 source SHA-256 provenance, complete state-variable sets, distinct term-one and
 term-two leaders, a committed entry matching the later leader's durable log,
 and (for the crash witness) durable apply plus an actual alive-to-offline
-transition after leadership handoff. Ten negative mutations are exercised
+transition after leadership handoff. Sixteen negative mutations are exercised
 across the two witnesses, including provenance, committed-entry, durable-log,
 leader-role, applied-index and offline-state corruption. The checker fails
 closed on missing or malformed evidence; a TLC timeout or missing witness is
