@@ -354,8 +354,7 @@ TEST(RaftDurableTest, InterruptedGrantAfterDurableTermOnlyRecovery) {
     {
       auto opened = DurableNode::open(cfg("a"), path, {.test_mode = true});
       ASSERT_TRUE(opened);
-      const auto stale =
-          opened.value().dispatch(RecvRequestVote{RequestVote{3, "b", 1, 1, 201}});
+      const auto stale = opened.value().dispatch(RecvRequestVote{RequestVote{3, "b", 1, 1, 201}});
       ASSERT_FALSE(stale.error);
       ASSERT_EQ(stale.effects.send_now.size(), 1u);
       const auto& denied = std::get<VoteReply>(stale.effects.send_now.front().message);
@@ -368,8 +367,7 @@ TEST(RaftDurableTest, InterruptedGrantAfterDurableTermOnlyRecovery) {
       EXPECT_EQ(opened.value().disk().commit, initial.commit);
 
       ASSERT_TRUE(opened.value().inject_next_fault_for_test(fault));
-      const auto failed =
-          opened.value().dispatch(RecvRequestVote{RequestVote{3, "c", 2, 2, 202}});
+      const auto failed = opened.value().dispatch(RecvRequestVote{RequestVote{3, "c", 2, 2, 202}});
       ASSERT_TRUE(failed.error);
       EXPECT_TRUE(failed.effects.halt);
       EXPECT_TRUE(failed.effects.send_now.empty());
@@ -386,19 +384,19 @@ TEST(RaftDurableTest, InterruptedGrantAfterDurableTermOnlyRecovery) {
     EXPECT_EQ(reopened.value().disk().commit, initial.commit);
     EXPECT_EQ(reopened.value().disk().applied, initial.applied);
 
-    // The same-term candidate d can receive a vote only when the failed
+    // The same-term candidate b can receive a vote only when the failed
     // replacement left the vote slot empty. An already-durable vote for c
-    // must exclude a second candidate even though c never received a reply.
+    // must exclude another candidate even though c never received a reply.
     const auto competing =
-        reopened.value().dispatch(RecvRequestVote{RequestVote{3, "d", 2, 2, 203}});
+        reopened.value().dispatch(RecvRequestVote{RequestVote{3, "b", 2, 2, 203}});
     ASSERT_FALSE(competing.error);
     ASSERT_EQ(competing.effects.send_now.size(), 1u);
-    EXPECT_EQ(competing.effects.send_now.front().to, "d");
+    EXPECT_EQ(competing.effects.send_now.front().to, "b");
     const auto& reply = std::get<VoteReply>(competing.effects.send_now.front().message);
     EXPECT_EQ(reply.term, 3u);
     EXPECT_EQ(reply.request_id, 203u);
     EXPECT_EQ(reply.granted, !replaced);
-    const auto final_vote = std::optional<std::string>{replaced ? "c" : "d"};
+    const auto final_vote = std::optional<std::string>{replaced ? "c" : "b"};
     EXPECT_EQ(reopened.value().disk().voted_for, final_vote);
 
     auto final_reopen = DurableNode::open(cfg("a"), path);
