@@ -287,8 +287,6 @@ def compare_interrupted_vote(rows, crash):
            "restart retained an unacknowledged vote or leaked deferred effects")
 
 
-
-
 class CombinedCoreBridgeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -309,7 +307,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 commands = interrupted_vote_schedule(crash)
                 result = subprocess.run(
                     [str(RUNNER), "--replay-inputs"],
-                    input="\\n".join(commands) + "\\n",
+                    input="\n".join(commands) + "\n",
                     capture_output=True, text=True, timeout=30, check=False)
                 demand(result.returncode == 0,
                        "interrupted compiled schedule failed: " + result.stderr.strip())
@@ -336,7 +334,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 # restart; the driver must not invent a completion.
                 invalid = subprocess.run(
                     [str(RUNNER), "--replay-inputs"],
-                    input="\\n".join(commands + ["complete a"]) + "\\n",
+                    input="\n".join(commands + ["complete a"]) + "\n",
                     capture_output=True, text=True, timeout=30, check=False)
                 demand(invalid.returncode != 0 and
                        "pending" in invalid.stderr.lower(),
