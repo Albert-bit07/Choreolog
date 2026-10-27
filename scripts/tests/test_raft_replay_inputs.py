@@ -91,6 +91,80 @@ def check_two_term_election(rows):
             "restart forgot acknowledged higher-term vote")
 
 
+# A bounded combined *compiled-core* scenario, not a TLC model-checking result.
+REPLICATED_HANDOFF = (
+    ELECTION.replace("deliver a b RVReq\n",
+                     "drop a c RVReq\ndeliver a b RVReq\n", 1)
+    + 'propose a "value"\ncomplete a\n'
+    + "deliver a b AEReq\ndeliver b a AEResp\nheartbeat a\n"
+    + "deliver a b AEReq\ncomplete b\ndeliver b a AEResp\n"
+    + "advance a\ncomplete a\napply a\ncomplete a\n"
+    + "timeout b\ncomplete b\ndeliver b a RVReq\ncomplete a\n"
+    + "deliver a b RVResp\nrestart a\n"
+)
+
+
+def check_replicated_handoff(rows):
+    """Check replication, durable application and higher-term handoff together.
+
+    This deliberately checks a fixed bounded schedule, not all interleavings.
+    """
+    def require(condition, reason):
+        if not condition:
+            raise ValueError(reason)
+
+    require(len(rows) == 23 and
+            [row["seq"] for row in rows] == list(range(23)),
+            "unexpected combined replay length or sequence")
+    require(rows[4]["post"]["role"] == "Leader", "first election failed")
+    follower = rows[11]["post"]["durable"]
+    require(len(follower["log"]) == 1 and follower["log"][0]["val"] == "value",
+            "follower did not durably replicate the proposal")
+    applied = rows[16]["post"]["durable"]
+    require(applied["commit"] == 1 and applied["applied"] == 1 and
+            len(applied["log"]) == 1 and applied["log"][0]["val"] == "value",
+            "original leader did not durably commit and apply the proposal")
+    request = [msg for msg in rows[18]["effects"]["send"]
+               if msg["kind"] == "RVReq" and msg["to"] == "a"]
+    require(len(request) == 1 and request[0]["term"] == 2 and
+            request[0]["last_index"] == 1 and request[0]["last_term"] == 1,
+            "new candidate did not advertise its replicated log")
+    pending = rows[19]
+    require(pending["act"] == "HandleRVReq" and pending["node"] == "a" and
+            pending["post"]["term"] == 2 and
+            pending["post"]["votedFor"] == "b" and
+            pending["post"]["durable"]["term"] == 1 and
+            pending["effects"]["send"] == [],
+            "old leader leaked a vote before durable higher-term write")
+    token = pending["pending_after"]
+    require(type(token) is int and token > 0 and
+            pending["effects"]["persist"] == token and
+            rows[20]["pending_before"] == token and
+            rows[20]["pending_after"] is None,
+            "higher-term persistence callback token mismatch")
+    require(rows[20]["post"]["durable"]["term"] == 2 and
+            rows[20]["post"]["durable"]["votedFor"] == "b",
+            "higher-term vote was not durable")
+    replies = rows[20]["effects"]["send"]
+    require(len(replies) == 1 and replies[0]["kind"] == "RVResp" and
+            replies[0]["to"] == "b" and replies[0]["positive"] is True and
+            replies[0]["term"] == 2 and
+            replies[0]["request_id"] == request[0]["request_id"],
+            "higher-term reply did not match the actual request")
+    require(rows[21]["post"]["role"] == "Leader" and
+            rows[21]["post"]["term"] == 2,
+            "new leader did not win the election")
+    recovered = rows[22]["post"]["durable"]
+    require(rows[22]["node"] == "a" and
+            rows[22]["post"]["term"] == 2 and
+            rows[22]["post"]["votedFor"] == "b" and
+            recovered["term"] == 2 and recovered["votedFor"] == "b" and
+            recovered["commit"] == 1 and recovered["applied"] == 1 and
+            len(recovered["log"]) == 1 and recovered["log"][0]["val"] == "value",
+            "restart lost the acknowledged vote or applied proposal")
+
+
+
 class ReplayInputsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -205,6 +279,40 @@ class ReplayInputsTest(unittest.TestCase):
         self.assertEqual(rows[7]["effects"]["send"], [])
         self.assertEqual(rows[8]["effects"]["send"], [])
         self.assertFalse(rows[8]["post"]["alive"])
+
+
+    def test_replicated_entry_survives_two_term_leadership_handoff(self):
+        result, rows = run(REPLICATED_HANDOFF)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        check_replicated_handoff(rows)
+
+    def test_replicated_handoff_mutations_are_rejected(self):
+        import copy
+
+        result, original = run(REPLICATED_HANDOFF)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        check_replicated_handoff(original)
+        mutations = [
+            lambda r: r[11]["post"]["durable"].update(log=[]),
+            lambda r: r[16]["post"]["durable"].update(commit=0),
+            lambda r: r[16]["post"]["durable"].update(applied=0),
+            lambda r: next(m for m in r[18]["effects"]["send"]
+                           if m["kind"] == "RVReq" and m["to"] == "a").update(last_index=0),
+            lambda r: r[19]["post"]["durable"].update(term=2),
+            lambda r: r[19]["effects"].update(send=[{"kind": "RVResp"}]),
+            lambda r: r[20]["post"]["durable"].update(votedFor="a"),
+            lambda r: r[20].update(pending_before=-1),
+            lambda r: r[21]["post"].update(role="Candidate"),
+            lambda r: r[22]["post"]["durable"].update(log=[]),
+            lambda r: r[22]["post"]["durable"].update(commit=0),
+            lambda r: r[22]["post"]["durable"].update(term=1),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                rows = copy.deepcopy(original)
+                mutate(rows)
+                with self.assertRaises(ValueError):
+                    check_replicated_handoff(rows)
 
     def test_invalid_commands_fail_before_transition(self):
         for command, error in [
