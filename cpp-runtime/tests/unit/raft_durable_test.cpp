@@ -223,8 +223,8 @@ TEST(RaftDurableTest, InterruptedHigherTermVotePreservesCommittedPrefixOnDisk) {
       ASSERT_TRUE(opened);
       EXPECT_EQ(opened.value().disk(), stable);
       ASSERT_TRUE(opened.value().inject_next_fault_for_test(fault));
-      const auto failed =
-          opened.value().dispatch(RecvRequestVote{RequestVote{2, "b", 1, 1, 91}});
+      const auto failed = opened.value().dispatch(
+          RecvRequestVote{RequestVote{2, "b", 1, 1, 91}});
       ASSERT_TRUE(failed.error);
       EXPECT_TRUE(failed.effects.halt);
       EXPECT_TRUE(failed.effects.send_now.empty());
