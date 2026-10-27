@@ -93,6 +93,7 @@ def schedule(crash):
         commands += ["apply a", "complete a"]
     commands += ["timeout b", "complete b", "deliver b a RVReq",
                  "complete a", "deliver a b RVResp"]
+    commands.append("restart a")
     return commands
 
 
@@ -122,7 +123,7 @@ def compare(doc, rows, crash):
     if crash:
         expected_acts += ["Apply", "PersistCompleted"]
     expected_acts += ["Timeout", "PersistCompleted", "HandleRVReq",
-                      "PersistCompleted", "HandleRVResp"]
+                      "PersistCompleted", "HandleRVResp", "Restart"]
     for i, (row, act) in enumerate(zip(rows, expected_acts)):
         demand(row.get("v") == 2 and row.get("seq") == i and row.get("act") == act,
                f"compiled row {i} identity or action diverged")
@@ -222,6 +223,21 @@ def compare(doc, rows, crash):
                a_fsync["post"]["durable"]["commit"] == 1 and
                a_fsync["post"]["durable"]["applied"] == 1,
                "crash-witness durable application checkpoint diverged")
+    # Restart is a compiled-core projection, not a TLC crash/restart action.
+    # The replay runner reconstructs a from its acknowledged durable state.
+    recovered = rows[20 + offset]
+    demand(recovered["node"] == "a" and recovered["act"] == "Restart" and
+           recovered["post"]["role"] == "Follower" and
+           recovered["post"]["term"] == 2 and
+           recovered["post"]["votedFor"] == "b" and
+           recovered["post"]["durable"] == a_fsync["post"]["durable"] and
+           recovered["post"]["durable"]["log"] == expected_log and
+           recovered["post"]["durable"]["commit"] == 1 and
+           recovered["post"]["durable"]["applied"] == (1 if crash else 0) and
+           recovered["pending_after"] is None and
+           recovered["effects"]["send"] == [] and
+           recovered["effects"]["persist"] is None,
+           "compiled restart lost acknowledged durable election/log/application state")
     # Handoff witness does NOT require durable application; core commits
     # before the handoff, while the model can leave commitIndex only in memory.
     # Crash witness's final offline action is NOT a compiled restart test.
@@ -255,10 +271,16 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 lambda r: r[16 + offset]["effects"]["send"][0].update(last_index=0),
                 lambda r: r[19 + offset]["post"].update(role="Candidate"),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(to="b"),
+                lambda r: r[20 + offset]["post"]["durable"].update(term=1),
+                lambda r: r[20 + offset]["post"]["durable"].update(log=[]),
+                lambda r: r[20 + offset]["post"].update(votedFor="a"),
+                lambda r: r[20 + offset]["effects"].update(send=[{"kind": "RVResp"}]),
             ]
             if crash:
-                core_mutations.append(
-                    lambda r: r[16]["post"]["durable"].update(applied=0))
+                core_mutations.extend([
+                    lambda r: r[16]["post"]["durable"].update(applied=0),
+                    lambda r: r[20 + offset]["post"]["durable"].update(applied=0),
+                ])
             for index, mutate in enumerate(core_mutations, 1):
                 with self.subTest(crash=crash, core_mutation=index):
                     rows = copy.deepcopy(original)
