@@ -99,9 +99,23 @@ def compare_prefix(witness, rows):
     require(second["pending_after"] is None, "completion left pending write")
     require(second["effects"]["persist"] is None,
             "completion staged an extra write")
-    require(len(second["effects"]["send"]) == 2 and
-            all(item["kind"] == "RVReq" for item in second["effects"]["send"]),
+    sent = second["effects"]["send"]
+    require(len(sent) == 2 and all(item["kind"] == "RVReq" for item in sent),
             "completion did not release exactly two vote requests")
+    deferred = node(witness["states"][1]["variables"]["pending"], "s1")["after"]["$set"]
+    expected = {(vote(msg["mdst"]), msg["mterm"], vote(msg["msrc"]),
+                 msg["mlastIdx"], msg["mlastTerm"]) for msg in deferred}
+    require(len(expected) == 2, "model vote request destinations are not unique")
+    fields = {"kind", "positive", "to", "term", "request_id",
+              "candidate", "last_index", "last_term"}
+    require(all(set(item) == fields and item["positive"] is False
+                for item in sent), "malformed outbound vote request projection")
+    actual = {(item["to"], item["term"], item["candidate"],
+               item["last_index"], item["last_term"]) for item in sent}
+    require(actual == expected, "vote request destination or payload divergence")
+    ids = [item["request_id"] for item in sent]
+    require(all(type(identity) is int and identity > 0 for identity in ids) and
+            len(set(ids)) == len(ids), "missing or duplicate outbound request identity")
 
 
 class CompiledElectionPrefixTests(unittest.TestCase):
@@ -131,6 +145,16 @@ class CompiledElectionPrefixTests(unittest.TestCase):
             lambda r: r[1]["effects"].update(send=[]),
             lambda r: r[1].update(pending_before=999),
             lambda r: r[1].update(pending_after=999),
+            lambda r: r[1]["effects"]["send"][0].update(to="a"),
+            lambda r: r[1]["effects"]["send"][1].update(
+                to=r[1]["effects"]["send"][0]["to"]),
+            lambda r: r[1]["effects"]["send"][0].update(candidate="b"),
+            lambda r: r[1]["effects"]["send"][0].update(term=999),
+            lambda r: r[1]["effects"]["send"][0].update(last_index=2),
+            lambda r: r[1]["effects"]["send"][0].update(last_term=1),
+            lambda r: r[1]["effects"]["send"][0].update(request_id=0),
+            lambda r: r[1]["effects"]["send"][1].update(
+                request_id=r[1]["effects"]["send"][0]["request_id"]),
         ]
         for mutate in mutations:
             with self.subTest(mutation=mutate):
