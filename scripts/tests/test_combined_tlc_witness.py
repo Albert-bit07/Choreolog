@@ -37,19 +37,30 @@ def model_set(value):
     return value["$set"]
 
 
-def leader_for(values, term):
+def leader_terms(values):
     mapping = values["ghostLeaders"]
-    require(isinstance(mapping, dict) and set(mapping) == {"$function"},
-            "invalid ghostLeaders mapping")
+    require(isinstance(mapping, dict), "invalid ghostLeaders")
+    if set(mapping) == {"$sequence"}:
+        # TLC prints a function over 1..MaxTerm as a sequence.
+        entries = mapping["$sequence"]
+        require(isinstance(entries, list) and len(entries) == 2,
+                "expected two leader terms")
+        return {1: model_set(entries[0]), 2: model_set(entries[1])}
+    require(set(mapping) == {"$function"}, "invalid ghostLeaders mapping")
     entries = mapping["$function"]
-    require(isinstance(entries, list) and len(entries) == 2, "expected two leader terms")
+    require(isinstance(entries, list) and len(entries) == 2,
+            "expected two leader terms")
     terms = {}
     for key, value in entries:
         require(type(key) is int and key in (1, 2) and key not in terms,
                 "unexpected leader term")
         terms[key] = model_set(value)
     require(set(terms) == {1, 2}, "incomplete leader terms")
-    selected = terms[term]
+    return terms
+
+
+def leader_for(values, term):
+    selected = leader_terms(values)[term]
     require(len(selected) == 1 and isinstance(selected[0], dict)
             and set(selected[0]) == {"$model"}, "term must have one elected leader")
     actor = selected[0]["$model"]
@@ -88,7 +99,7 @@ def verify(document, invariant, model, config, crash=False):
                 and canonical(item.get("entry")) == canonical(log["$sequence"][0])
                 for item in committed), "durable entry differs from committed entry")
     require(any(model_set(state["variables"]["ghostCommitted"])
-                and not model_set(dict(state["variables"]["ghostLeaders"]["$function"])[2])
+                and not leader_terms(state["variables"])[2]
                 for state in states), "no committed entry before term-two leadership")
     if crash:
         require(node_function(last["alive"])[primary] is False,
@@ -128,10 +139,20 @@ def check_mutations(document, invariant, model, config, crash):
                 return
         raise WitnessMismatch("missing node in mutation fixture")
 
+    def remove_term_two_leader(d):
+        mapping = final(d)["ghostLeaders"]
+        if "$sequence" in mapping:
+            mapping["$sequence"][1] = {"$set": []}
+        else:
+            for pair in mapping["$function"]:
+                if pair[0] == 2:
+                    pair[1] = {"$set": []}
+                    return
+            raise WitnessMismatch("term two missing from mutation fixture")
+
     mutations = [
         lambda d: final(d).update(ghostCommitted={"$set": []}),
-        lambda d: dict(final(d)["ghostLeaders"]["$function"])[2].update(
-            {"$set": []}),
+        remove_term_two_leader,
         lambda d: replace_node(d, "role", successor, {"$model": "Follower"}),
         lambda d: node_function(final(d)["disk"])[successor]["log"].update(
             {"$sequence": []}),
