@@ -112,3 +112,10 @@ add_test(
           "$<TARGET_FILE:choreoos-raft-conformance>"
 )
 set_tests_properties(raft-replay-input-tests PROPERTIES TIMEOUT 90)
+
+# Conservative TLC election-prefix normalizer: no compiled C++ refinement claim.
+add_test(
+  NAME tlc-witness-prefix-tests
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/tests/test_tlc_witness_prefix.py"
+)
