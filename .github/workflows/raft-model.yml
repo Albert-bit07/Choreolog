@@ -7,6 +7,7 @@ on:
       - '.github/workflows/raft-model.yml'
       - 'scripts/export_tlc_trace.py'
       - 'scripts/tests/test_export_tlc_trace.py'
+      - 'scripts/tests/test_combined_tlc_witness.py'
   pull_request:
     paths:
       - 'formal/raft/**'
@@ -214,7 +215,9 @@ jobs:
             'NoReplicationWitness:ReachReplication.cfg:witness-Replication.txt' \
             'NoCommitWitness:ReachCommit.cfg:witness-Commit.txt' \
             'NoApplicationWitness:ReachApplication.cfg:witness-Application.txt' \
-            'NoOfflineWitness:ReachOffline.cfg:reach-offline.txt'; do
+            'NoOfflineWitness:ReachOffline.cfg:reach-offline.txt' \
+            'NoCombinedHandoffWitness:ReachCombinedHandoff.cfg:combined-handoff.txt' \
+            'NoCombinedCrashAfterApplyWitness:ReachCombinedCrashAfterApply.cfg:combined-crash.txt'; do
             IFS=: read -r invariant config log <<< "$witness"
             python3 scripts/export_tlc_trace.py \
               --log "$RUNNER_TEMP/$log" \
@@ -222,6 +225,17 @@ jobs:
               --config "formal/raft/$config" --invariant "$invariant" \
               --output "$RUNNER_TEMP/tlc-behaviors/$config.json"
           done
+
+      - name: Validate combined typed witness semantics and negative mutations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/tests/test_combined_tlc_witness.py \
+            --model formal/raft/ChoreoRaft.tla \
+            --handoff-config formal/raft/ReachCombinedHandoff.cfg \
+            --crash-config formal/raft/ReachCombinedCrashAfterApply.cfg \
+            --handoff "$RUNNER_TEMP/tlc-behaviors/ReachCombinedHandoff.cfg.json" \
+            --crash "$RUNNER_TEMP/tlc-behaviors/ReachCombinedCrashAfterApply.cfg.json"
 
       - name: Preserve model-generated behaviors for replay work
         uses: actions/upload-artifact@v4

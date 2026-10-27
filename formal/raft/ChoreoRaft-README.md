@@ -142,3 +142,21 @@ PR #38. No implementation refinement, production filesystem equivalence, or
 unbounded protocol proof is claimed.
 
 The initial safety run on PR #39 head `d850a22677b083387774aef34ec4ea27092a56a9` exhausted **230 distinct states**, depth 30, with zero remaining and no invariant violation. The handoff witness reached the negated invariant in 25 states, showing the committed entry in the later leader's durable log. An earlier head was correctly rejected because its four-state profile could not process the initial higher-term vote request; `UpdateTerm` for the first follower was restored without weakening the witness. The follow-up `ReachCombinedCrashAfterApply.cfg` now also requires a durable apply and former-leader crash *after* the handoff. **This new reachability gate is not yet CI-verified.** Neither witness establishes an actual restart, and no full refinement is claimed.
+
+## Typed combined witness export (proposed follow-up, CI pending)
+
+The formal workflow now exports `ReachCombinedHandoff.cfg.json` and
+`ReachCombinedCrashAfterApply.cfg.json` from the actual pinned TLC witness
+logs using the existing typed trace exporter. A new Python validator checks
+source SHA-256 provenance, complete state-variable sets, distinct term-one and
+term-two leaders, a committed entry matching the later leader's durable log,
+and (for the crash witness) durable apply plus an actual alive-to-offline
+transition after leadership handoff. Sixteen negative mutations are exercised
+across the two witnesses, including provenance, committed-entry, durable-log,
+leader-role, applied-index and offline-state corruption. The checker fails
+closed on missing or malformed evidence; a TLC timeout or missing witness is
+still a CI failure. This is **not** a C++ correspondence or refinement proof.
+
+These assertions and the generated JSON artifact require exact-head hosted CI
+before the follow-up PR may be accepted. The existing older draft paragraphs
+above are retained as dated historical records.
