@@ -129,3 +129,13 @@ add_test(
           "$<TARGET_FILE:choreoos-raft-conformance>"
 )
 set_tests_properties(tlc-witness-core-prefix-tests PROPERTIES TIMEOUT 90)
+
+# SHA-pinned archived nine-state TLC leader witness: compare only justified
+# compiled-core checkpoints, with explicit split-durability/heartbeat gaps.
+add_test(
+  NAME tlc-real-leader-bridge-tests
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/tests/test_tlc_real_leader_bridge.py"
+          "$<TARGET_FILE:choreoos-raft-conformance>"
+)
+set_tests_properties(tlc-real-leader-bridge-tests PROPERTIES TIMEOUT 90)
