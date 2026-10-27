@@ -54,3 +54,7 @@ Next: normalize actual TLC behaviors into schedules, compare an explicitly
 stated projection at justified correspondence points, and require divergence
 mutations to fail. The [term/vote and heartbeat gaps](raft-model-mapping-gaps.md)
 must be resolved explicitly; this driver does not hide them.
+
+## Two-term election and restart replay (draft)
+
+The `raft-replay-input-tests` suite now includes a bounded **compiled-core** two-term election schedule: elect `a` in term 1, then durably elect `b` in term 2 using `a`'s higher-term vote, and restart `a` from acknowledged disk. It checks that the higher-term request does not release a vote before fsync, the reply preserves the actual request ID, `b` becomes leader, and `a` retains durable term 2/vote `b` after restart. Thirteen independently corrupted trace observations and a failed-write/no-reply schedule are negative cases. This is a precursor to T1-B.2, **not** a TLC model check, exhaustive fault exploration, or refinement proof. Exact-head CI is pending.
