@@ -499,6 +499,17 @@ SomeCombinedHandoff ==
   /\ Len(disk[CombinedSuccessor].log) = 1
 NoCombinedHandoffWitness == ~SomeCombinedHandoff
 
+\* A separate non-vacuity witness requires durable apply followed by an
+\* offline crash of the former leader after the term-two handoff.
+\* It does not by itself witness a subsequent Restart action.
+SomeCombinedCrashAfterApply ==
+  /\ SomeCombinedHandoff
+  /\ ~alive[CombinedPrimary]
+  /\ disk[CombinedPrimary].commit = 1
+  /\ disk[CombinedPrimary].applied = 1
+  /\ ghostApplied # {}
+NoCombinedCrashAfterApplyWitness == ~SomeCombinedCrashAfterApply
+
 --------------------------------------------------------------------------
 Next ==
   \/ /\ UNCHANGED alive /\ ActiveNext
