@@ -6,14 +6,19 @@ on:
       - 'formal/raft/**'
       - '.github/workflows/raft-model.yml'
       - 'scripts/export_tlc_trace.py'
+      - 'scripts/tlc_witness_prefix.py'
       - 'scripts/tests/test_export_tlc_trace.py'
+      - 'scripts/tests/test_tlc_witness_prefix.py'
       - 'scripts/tests/test_combined_tlc_witness.py'
   pull_request:
     paths:
       - 'formal/raft/**'
       - '.github/workflows/raft-model.yml'
       - 'scripts/export_tlc_trace.py'
+      - 'scripts/tlc_witness_prefix.py'
       - 'scripts/tests/test_export_tlc_trace.py'
+      - 'scripts/tests/test_tlc_witness_prefix.py'
+      - 'scripts/tests/test_combined_tlc_witness.py'
 
 permissions:
   contents: read
