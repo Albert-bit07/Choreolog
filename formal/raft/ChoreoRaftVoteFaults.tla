@@ -39,4 +39,22 @@ SomeCombinedDroppedThirdVote ==
            /\ m.msrc = CombinedPrimary
            /\ m.mdst = CombinedThird)
 NoCombinedDroppedThirdVoteWitness == ~SomeCombinedDroppedThirdVote
+
+\* This witness is intentionally different from the third-peer drop already
+\* permitted by CombinedNext. The successor has neither staged nor persisted
+\* the higher term, so it cannot have processed the request through UpdateTerm
+\* or HandleRVReq; the request must have been removed by the NEW fault action.
+SomeCombinedDroppedSuccessorVote ==
+  /\ disk[CombinedPrimary].term = 1
+  /\ mem[CombinedPrimary].term = 1
+  /\ role[CombinedPrimary] = Candidate
+  /\ disk[CombinedSuccessor].term = 0
+  /\ mem[CombinedSuccessor].term = 0
+  /\ pending[CombinedSuccessor] = Nil
+  /\ role[CombinedSuccessor] = Follower
+  /\ ~(\E m \in DOMAIN net :
+           /\ m.mtype = "RVReq"
+           /\ m.msrc = CombinedPrimary
+           /\ m.mdst = CombinedSuccessor)
+NoCombinedDroppedSuccessorVoteWitness == ~SomeCombinedDroppedSuccessorVote
 =============================================================================
