@@ -523,6 +523,15 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                         compare(doc, rows, crash)
             phases = check_higher_term_envelope(doc["states"], "s1", "s2")
             promotion_index, _, _ = model_successor_promotion(doc)
+
+            def corrupt_peer(field, peer, replacement):
+                def mutate(doc):
+                    pairs = doc["states"][promotion_index]["variables"][field]["$function"]
+                    matching = [pair for pair in pairs if pair[0] == {"$model": peer}]
+                    demand(len(matching) == 1, "missing model peer for mutation")
+                    matching[0][1] = replacement
+                return mutate
+
             model_mutations = [
                 lambda d: node_function(d["states"][-1]["variables"]["disk"])["s2"]["log"].update(
                     {"$sequence": []}),
@@ -553,18 +562,13 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                     "mem"])["s3"].update(votedFor={"$model": "s2"}),
                 lambda d: d["states"][promotion_index]["variables"].update(
                     epochCtr=d["states"][promotion_index]["variables"]["epochCtr"] + 1),
-                lambda d: d["states"][promotion_index]["variables"].update(
-                    alive={"$function": []}),
-                lambda d: d["states"][promotion_index]["variables"].update(
-                    votesGranted={"$function": []}),
-                lambda d: d["states"][promotion_index]["variables"].update(
-                    commitIndex={"$function": []}),
-                lambda d: d["states"][promotion_index]["variables"].update(
-                    nextIndex={"$function": []}),
-                lambda d: d["states"][promotion_index]["variables"].update(
-                    matchIndex={"$function": []}),
-                lambda d: d["states"][promotion_index]["variables"].update(
-                    leaderEpoch={"$function": []}),
+                corrupt_peer("alive", "s3", False),
+                corrupt_peer("role", "s1", {"$model": "Leader"}),
+                corrupt_peer("votesGranted", "s3", {"$set": [{"$model": "s2"}]}),
+                corrupt_peer("commitIndex", "s1", 99),
+                corrupt_peer("nextIndex", "s1", {"$function": []}),
+                corrupt_peer("matchIndex", "s1", {"$function": []}),
+                corrupt_peer("leaderEpoch", "s1", 99),
                 lambda d: node_function(d["states"][promotion_index]["variables"][
                     "disk"])["s1"].update(term=99),
                 lambda d: node_function(d["states"][promotion_index]["variables"][
