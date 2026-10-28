@@ -203,9 +203,12 @@ full Raft safety, physical power-loss correctness, or C++ refinement.
 
 ## Bounded election vote-message faults (draft, CI pending)
 
-`CombinedVoteFaultSpec` adds only vote-request/response drops and duplicates
-from the designated term-one proposer and term-two successor to the existing
-restricted `CombinedNext` action set. The new
+`ChoreoRaftVoteFaults.tla` extends the byte-for-byte unchanged pinned
+`ChoreoRaft.tla` source. Its `CombinedVoteFaultSpec` adds only
+vote-request/response drops and duplicates from the designated term-one
+proposer and term-two successor to the existing restricted `CombinedNext`
+action set. Keeping the original module unchanged preserves strict SHA-256
+provenance for the existing TLC-to-compiled-core witness fixtures. The new
 `ChoreoRaftCombinedVoteFaults.cfg` keeps the three-message, two-term,
 one-entry bound and the original safety/temporal checks. Two separately
 scoped expected-failure reachability configurations require an actual
