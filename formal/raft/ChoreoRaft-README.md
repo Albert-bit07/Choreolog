@@ -202,6 +202,20 @@ The successful bound does **not** imply unrestricted network-fault coverage,
 full Raft safety, physical power-loss correctness, or C++ refinement.
 
 
+## Bounded RequestVote response faults (PR #60 draft; unverified)
+
+`ChoreoRaftVoteReplyFaults.tla` extends the unchanged pinned model with
+restricted `RVResp` drops and duplicates from the designated successor to
+the primary. The `voteReplyFaults` flags are changed only by the explicit
+drop/duplicate actions. Dedicated expected-failure witness configurations
+must demonstrate that those actions are reachable, rather than passing
+vacuously when no response is sent. The existing three-server, two-term,
+one-entry, MaxMsgs=3 bounds, safety invariants and temporal properties remain
+enabled. Require exact-head TLC and all five standard CI jobs before merge.
+
+This is not unrestricted packet loss, general Raft liveness, production
+power-loss verification, or a TLC-to-C++ refinement proof.
+
 ## Bounded AppendEntries response faults (PR #59 draft; unverified)
 
 `ChoreoRaftAppendReplyFaults.tla` extends the byte-for-byte unchanged pinned
