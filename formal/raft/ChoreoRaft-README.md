@@ -201,6 +201,22 @@ PR #56 was merged at `86fe7a775cfa4a0831ab0f1909339078fac252ca`.
 The successful bound does **not** imply unrestricted network-fault coverage,
 full Raft safety, physical power-loss correctness, or C++ refinement.
 
+
+## Bounded AppendEntries request faults (PR #58 draft; unverified)
+
+`ChoreoRaftAppendFaults.tla` extends the byte-for-byte unchanged pinned model
+with bounded drops and duplicates of `AEReq` from the designated primary to
+successor. An auxiliary `appendFaults` record is set **only by the new fault
+actions**, so both expected-failure witness gates require the actual action
+rather than an absence of a message that might never have been sent. The
+existing restricted three-server, two-term, one-entry, three-message combined
+slice, safety invariants, and temporal properties remain enabled. The formal
+workflow requires an exhaustive restricted safety run and both named witnesses.
+
+This is draft work pending exact-head formal and standard CI. It excludes
+arbitrary AppendEntries responses, unrestricted packet loss, all-node crashes,
+liveness, physical power-loss behavior, and full TLC-to-C++ refinement.
+
 ## Bounded election vote-message faults (draft, CI pending)
 
 `ChoreoRaftVoteFaults.tla` extends the byte-for-byte unchanged pinned
