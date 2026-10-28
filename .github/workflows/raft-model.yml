@@ -117,7 +117,7 @@ jobs:
         run: |
           set -euo pipefail
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
-            -config ChoreoRaftCombinedVoteFaults.cfg -workers 2 ChoreoRaft.tla
+            -config ChoreoRaftCombinedVoteFaults.cfg -workers 2 ChoreoRaftVoteFaults.tla
 
       - name: Require duplicate and dropped-vote fault witnesses
         shell: bash
@@ -130,7 +130,7 @@ jobs:
             IFS=: read -r cfg invariant <<< "$spec"
             set +e
             timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
-              -config "$cfg" -workers 2 ChoreoRaft.tla \
+              -config "$cfg" -workers 2 ChoreoRaftVoteFaults.tla \
               > "$RUNNER_TEMP/$cfg.log" 2>&1
             result=$?
             set -e
