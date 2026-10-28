@@ -626,5 +626,87 @@ TEST_F(FileEngineAdapterTest, NoOpAdvancesCommitWithoutInventingACommandReceipt)
   EXPECT_TRUE(replayed.value().receipts.empty());
 }
 
+TEST_F(FileEngineAdapterTest, FailedMetadataAckCannotAllowConflictingVoteAfterFreshOpen) {
+  // Both write APIs persist the higher-term vote before the injected failure
+  // reports an unsuccessful callback. A fresh owner must trust the disk vote,
+  // not the caller's stale belief that the whole write was rolled back.
+  for (const bool incremental : {false, true}) {
+    SCOPED_TRACE(incremental ? "delta" : "plan");
+    const auto directory = path / (incremental ? "delta-vote" : "plan-vote");
+    DomainWritePlan initial_vote;
+    initial_vote.term = 4;
+    initial_vote.voted_for = "node-a";
+    DomainWritePlan higher_vote;
+    higher_vote.term = 5;
+    higher_vote.voted_for = "node-b";
+
+    {
+      auto writer = FileEngineAdapter::open(directory, true);
+      ASSERT_TRUE(writer);
+      ASSERT_TRUE(writer.value().persist(initial_vote));
+      ASSERT_TRUE(writer.value().inject_next_fault_for_test(DomainWriteFault::AfterMetadata));
+      if (incremental) {
+        DomainWriteDelta delta;
+        delta.term = higher_vote.term;
+        delta.voted_for = higher_vote.voted_for;
+        EXPECT_FALSE(writer.value().persist_delta(delta));
+      } else {
+        EXPECT_FALSE(writer.value().persist(higher_vote));
+      }
+      EXPECT_TRUE(writer.value().uncertain());
+      EXPECT_FALSE(writer.value().current_raft());
+    }
+
+    {
+      auto reopened = FileEngineAdapter::open(directory);
+      ASSERT_TRUE(reopened) << reopened.error().to_string();
+      auto durable = reopened.value().current_raft();
+      ASSERT_TRUE(durable);
+      EXPECT_EQ(durable.value().term, 5u);
+      EXPECT_EQ(durable.value().voted_for, higher_vote.voted_for);
+      EXPECT_EQ(durable.value().commit, 0u);
+      EXPECT_EQ(durable.value().applied, 0u);
+      EXPECT_TRUE(durable.value().log.empty());
+
+      auto conflicting = higher_vote;
+      conflicting.voted_for = "node-c";
+      EXPECT_FALSE(reopened.value().persist(conflicting));
+      DomainWriteDelta conflicting_delta;
+      conflicting_delta.term = 5;
+      conflicting_delta.voted_for = "node-c";
+      EXPECT_FALSE(reopened.value().persist_delta(conflicting_delta));
+      auto cleared = higher_vote;
+      cleared.voted_for.reset();
+      EXPECT_FALSE(reopened.value().persist(cleared));
+      EXPECT_FALSE(reopened.value().uncertain());
+      auto after_rejections = reopened.value().current_raft();
+      ASSERT_TRUE(after_rejections);
+      EXPECT_EQ(after_rejections.value(), durable.value());
+    }
+
+    {
+      auto reopened = FileEngineAdapter::open(directory);
+      ASSERT_TRUE(reopened);
+      auto persisted = reopened.value().current_raft();
+      ASSERT_TRUE(persisted);
+      EXPECT_EQ(persisted.value().term, 5u);
+      EXPECT_EQ(persisted.value().voted_for, higher_vote.voted_for);
+      auto next_term = higher_vote;
+      next_term.term = 6;
+      next_term.voted_for = "node-c";
+      ASSERT_TRUE(reopened.value().persist(next_term));
+    }
+
+    auto final_open = FileEngineAdapter::open(directory);
+    ASSERT_TRUE(final_open);
+    auto final_vote = final_open.value().current_raft();
+    ASSERT_TRUE(final_vote);
+    EXPECT_EQ(final_vote.value().term, 6u);
+    EXPECT_EQ(final_vote.value().voted_for, std::optional<std::string>{"node-c"});
+    EXPECT_EQ(final_vote.value().commit, 0u);
+    EXPECT_TRUE(final_vote.value().log.empty());
+  }
+}
+
 }  // namespace
 }  // namespace choreoos::raft
