@@ -187,6 +187,14 @@ def compare_model_promotion_to_core_heartbeats(doc, elected):
     demand(elected["node"] == "b" and elected["act"] == "HandleRVResp" and
            elected["post"]["role"] == "Leader" and elected["post"]["term"] == 2,
            "compiled successor promotion role/term diverged")
+    # The C++ promotion emits heartbeats, but must not perform an unrelated
+    # durable write or application. Model BecomeLeader also preserves disk.
+    demand(elected["pre"]["durable"] == elected["post"]["durable"] and
+           elected["pending_before"] is None and
+           elected["pending_after"] is None and
+           elected["effects"]["persist"] is None and
+           elected["effects"]["apply"] == 0,
+           "compiled leader promotion unexpectedly persisted or applied state")
     sends = elected["effects"]["send"]
     peers = {"s1": "a", "s3": "c"}
     demand(len(sends) == len(peers) and
@@ -460,6 +468,11 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 lambda r: r[19 + offset]["effects"]["send"][0].update(to="b"),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(term=1),
                 lambda r: r[19 + offset]["effects"]["send"][1].update(request_id=0),
+                lambda r: r[19 + offset]["effects"].update(persist=77),
+                lambda r: r[19 + offset]["effects"].update(apply=1),
+                lambda r: r[19 + offset].update(pending_before=77),
+                lambda r: r[19 + offset].update(pending_after=77),
+                lambda r: r[19 + offset]["pre"]["durable"].update(term=1),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(leader="a"),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(prev_index=0),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(prev_term=0),
