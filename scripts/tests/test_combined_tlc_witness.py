@@ -131,6 +131,82 @@ def check_higher_term_envelope(states, primary, successor):
     require(phases["term_stage"] < phases["term_sync"] <
             phases["vote_stage"] < phases["vote_sync"],
             "higher-term term/vote durability order diverged")
+    # Validate the actual action envelope, not only the four disk endpoints.
+    # UpdateTerm can stage term/vote and change the local role/vote set; its
+    # fsync cannot change memory. HandleRVReq consumes one request and stages
+    # the reply; only the subsequent fsync may release that reply.
+    # A term-only durable state can also be reached by a torn-write crash.
+    # The pinned bridge witnesses take this path: RestartTo resets volatile
+    # election/replication state and marks the former leader offline. Do not
+    # misclassify that crash as an ordinary successful PersistCompleted fsync.
+    term_before = states[phases["term_sync"] - 1]["variables"]
+    term_after = states[phases["term_sync"]]["variables"]
+    before_alive = node_function(term_before["alive"])[primary]
+    after_alive = node_function(term_after["alive"])[primary]
+    torn_crash = before_alive is True and after_alive is False
+    if torn_crash:
+        recovered_mem = node_function(term_after["mem"])[primary]
+        recovered_disk = node_function(term_after["disk"])[primary]
+        require(recovered_mem == {field: recovered_disk[field]
+                                  for field in ("term", "votedFor", "log")}
+                and node_function(term_after["role"])[primary] == {"$model": "Follower"}
+                and node_function(term_after["pending"])[primary] == {"$model": "Nil"}
+                and node_function(term_after["commitIndex"])[primary] ==
+                    recovered_disk["commit"]
+                and node_function(term_after["votesGranted"])[primary] == {"$set": []}
+                and node_function(term_after["leaderEpoch"])[primary] == 0,
+                "torn term write did not reset volatile state from durable disk")
+    else:
+        require(before_alive is True and after_alive is True,
+                "unexpected higher-term fsync liveness transition")
+
+    allowed = {
+        "term_stage": {"mem", "pending", "role", "votesGranted"},
+        "term_sync": ({"alive", "disk", "mem", "pending", "role", "commitIndex",
+                       "nextIndex", "matchIndex", "votesGranted", "leaderEpoch"}
+                      if torn_crash else {"disk", "pending"}),
+        "vote_stage": {"mem", "pending", "net"},
+        "vote_sync": {"disk", "pending", "net"},
+    }
+    for phase, changes in allowed.items():
+        before = states[phases[phase] - 1]["variables"]
+        after = states[phases[phase]]["variables"]
+        unexpected = [field for field in sorted(REQUIRED - changes)
+                      if canonical(before[field]) != canonical(after[field])]
+        require(not unexpected, f"{phase} modified unrelated model variables: {unexpected}")
+        for field in ("alive", "mem", "disk", "pending", "role", "commitIndex",
+                      "nextIndex", "matchIndex", "votesGranted", "leaderEpoch"):
+            if field not in changes:
+                continue
+            old_nodes, new_nodes = node_function(before[field]), node_function(after[field])
+            require(all(canonical(old_nodes[peer]) == canonical(new_nodes[peer])
+                        for peer in NODES if peer != primary),
+                    f"{phase} modified another peer's {field}")
+
+    # The staged higher-term vote must consume exactly its own RVReq, not
+    # fabricate an early RVResp or discard another in-flight message.
+    before_vote = states[phases["vote_stage"] - 1]["variables"]
+    after_vote = states[phases["vote_stage"]]["variables"]
+    bag = before_vote["net"]
+    require(isinstance(bag, dict) and set(bag) == {"$function"},
+            "higher-term vote lacks a typed request bag")
+    requests = [
+        message for message, count in bag["$function"]
+        if isinstance(message, dict) and message.get("mtype") == "RVReq"
+        and message.get("msrc") == {"$model": successor}
+        and message.get("mdst") == {"$model": primary}
+        and message.get("mterm") == 2 and type(count) is int and count > 0
+    ]
+    require(len(requests) == 1, "ambiguous higher-term vote request identity")
+    expected = dict(message_bag(before_vote["net"]))
+    request_key = canonical(requests[0])
+    require(request_key in expected, "missing higher-term request")
+    if expected[request_key] == 1:
+        del expected[request_key]
+    else:
+        expected[request_key] -= 1
+    require(message_bag(after_vote["net"]) == expected,
+            "higher-term vote stage changed network beyond consuming RVReq")
     return phases
 
 
@@ -260,6 +336,20 @@ def check_mutations(document, invariant, model, config, crash):
             net=copy.deepcopy(d["states"][phases["vote_stage"]]["variables"]["net"])),
         lambda d: phase_node(d, "vote_stage", "pending")["target"].update(
             votedFor={"$model": "Nil"}),
+        # Exercise phase-level side-effect guards, including other-peer state
+        # and premature or incorrect network changes before vote fsync.
+        lambda d: d["states"][phases["term_stage"]]["variables"].update(epochCtr=99),
+        lambda d: node_function(d["states"][phases["term_stage"]]["variables"][
+            "mem"])[next(n for n in NODES if n != primary)].update(term=99),
+        lambda d: phase_node(d, "term_sync", "mem").update(term=99),
+        lambda d: node_function(d["states"][phases["term_sync"]]["variables"][
+            "disk"])[next(n for n in NODES if n != primary)].update(term=99),
+        lambda d: phase_node(d, "vote_stage", "role").update({"$model": "Leader"}),
+        lambda d: d["states"][phases["vote_stage"]]["variables"].update(
+            net=copy.deepcopy(d["states"][phases["vote_stage"] - 1]["variables"]["net"])),
+        lambda d: phase_node(d, "vote_sync", "mem").update(term=99),
+        lambda d: node_function(d["states"][phases["vote_sync"]]["variables"][
+            "disk"])[next(n for n in NODES if n != primary)].update(term=99),
     ])
 
     for index, change in enumerate(mutations, 1):
