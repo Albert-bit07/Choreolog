@@ -450,6 +450,70 @@ TEST_F(FileEngineAdapterTest, EveryWriteBoundaryFailsClosedAndRecoversActualDisk
   }
 }
 
+// A recover() on the same adapter resets its FileEngine internally. This test
+// also destroys the writer and acquires a fresh production directory lease,
+// exercising the on-disk metadata/WAL boundary without trusting cached state.
+TEST_F(FileEngineAdapterTest, FreshOpenAfterInjectedWriteFailureObservesDiskNotStagedVote) {
+  for (const auto fault :
+       {DomainWriteFault::AfterMetadata, DomainWriteFault::AfterTruncate,
+        DomainWriteFault::AfterAppend, DomainWriteFault::AfterCommit,
+        DomainWriteFault::AppendBeforeFlush, DomainWriteFault::AppendAfterFlush}) {
+    SCOPED_TRACE(static_cast<int>(fault));
+    const auto directory = path / ("fresh-reopen-" + std::to_string(static_cast<int>(fault)));
+    auto target = plan(2);
+    target.voted_for = "node-b";
+    for (std::size_t i = 1; i < events.size(); ++i) {
+      auto event = events[i];
+      event.term = state::Term::parse(2).value();
+      target.suffix.set(i, encode_domain_event(event).value());
+    }
+
+    {
+      auto writer = FileEngineAdapter::open(directory, true);
+      ASSERT_TRUE(writer);
+      ASSERT_TRUE(writer.value().persist(plan(1, 1)));
+      ASSERT_TRUE(writer.value().inject_next_fault_for_test(fault));
+      EXPECT_FALSE(writer.value().persist(target));
+      EXPECT_TRUE(writer.value().uncertain());
+      EXPECT_FALSE(writer.value().current_raft());
+      EXPECT_FALSE(writer.value().persist(target));
+    }  // Release the writer and its directory lease before opening a new adapter.
+
+    {
+      auto reopened = FileEngineAdapter::open(directory);
+      ASSERT_TRUE(reopened) << reopened.error().to_string();
+      auto disk = reopened.value().current_raft();
+      ASSERT_TRUE(disk);
+      EXPECT_EQ(disk.value().term, 2u);
+      EXPECT_EQ(disk.value().voted_for, target.voted_for);
+      const auto expected_commit = fault == DomainWriteFault::AfterCommit ? 3u : 1u;
+      const auto expected_suffix_size =
+          fault == DomainWriteFault::AfterMetadata || fault == DomainWriteFault::AfterCommit ? 3u
+          : fault == DomainWriteFault::AfterAppend || fault == DomainWriteFault::AppendAfterFlush
+              ? 2u
+              : 1u;
+      EXPECT_EQ(disk.value().commit, expected_commit);
+      EXPECT_EQ(disk.value().applied, expected_commit);
+      EXPECT_EQ(disk.value().log.size(), expected_suffix_size);
+      auto recovered = reopened.value().current();
+      ASSERT_TRUE(recovered);
+      EXPECT_TRUE(replay_recovered_domain(recovered.value()));
+      // A failed callback must not be confused with an absent disk write:
+      // after metadata succeeds, the higher term and vote are already durable.
+      ASSERT_TRUE(reopened.value().persist(target));
+    }
+
+    auto final_open = FileEngineAdapter::open(directory);
+    ASSERT_TRUE(final_open);
+    auto final_disk = final_open.value().current_raft();
+    ASSERT_TRUE(final_disk);
+    EXPECT_EQ(final_disk.value().term, target.term);
+    EXPECT_EQ(final_disk.value().voted_for, target.voted_for);
+    EXPECT_EQ(final_disk.value().commit, target.commit);
+    EXPECT_EQ(final_disk.value().log, target.suffix);
+  }
+}
+
 TEST_F(FileEngineAdapterTest, RealMetadataErrorBlocksCurrentAndRecoveryUntilDiskIsRepaired) {
   auto adapter = FileEngineAdapter::open(path);
   ASSERT_TRUE(adapter);
