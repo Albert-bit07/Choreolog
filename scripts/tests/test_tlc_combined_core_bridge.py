@@ -196,6 +196,19 @@ def compare_model_promotion_to_core_heartbeats(doc, elected):
                message["request_id"] > 0 for message in sends) and
            len({message["request_id"] for message in sends}) == len(peers),
            "compiled initial heartbeat peer identity or correlation diverged")
+    # TLC BecomeLeader itself sends nothing. These are C++-only AEReq
+    # payload checks anchored to the model's durable predecessor log.
+    model_log = model_disk_after["log"]["$sequence"]
+    demand(len(model_log) == 1 and model_log[0]["term"] == 1 and
+           elected["post"]["durable"]["log"] == [{"term": 1, "val": "v1"}],
+           "model/core initial heartbeat predecessor log diverged")
+    demand(all(message.get("leader") == "b" and
+               message.get("prev_index") == len(model_log) and
+               message.get("prev_term") == model_log[-1]["term"] and
+               message.get("entries_count") == 0 and
+               message.get("leader_commit") == elected["post"]["durable"]["commit"]
+               for message in sends),
+           "compiled initial heartbeat predecessor/commit metadata diverged")
 
 
 def compare(doc, rows, crash):
@@ -447,6 +460,12 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 lambda r: r[19 + offset]["effects"]["send"][0].update(to="b"),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(term=1),
                 lambda r: r[19 + offset]["effects"]["send"][1].update(request_id=0),
+                lambda r: r[19 + offset]["effects"]["send"][0].update(leader="a"),
+                lambda r: r[19 + offset]["effects"]["send"][0].update(prev_index=0),
+                lambda r: r[19 + offset]["effects"]["send"][0].update(prev_term=0),
+                lambda r: r[19 + offset]["effects"]["send"][0].update(
+                    entries_count=1),
+                lambda r: r[19 + offset]["effects"]["send"][0].update(leader_commit=99),
                 lambda r: r[20 + offset]["post"]["durable"].update(term=1),
                 lambda r: r[20 + offset]["post"]["durable"].update(log=[]),
                 lambda r: r[20 + offset]["post"].update(votedFor="a"),

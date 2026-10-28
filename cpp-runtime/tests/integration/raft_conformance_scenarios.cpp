@@ -119,6 +119,17 @@ struct Harness {
           trace += ",\"last_index\":" + std::to_string(vote->last_index);
           trace += ",\"last_term\":" + std::to_string(vote->last_term);
         }
+        if (const auto* append = std::get_if<AppendEntries>(&message.message)) {
+          // v2 diagnostics expose the actual heartbeat predecessor and
+          // commit boundary; v1 output remains unchanged.
+          std::ostringstream leader;
+          leader << std::quoted(append->leader);
+          trace += ",\"leader\":" + leader.str();
+          trace += ",\"prev_index\":" + std::to_string(append->prev_index);
+          trace += ",\"prev_term\":" + std::to_string(append->prev_term);
+          trace += ",\"entries_count\":" + std::to_string(append->entries.size());
+          trace += ",\"leader_commit\":" + std::to_string(append->leader_commit);
+        }
         if (const auto* snapshot = std::get_if<SnapshotReply>(&message.message)) {
           trace += ",\"index\":" + std::to_string(snapshot->index);
         }
