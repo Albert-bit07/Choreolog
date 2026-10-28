@@ -489,6 +489,44 @@ CombinedNext ==
 
 CombinedSpec == Init /\ [][CombinedNext]_vars
 
+
+\* Additional bounded election-network fault slice. The original CombinedNext
+\* handoff/recovery actions remain intact; only RV requests/responses from the
+\* designated candidates can now be dropped or duplicated. No arbitrary AE
+\* packet faults, other-node crashes, or full asynchronous refinement claim.
+CombinedVoteFaultNext ==
+  \/ CombinedNext
+  \/ /\ UNCHANGED alive
+     /\ \E m \in DOMAIN net :
+          /\ m.mtype \in {"RVReq", "RVResp"}
+          /\ m.msrc \in {CombinedPrimary, CombinedSuccessor}
+          /\ DuplicateMsg(m)
+  \/ /\ UNCHANGED alive
+     /\ \E m \in DOMAIN net :
+          /\ m.mtype \in {"RVReq", "RVResp"}
+          /\ m.msrc \in {CombinedPrimary, CombinedSuccessor}
+          /\ DropMsg(m)
+CombinedVoteFaultSpec == Init /\ [][CombinedVoteFaultNext]_vars
+
+\* These negated predicates are EXPECTED-FAILURE reachability gates, not safety
+\* invariants. The third peer never processes the primary's RV request in this
+\* scoped slice; once durably sent, its absence requires a network drop.
+SomeCombinedDuplicatedVote ==
+  \E m \in DOMAIN net :
+    /\ m.mtype \in {"RVReq", "RVResp"}
+    /\ net[m] > 1
+NoCombinedDuplicatedVoteWitness == ~SomeCombinedDuplicatedVote
+
+SomeCombinedDroppedThirdVote ==
+  /\ disk[CombinedPrimary].term = 1
+  /\ mem[CombinedPrimary].term = 1
+  /\ role[CombinedPrimary] \in {Candidate, Leader}
+  /\ ~(\E m \in DOMAIN net :
+           /\ m.mtype = "RVReq"
+           /\ m.msrc = CombinedPrimary
+           /\ m.mdst = CombinedThird)
+NoCombinedDroppedThirdVoteWitness == ~SomeCombinedDroppedThirdVote
+
 \* A reachability smoke test, not a temporal liveness claim. It requires
 \* a term-one committed entry and a later term-two leader holding that entry.
 SomeCombinedHandoff ==
