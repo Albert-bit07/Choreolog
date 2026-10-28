@@ -626,7 +626,6 @@ TEST_F(FileEngineAdapterTest, NoOpAdvancesCommitWithoutInventingACommandReceipt)
   EXPECT_TRUE(replayed.value().receipts.empty());
 }
 
-
 TEST_F(FileEngineAdapterTest, FailedMetadataAckCannotAllowConflictingVoteAfterFreshOpen) {
   // Both write APIs persist the higher-term vote before the injected failure
   // reports an unsuccessful callback. A fresh owner must trust the disk vote,
