@@ -202,23 +202,40 @@ The successful bound does **not** imply unrestricted network-fault coverage,
 full Raft safety, physical power-loss correctness, or C++ refinement.
 
 
-## Mixed response-fault schedules (PR #61 draft; unverified)
+## Ordered mixed reply-fault witnesses (PR #62 draft; unverified)
 
-`ChoreoRaftCrossReplyFaults.tla` keeps the pinned ChoreoRaft model intact
-while enabling a duplicated `RVResp` followed by either a dropped or
-duplicated `AEResp` in the same restricted behavior. Separate action-only
-flags require each witness to observe both fault actions within one TLC
-trace; passing two independent single-fault witnesses is insufficient.
-The bounded safety configuration retains three servers, two terms, one log
-entry, MaxMsgs=3, all existing safety invariants and both temporal properties.
-CI requires complete bounded safety checking and two deliberate expected-failure
-reachability gates. A missing mixed trace, timeout, or safety violation is a
-failure; no weakened assertions or skipped checks are permitted.
+PR #61's two action flags established that RVResp duplication and AEResp
+drop/duplication could occur in the same bounded TLC behavior, but **did not
+prove their temporal order**. PR #62 repairs this verification gap without
+changing the pinned ChoreoRaft.tla or disabling any existing safety property.
+Two additional action-only flags are set by the AEResp drop/duplicate action
+only if RVResp duplication was already observed. The existing expected-failure
+reachability configurations now require these ordered flags, not merely
+co-occurrence. The bounded safety configuration also checks
+`CrossReplyOrderingSound` to catch inconsistent witness bookkeeping.
+No claim of an ordered trace is accepted until exact-head TLC and all five
+standard CI jobs complete successfully. This remains a restricted bounded
+model, not network refinement or physical fsync/power-loss verification.
 
-**DRAFT / UNVERIFIED:** this model is an additional restricted action subset.
-It is not unrestricted packet fault coverage, a liveness proof, a physical
-power-loss/fsync proof, or TLC-to-C++ refinement. All five exact-head standard
-CI jobs and exact-head formal verification must pass before merging.
+## Mixed response-fault schedules (PR #61 verified October 28, 2026)
+
+`ChoreoRaftCrossReplyFaults.tla` extends the unchanged pinned ChoreoRaft
+model with restricted RVResp duplication and AEResp drop/duplication actions.
+The two explicit expected-failure witnesses in PR #61 established that both
+fault actions occurred in the **same TLC behavior**; they did not enforce
+the order in which those actions occurred. The bounded safety profile retained
+three servers, two terms, one entry, MaxMsgs=3, the existing safety invariants,
+and both temporal properties. Exact-head formal CI
+https://github.com/Albert-bit07/Choreolog/actions/runs/40675122883
+passed (38,649 generated / 9,935 distinct states, depth 37, queue 0,
+no bounded safety/property violation), including both same-behavior
+reachability witnesses. All five exact-head standard CI jobs passed at
+https://github.com/Albert-bit07/Choreolog/actions/runs/40675122596
+(Ubuntu/Windows 295/295, sanitizer/API audit 293/293, formatting and
+management API). PR #61 was squash-merged at
+`ce784d7a47217107b782dc8c92390d86027bca3c`.
+These results are not unrestricted network-fault coverage, liveness,
+physical power-loss/fsync correctness, or full TLC-to-C++ refinement.
 
 ## Bounded RequestVote response faults (verified October 28, 2026)
 
