@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 from test_combined_tlc_witness import verify, WitnessMismatch, check_higher_term_envelope
-from tlc_witness_prefix import message_bag, node_function
+from tlc_witness_prefix import canonical, message_bag, node_function
 
 PINNED = {
     False: ("ReachCombinedHandoff.cfg", "e766580a7ca53762b3b3184263176a3f07356572c9ea787429f37b30d233c72f",
@@ -179,6 +179,19 @@ def compare_model_promotion_to_core_heartbeats(doc, elected):
     model_alive = node_function(new["alive"])
     model_pending_before = node_function(old["pending"])["s2"]
     model_pending_after = node_function(new["pending"])["s2"]
+    # BecomeLeader only changes the elected node's role, epoch and replication
+    # progress. Catch accidental side effects on other peers even when the
+    # candidate's durable checkpoint and network bag still look correct.
+    demand(all(canonical(old[field]) == canonical(new[field])
+               for field in ("alive", "mem", "commitIndex", "votesGranted")),
+           "model promotion changed unrelated global or per-node state")
+    for field in ("role", "leaderEpoch", "nextIndex", "matchIndex"):
+        before_peers, after_peers = node_function(old[field]), node_function(new[field])
+        demand(all(canonical(before_peers[peer]) == canonical(after_peers[peer])
+                   for peer in ("s1", "s3")),
+               f"model promotion changed another peer's {field}")
+    demand(type(old["epochCtr"]) is int and new["epochCtr"] == old["epochCtr"] + 1,
+           "model promotion did not advance the leadership epoch exactly once")
     # Promotion must not silently grant another vote, complete a pending
     # disk write, or invent a commit/application effect in the TLC model.
     demand(model_before["votedFor"] == model_after["votedFor"] and
@@ -536,6 +549,22 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                     ghostApplied={"$set": [{"idx": 99}]}),
                 lambda d: d["states"][promotion_index]["variables"].update(
                     ghostCommitted={"$set": [{"idx": 99}]}),
+                lambda d: node_function(d["states"][promotion_index]["variables"][
+                    "mem"])["s3"].update(votedFor={"$model": "s2"}),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    epochCtr=d["states"][promotion_index]["variables"]["epochCtr"] + 1),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    alive={"$function": []}),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    votesGranted={"$function": []}),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    commitIndex={"$function": []}),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    nextIndex={"$function": []}),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    matchIndex={"$function": []}),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    leaderEpoch={"$function": []}),
                 lambda d: node_function(d["states"][promotion_index]["variables"][
                     "disk"])["s1"].update(term=99),
                 lambda d: node_function(d["states"][promotion_index]["variables"][
