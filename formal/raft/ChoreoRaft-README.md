@@ -228,7 +228,14 @@ existing restricted three-server, two-term, one-entry, three-message combined
 slice, safety invariants, and temporal properties remain enabled. The formal
 workflow requires an exhaustive restricted safety run and both named witnesses.
 
-PR #58 was squash-merged into main `9c22953ba2c2691a6f2c16ce2d0f22ef49709b8c` after all five exact-head standard CI jobs passed in\nhttps://github.com/Albert-bit07/Choreolog/actions/runs/40643102447\n(Ubuntu/Windows 295/295, sanitized 293/293, formatting and management API).\nExact-head formal run\nhttps://github.com/Albert-bit07/Choreolog/actions/runs/40643102431\nexhausted 17,024 generated / 4,754 distinct states (depth 36, queue 0),\nwith both explicit expected-failure drop/duplicate witnesses and no bounded\nsafety violation. The model still excludes
+PR #58 was squash-merged into main `9c22953ba2c2691a6f2c16ce2d0f22ef49709b8c` after all five exact-head standard CI jobs passed in
+https://github.com/Albert-bit07/Choreolog/actions/runs/40643102447
+(Ubuntu/Windows 295/295, sanitized 293/293, formatting and management API).
+Exact-head formal run
+https://github.com/Albert-bit07/Choreolog/actions/runs/40643102431
+exhausted 17,024 generated / 4,754 distinct states (depth 36, queue 0),
+with both explicit expected-failure drop/duplicate witnesses and no bounded
+safety violation. The model still excludes
 arbitrary AppendEntries responses, unrestricted packet loss, all-node crashes,
 liveness, physical power-loss behavior, and full TLC-to-C++ refinement.
 
