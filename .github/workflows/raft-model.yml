@@ -111,6 +111,37 @@ jobs:
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config ChoreoRaftCombinedThreeMessages.cfg -workers 2 ChoreoRaft.tla
 
+      - name: Check bounded combined vote-message faults
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftCombinedVoteFaults.cfg -workers 2 ChoreoRaftVoteFaults.tla
+
+      - name: Require duplicate and both vote-drop fault witnesses
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          for spec in \
+            "ReachCombinedDuplicatedVote.cfg:NoCombinedDuplicatedVoteWitness" \
+            "ReachCombinedDroppedThirdVote.cfg:NoCombinedDroppedThirdVoteWitness" \
+            "ReachCombinedDroppedSuccessorVote.cfg:NoCombinedDroppedSuccessorVoteWitness"; do
+            IFS=: read -r cfg invariant <<< "$spec"
+            set +e
+            timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+              -config "$cfg" -workers 2 ChoreoRaftVoteFaults.tla \
+              > "$RUNNER_TEMP/$cfg.log" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/$cfg.log"
+            if [[ $result -ne 12 ]] || ! grep -Fq "Invariant $invariant is violated" "$RUNNER_TEMP/$cfg.log"; then
+              echo "::error::Required bounded fault witness $invariant missing; TLC exit code $result"
+              exit 1
+            fi
+          done
+
       - name: Require committed-entry higher-term handoff witness
         shell: bash
         working-directory: formal/raft

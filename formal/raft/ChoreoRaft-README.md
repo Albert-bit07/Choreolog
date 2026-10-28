@@ -180,13 +180,49 @@ these intermediate states cannot be equated one-for-one. A separately reviewed
 checkpoint relation remains necessary before claiming implementation
 correspondence or refinement. Exact-head CI is required before merge.
 
-## Three-message combined safety bound (draft, pending CI)
+## Three-message combined safety bound (verified October 28, 2026)
 
-`ChoreoRaftCombinedThreeMessages.cfg` runs the existing asymmetric
-`CombinedSpec` with `MaxMsgs = 3` rather than 2. It keeps the same
-three-server, two-term, one-entry limits, action restrictions, invariants,
-and temporal properties. The formal CI workflow must exhaust the enlarged
-bounded state space with no safety violation; a timeout is a failed check,
-not evidence of safety. Compare the distinct-state and depth counts with
-the two-message profile after the run. This does not introduce arbitrary
-network drops/duplication, additional client entries, or full refinement.
+`ChoreoRaftCombinedThreeMessages.cfg` retains the restricted asymmetric
+`CombinedSpec`, its three servers, two terms, one value and one log entry,
+all safety invariants, and both temporal properties. It increases
+`MaxMsgs` from 2 to 3, without enabling new protocol actions.
+
+The exact-head formal workflow
+https://github.com/Albert-bit07/Choreolog/actions/runs/40629355645
+completed successfully: the two-message profile generated **485** states,
+found **230 distinct**, reached depth **30**, and left **0** on the queue;
+the three-message profile generated **2,267** states, found **873 distinct**,
+reached depth **32**, and left **0** on the queue. No safety/property
+violation was reported in either bounded safety run. All five regular
+exact-head jobs also passed in
+https://github.com/Albert-bit07/Choreolog/actions/runs/40629355614
+(Ubuntu/Windows 295/295, sanitized 293/293, formatting and management API).
+PR #56 was merged at `86fe7a775cfa4a0831ab0f1909339078fac252ca`.
+The successful bound does **not** imply unrestricted network-fault coverage,
+full Raft safety, physical power-loss correctness, or C++ refinement.
+
+## Bounded election vote-message faults (draft, CI pending)
+
+`ChoreoRaftVoteFaults.tla` extends the byte-for-byte unchanged pinned
+`ChoreoRaft.tla` source. Its `CombinedVoteFaultSpec` adds only
+vote-request/response drops and duplicates from the designated term-one
+proposer and term-two successor to the existing restricted `CombinedNext`
+action set. Keeping the original module unchanged preserves strict SHA-256
+provenance for the existing TLC-to-compiled-core witness fixtures. The new
+`ChoreoRaftCombinedVoteFaults.cfg` keeps the three-message, two-term,
+one-entry bound and the original safety/temporal checks. Two separately
+scoped expected-failure reachability configurations require an actual
+duplicated vote message, a dropped third-peer vote request already possible
+under `CombinedNext`, and a dropped primary-to-successor vote request
+*not* possible under the original `CombinedNext`. The successor-drop witness
+requires that the successor has neither staged nor persisted a higher term,
+excluding normal `UpdateTerm`/`HandleRVReq` processing as the explanation
+for the missing message. This extra gate detects a missing new drop action.
+
+A successful duplicate/drop witness demonstrates only that the bounded
+fault actions are reachable. A successful safety run checks only the
+restricted reachable state space, not arbitrary packet loss, AppendEntries
+duplication, crashes of every node, multiple client commands, liveness,
+or a model-to-compiled-core refinement relation. PR #57 is a draft until
+hosted TLC and all five regular exact-head CI jobs pass; a timeout,
+missing witness, or safety counterexample must be investigated.
