@@ -10,7 +10,9 @@ CrossReplyInit ==
   /\ Init
   /\ crossReplyFaults = [voteDuplicated |-> FALSE,
                          appendDropped |-> FALSE,
-                         appendDuplicated |-> FALSE]
+                         appendDuplicated |-> FALSE,
+                         orderedAppendDropped |-> FALSE,
+                         orderedAppendDuplicated |-> FALSE]
 
 CrossReplyNext ==
   \/ /\ CombinedNext
@@ -28,25 +30,43 @@ CrossReplyNext ==
           /\ m.msrc = CombinedSuccessor
           /\ m.mdst = CombinedPrimary
           /\ DropMsg(m)
-          /\ crossReplyFaults' = [crossReplyFaults EXCEPT !.appendDropped = TRUE]
+          /\ crossReplyFaults' = [crossReplyFaults EXCEPT
+                                    !.appendDropped = TRUE,
+                                    !.orderedAppendDropped =
+                                      crossReplyFaults.orderedAppendDropped \/
+                                      crossReplyFaults.voteDuplicated]
   \/ /\ UNCHANGED alive
      /\ \E m \in DOMAIN net :
           /\ m.mtype = "AEResp"
           /\ m.msrc = CombinedSuccessor
           /\ m.mdst = CombinedPrimary
           /\ DuplicateMsg(m)
-          /\ crossReplyFaults' = [crossReplyFaults EXCEPT !.appendDuplicated = TRUE]
+          /\ crossReplyFaults' = [crossReplyFaults EXCEPT
+                                    !.appendDuplicated = TRUE,
+                                    !.orderedAppendDuplicated =
+                                      crossReplyFaults.orderedAppendDuplicated \/
+                                      crossReplyFaults.voteDuplicated]
 
 CrossReplySpec == CrossReplyInit /\ [][CrossReplyNext]_crossReplyVars
 
 CrossReplyFlagsTyped ==
   crossReplyFaults \in [voteDuplicated : BOOLEAN,
                          appendDropped : BOOLEAN,
-                         appendDuplicated : BOOLEAN]
+                         appendDuplicated : BOOLEAN,
+                         orderedAppendDropped : BOOLEAN,
+                         orderedAppendDuplicated : BOOLEAN]
 
-\* Both fault actions must execute in ONE behavior, not separate traces.
+\* An ordered flag is set only by an AppendEntries fault action that occurs
+\* after the RequestVote response duplication was already observed.
+CrossReplyOrderingSound ==
+  /\ (crossReplyFaults.orderedAppendDropped =>
+        (crossReplyFaults.voteDuplicated /\ crossReplyFaults.appendDropped))
+  /\ (crossReplyFaults.orderedAppendDuplicated =>
+        (crossReplyFaults.voteDuplicated /\ crossReplyFaults.appendDuplicated))
+
+\* Require actual action order within one behavior, not merely co-occurrence.
 NoCrossReplyVoteDupAppendDropWitness ==
-  ~(crossReplyFaults.voteDuplicated /\ crossReplyFaults.appendDropped)
+  ~crossReplyFaults.orderedAppendDropped
 NoCrossReplyVoteDupAppendDupWitness ==
-  ~(crossReplyFaults.voteDuplicated /\ crossReplyFaults.appendDuplicated)
+  ~crossReplyFaults.orderedAppendDuplicated
 =============================================================================
