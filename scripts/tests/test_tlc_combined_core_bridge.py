@@ -186,6 +186,10 @@ def compare_model_promotion_to_core_heartbeats(doc, elected):
            old["ghostCommitted"] == new["ghostCommitted"] and
            old["ghostApplied"] == new["ghostApplied"],
            "model promotion unexpectedly changed vote, pending write or ghost effects")
+    # BecomeLeader cannot change another peer's durable or pending state.
+    # Check the complete model functions, not only the elected node.
+    demand(old["disk"] == new["disk"] and old["pending"] == new["pending"],
+           "model promotion unexpectedly changed peer disk or pending state")
     demand(model_before["term"] == model_after["term"] == 2 and
            model_disk_before == model_disk_after and
            model_disk_after["term"] == 2 and
@@ -530,6 +534,12 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                     "pending"])["s2"].update(target={"term": 99}),
                 lambda d: d["states"][promotion_index]["variables"].update(
                     ghostApplied={"$set": [{"idx": 99}]}),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    ghostCommitted={"$set": [{"idx": 99}]}),
+                lambda d: node_function(d["states"][promotion_index]["variables"][
+                    "disk"])["s1"].update(term=99),
+                lambda d: node_function(d["states"][promotion_index]["variables"][
+                    "pending"])["s1"].update(target={"term": 99}),
             ]
             for index, mutate in enumerate(model_mutations, 1):
                 with self.subTest(crash=crash, model_mutation=index):
