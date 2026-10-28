@@ -563,7 +563,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 lambda d: d["states"][promotion_index]["variables"].update(
                     epochCtr=d["states"][promotion_index]["variables"]["epochCtr"] + 1),
                 corrupt_peer("alive", "s3", False),
-                corrupt_peer("role", "s1", {"$model": "Leader"}),
+                corrupt_peer("role", "s3", {"$model": "Leader"}),
                 corrupt_peer("votesGranted", "s3", {"$set": [{"$model": "s2"}]}),
                 corrupt_peer("commitIndex", "s1", 99),
                 corrupt_peer("nextIndex", "s1", {"$function": []}),
