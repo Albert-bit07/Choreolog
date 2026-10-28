@@ -177,6 +177,15 @@ def compare_model_promotion_to_core_heartbeats(doc, elected):
     model_disk_before = node_function(old["disk"])["s2"]
     model_disk_after = node_function(new["disk"])["s2"]
     model_alive = node_function(new["alive"])
+    model_pending_before = node_function(old["pending"])["s2"]
+    model_pending_after = node_function(new["pending"])["s2"]
+    # Promotion must not silently grant another vote, complete a pending
+    # disk write, or invent a commit/application effect in the TLC model.
+    demand(model_before["votedFor"] == model_after["votedFor"] and
+           model_pending_before == model_pending_after and
+           old["ghostCommitted"] == new["ghostCommitted"] and
+           old["ghostApplied"] == new["ghostApplied"],
+           "model promotion unexpectedly changed vote, pending write or ghost effects")
     demand(model_before["term"] == model_after["term"] == 2 and
            model_disk_before == model_disk_after and
            model_disk_after["term"] == 2 and
@@ -515,6 +524,12 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 lambda d: d["states"][promotion_index]["variables"].update(net={
                     "$function": [[{"mtype": "AEReq", "msrc": {"$model": "s2"},
                                    "mdst": {"$model": "s1"}}, 1]]}),
+                lambda d: node_function(d["states"][promotion_index]["variables"][
+                    "mem"])["s2"].update(votedFor={"$model": "s1"}),
+                lambda d: node_function(d["states"][promotion_index]["variables"][
+                    "pending"])["s2"].update(target={"term": 99}),
+                lambda d: d["states"][promotion_index]["variables"].update(
+                    ghostApplied={"$set": [{"idx": 99}]}),
             ]
             for index, mutate in enumerate(model_mutations, 1):
                 with self.subTest(crash=crash, model_mutation=index):
