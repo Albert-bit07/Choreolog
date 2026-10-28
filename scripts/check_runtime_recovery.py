@@ -103,9 +103,10 @@ def main():
             retried = remote(endpoint, "create", *create_flags)
             assert retried["ok"] and retried["duplicate"], retried
             assert retried["index"] == original_index, retried
-            added = remote(endpoint, "add-dancer", "--command-id", "recovery-add", "--id", "alice",
-                           "--x-mm", "1000", "--y-mm", "1000", "--count", "1")
-            assert added["ok"], added
+            add_flags = ("--command-id", "recovery-add", "--id", "alice",
+                         "--x-mm", "1000", "--y-mm", "1000", "--count", "1")
+            added = remote(endpoint, "add-dancer", *add_flags)
+            assert added["ok"] and not added["duplicate"], added
             kill(process)
             recovered = run([replay, str(data)])
             assert recovered.returncode == 0, recovered.stdout + recovered.stderr
@@ -114,9 +115,21 @@ def main():
             compatible = remote(endpoint, "create", *create_flags)
             assert compatible["ok"] and compatible["duplicate"], compatible
             assert compatible["index"] == original_index, compatible
+            legacy_add = remote(endpoint, "add-dancer", *add_flags)
+            assert legacy_add["ok"] and legacy_add["duplicate"], legacy_add
+            assert legacy_add["index"] == added["index"], legacy_add
+            assert legacy_add["hash"] == added["hash"], legacy_add
+            kill(process)
+            process, endpoint = launch(config)
+            wait_leader(endpoint)
+            transition_add = remote(endpoint, "add-dancer", *add_flags)
+            assert transition_add["ok"] and transition_add["duplicate"], transition_add
+            assert transition_add["index"] == added["index"], transition_add
+            assert transition_add["hash"] == added["hash"], transition_add
             kill(process)
             print("PASS: transition process writes/recovery, both-backend writer exclusion, "
-                  "offline-tool exclusion, OS crash-release, durable retry and legacy format reopen")
+                  "offline-tool exclusion, OS crash-release, durable retry and "
+                  "transition/legacy/transition retry receipts after process kills")
         except Exception:
             for log in logs:
                 print(f"--- {log.name} ---\n{log.read_text(errors='replace')}")
