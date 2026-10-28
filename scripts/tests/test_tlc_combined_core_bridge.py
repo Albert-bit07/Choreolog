@@ -311,7 +311,17 @@ def compare(doc, rows, crash):
            b_fsync["post"]["durable"]["term"] == 2 and
            b_fsync["post"]["durable"]["votedFor"] == "b",
            "second-term candidate durability diverged")
-    requests = [msg for msg in b_fsync["effects"]["send"]
+    vote_sends = b_fsync["effects"]["send"]
+    demand(len(vote_sends) == 2 and
+           {msg.get("to") for msg in vote_sends} == {"a", "c"} and
+           all(msg.get("kind") == "RVReq" and msg.get("term") == 2 and
+               msg.get("candidate") == "b" and msg.get("last_index") == 1 and
+               msg.get("last_term") == 1 and
+               type(msg.get("request_id")) is int and msg["request_id"] > 0
+               for msg in vote_sends) and
+           len({msg["request_id"] for msg in vote_sends}) == 2,
+           "higher-term vote fanout identity, freshness or correlation diverged")
+    requests = [msg for msg in vote_sends
                 if msg.get("kind") == "RVReq" and msg.get("to") == "a"]
     demand(len(requests) == 1 and requests[0]["term"] == 2 and
            requests[0]["candidate"] == "b" and
@@ -351,6 +361,12 @@ def compare(doc, rows, crash):
                    for m in heartbeats) and
            len({m["request_id"] for m in heartbeats}) == 2,
            "second-term leader heartbeats missing or misrouted")
+    # The same candidate owns both request sequences. Its monotonic C++
+    # request IDs must not be recycled when the election becomes a heartbeat
+    # fanout; TLC does not assign these transport correlation identifiers.
+    demand(min(msg["request_id"] for msg in heartbeats) >
+           max(msg["request_id"] for msg in vote_sends),
+           "initial heartbeats reused or reordered candidate request IDs")
     if crash:
         demand(disk["s1"]["commit"] == disk["s1"]["applied"] == 1 and
                rows[16]["post"]["durable"]["commit"] == 1 and
@@ -622,10 +638,19 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 lambda r: r[18 + offset]["effects"].update(send=[]),
                 lambda r: r[18 + offset]["effects"]["send"][0].update(request_id=0),
                 lambda r: r[16 + offset]["effects"]["send"][0].update(last_index=0),
+                lambda r: r[16 + offset]["effects"]["send"][1].update(to="a"),
+                lambda r: r[16 + offset]["effects"]["send"][1].update(candidate="a"),
+                lambda r: r[16 + offset]["effects"]["send"][1].update(last_term=0),
+                lambda r: r[16 + offset]["effects"]["send"][1].update(
+                    request_id=r[16 + offset]["effects"]["send"][0]["request_id"]),
                 lambda r: r[19 + offset]["post"].update(role="Candidate"),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(to="b"),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(term=1),
                 lambda r: r[19 + offset]["effects"]["send"][1].update(request_id=0),
+                lambda r: r[19 + offset]["effects"]["send"][0].update(
+                    request_id=r[16 + offset]["effects"]["send"][0]["request_id"]),
+                lambda r: r[19 + offset]["effects"]["send"][1].update(
+                    request_id=r[16 + offset]["effects"]["send"][1]["request_id"]),
                 lambda r: r[19 + offset]["effects"].update(persist=77),
                 lambda r: r[19 + offset]["effects"].update(apply=1),
                 lambda r: r[19 + offset].update(pending_before=77),
