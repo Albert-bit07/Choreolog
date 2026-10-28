@@ -212,8 +212,12 @@ provenance for the existing TLC-to-compiled-core witness fixtures. The new
 `ChoreoRaftCombinedVoteFaults.cfg` keeps the three-message, two-term,
 one-entry bound and the original safety/temporal checks. Two separately
 scoped expected-failure reachability configurations require an actual
-duplicated vote message and the absence of a previously durably sent
-third-peer vote request (a dropped request in this action subset).
+duplicated vote message, a dropped third-peer vote request already possible
+under `CombinedNext`, and a dropped primary-to-successor vote request
+*not* possible under the original `CombinedNext`. The successor-drop witness
+requires that the successor has neither staged nor persisted a higher term,
+excluding normal `UpdateTerm`/`HandleRVReq` processing as the explanation
+for the missing message. This extra gate detects a missing new drop action.
 
 A successful duplicate/drop witness demonstrates only that the bounded
 fault actions are reachable. A successful safety run checks only the
