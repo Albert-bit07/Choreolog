@@ -144,9 +144,9 @@ def check_higher_term_envelope(states, primary, successor):
     for phase, changes in allowed.items():
         before = states[phases[phase] - 1]["variables"]
         after = states[phases[phase]]["variables"]
-        require(all(canonical(before[field]) == canonical(after[field])
-                    for field in REQUIRED - changes),
-                f"{phase} modified an unrelated model variable")
+        unexpected = [field for field in sorted(REQUIRED - changes)
+                      if canonical(before[field]) != canonical(after[field])]
+        require(not unexpected, f"{phase} modified unrelated model variables: {unexpected}")
         for field in ("mem", "disk", "pending", "role", "votesGranted"):
             if field not in changes:
                 continue
