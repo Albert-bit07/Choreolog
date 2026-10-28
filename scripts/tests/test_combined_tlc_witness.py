@@ -135,9 +135,36 @@ def check_higher_term_envelope(states, primary, successor):
     # UpdateTerm can stage term/vote and change the local role/vote set; its
     # fsync cannot change memory. HandleRVReq consumes one request and stages
     # the reply; only the subsequent fsync may release that reply.
+    # A term-only durable state can also be reached by a torn-write crash.
+    # The pinned bridge witnesses take this path: RestartTo resets volatile
+    # election/replication state and marks the former leader offline. Do not
+    # misclassify that crash as an ordinary successful PersistCompleted fsync.
+    term_before = states[phases["term_sync"] - 1]["variables"]
+    term_after = states[phases["term_sync"]]["variables"]
+    before_alive = node_function(term_before["alive"])[primary]
+    after_alive = node_function(term_after["alive"])[primary]
+    torn_crash = before_alive is True and after_alive is False
+    if torn_crash:
+        recovered_mem = node_function(term_after["mem"])[primary]
+        recovered_disk = node_function(term_after["disk"])[primary]
+        require(recovered_mem == {field: recovered_disk[field]
+                                  for field in ("term", "votedFor", "log")}
+                and node_function(term_after["role"])[primary] == {"$model": "Follower"}
+                and node_function(term_after["pending"])[primary] == {"$model": "Nil"}
+                and node_function(term_after["commitIndex"])[primary] ==
+                    recovered_disk["commit"]
+                and node_function(term_after["votesGranted"])[primary] == {"$set": []}
+                and node_function(term_after["leaderEpoch"])[primary] == 0,
+                "torn term write did not reset volatile state from durable disk")
+    else:
+        require(before_alive is True and after_alive is True,
+                "unexpected higher-term fsync liveness transition")
+
     allowed = {
         "term_stage": {"mem", "pending", "role", "votesGranted"},
-        "term_sync": {"disk", "pending"},
+        "term_sync": ({"alive", "disk", "mem", "pending", "role", "commitIndex",
+                       "nextIndex", "matchIndex", "votesGranted", "leaderEpoch"}
+                      if torn_crash else {"disk", "pending"}),
         "vote_stage": {"mem", "pending", "net"},
         "vote_sync": {"disk", "pending", "net"},
     }
@@ -147,7 +174,8 @@ def check_higher_term_envelope(states, primary, successor):
         unexpected = [field for field in sorted(REQUIRED - changes)
                       if canonical(before[field]) != canonical(after[field])]
         require(not unexpected, f"{phase} modified unrelated model variables: {unexpected}")
-        for field in ("mem", "disk", "pending", "role", "votesGranted"):
+        for field in ("alive", "mem", "disk", "pending", "role", "commitIndex",
+                      "nextIndex", "matchIndex", "votesGranted", "leaderEpoch"):
             if field not in changes:
                 continue
             old_nodes, new_nodes = node_function(before[field]), node_function(after[field])
