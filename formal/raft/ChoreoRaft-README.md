@@ -202,7 +202,25 @@ The successful bound does **not** imply unrestricted network-fault coverage,
 full Raft safety, physical power-loss correctness, or C++ refinement.
 
 
-## Bounded RequestVote response faults (PR #60 draft; unverified)
+## Mixed response-fault schedules (PR #61 draft; unverified)
+
+`ChoreoRaftCrossReplyFaults.tla` keeps the pinned ChoreoRaft model intact
+while enabling a duplicated `RVResp` followed by either a dropped or
+duplicated `AEResp` in the same restricted behavior. Separate action-only
+flags require each witness to observe both fault actions within one TLC
+trace; passing two independent single-fault witnesses is insufficient.
+The bounded safety configuration retains three servers, two terms, one log
+entry, MaxMsgs=3, all existing safety invariants and both temporal properties.
+CI requires complete bounded safety checking and two deliberate expected-failure
+reachability gates. A missing mixed trace, timeout, or safety violation is a
+failure; no weakened assertions or skipped checks are permitted.
+
+**DRAFT / UNVERIFIED:** this model is an additional restricted action subset.
+It is not unrestricted packet fault coverage, a liveness proof, a physical
+power-loss/fsync proof, or TLC-to-C++ refinement. All five exact-head standard
+CI jobs and exact-head formal verification must pass before merging.
+
+## Bounded RequestVote response faults (verified October 28, 2026)
 
 `ChoreoRaftVoteReplyFaults.tla` extends the unchanged pinned model with
 restricted `RVResp` drops and duplicates from the designated successor to
@@ -211,7 +229,18 @@ drop/duplicate actions. Dedicated expected-failure witness configurations
 must demonstrate that those actions are reachable, rather than passing
 vacuously when no response is sent. The existing three-server, two-term,
 one-entry, MaxMsgs=3 bounds, safety invariants and temporal properties remain
-enabled. Require exact-head TLC and all five standard CI jobs before merge.
+enabled. PR #60 was squash-merged into main
+`944b39a0c6be61fa1438dca495f62c3ded28c8dc` after all five
+exact-head standard CI jobs passed in
+https://github.com/Albert-bit07/Choreolog/actions/runs/40659272382
+(Ubuntu/Windows 295/295, sanitized 293/293, formatting and management API).
+The first Windows attempt failed a TCP partition-recovery test (294/295);
+the rerun passed 295/295, but intermittent timing remains an investigation item.
+Exact-head TLC
+https://github.com/Albert-bit07/Choreolog/actions/runs/40659272395
+exhausted 10,724 generated / 3,385 distinct states (depth 34, queue 0)
+without bounded safety/property violations. Both explicit RVResp drop and
+duplicate action witnesses passed their expected-failure gates.
 
 This is not unrestricted packet loss, general Raft liveness, production
 power-loss verification, or a TLC-to-C++ refinement proof.
