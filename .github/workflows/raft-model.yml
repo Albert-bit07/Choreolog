@@ -103,6 +103,14 @@ jobs:
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config ChoreoRaftCombined.cfg -workers 2 ChoreoRaft.tla
 
+      - name: Check combined two-term safety with three queued messages
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftCombinedThreeMessages.cfg -workers 2 ChoreoRaft.tla
+
       - name: Require committed-entry higher-term handoff witness
         shell: bash
         working-directory: formal/raft

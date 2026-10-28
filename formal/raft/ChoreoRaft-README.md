@@ -179,3 +179,14 @@ C++ execution. The compiled core combines the term/vote durable write, so
 these intermediate states cannot be equated one-for-one. A separately reviewed
 checkpoint relation remains necessary before claiming implementation
 correspondence or refinement. Exact-head CI is required before merge.
+
+## Three-message combined safety bound (draft, pending CI)
+
+`ChoreoRaftCombinedThreeMessages.cfg` runs the existing asymmetric
+`CombinedSpec` with `MaxMsgs = 3` rather than 2. It keeps the same
+three-server, two-term, one-entry limits, action restrictions, invariants,
+and temporal properties. The formal CI workflow must exhaust the enlarged
+bounded state space with no safety violation; a timeout is a failed check,
+not evidence of safety. Compare the distinct-state and depth counts with
+the two-message profile after the run. This does not introduce arbitrary
+network drops/duplication, additional client entries, or full refinement.
