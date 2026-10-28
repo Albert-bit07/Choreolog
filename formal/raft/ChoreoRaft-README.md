@@ -217,7 +217,7 @@ This is draft work pending exact-head formal and standard CI. It excludes
 arbitrary AppendEntries responses, unrestricted packet loss, all-node crashes,
 liveness, physical power-loss behavior, and full TLC-to-C++ refinement.
 
-## Bounded election vote-message faults (draft, CI pending)
+## Bounded election vote-message faults (verified October 28, 2026)
 
 `ChoreoRaftVoteFaults.tla` extends the byte-for-byte unchanged pinned
 `ChoreoRaft.tla` source. Its `CombinedVoteFaultSpec` adds only
@@ -226,7 +226,7 @@ proposer and term-two successor to the existing restricted `CombinedNext`
 action set. Keeping the original module unchanged preserves strict SHA-256
 provenance for the existing TLC-to-compiled-core witness fixtures. The new
 `ChoreoRaftCombinedVoteFaults.cfg` keeps the three-message, two-term,
-one-entry bound and the original safety/temporal checks. Two separately
+one-entry bound and the original safety/temporal checks. Three separately
 scoped expected-failure reachability configurations require an actual
 duplicated vote message, a dropped third-peer vote request already possible
 under `CombinedNext`, and a dropped primary-to-successor vote request
@@ -239,6 +239,11 @@ A successful duplicate/drop witness demonstrates only that the bounded
 fault actions are reachable. A successful safety run checks only the
 restricted reachable state space, not arbitrary packet loss, AppendEntries
 duplication, crashes of every node, multiple client commands, liveness,
-or a model-to-compiled-core refinement relation. PR #57 is a draft until
-hosted TLC and all five regular exact-head CI jobs pass; a timeout,
-missing witness, or safety counterexample must be investigated.
+or a model-to-compiled-core refinement relation. PR #57 was merged at
+`fb19882081e9526ea17dd1612c31dab941428a54` after exact-head formal run
+https://github.com/Albert-bit07/Choreolog/actions/runs/40636605555
+exhausted 61,490 generated / 10,366 distinct states (depth 36, queue 0),
+with three named expected-failure witnesses and no bounded safety violation.
+All five exact-head CI jobs passed in
+https://github.com/Albert-bit07/Choreolog/actions/runs/40636605534
+(Ubuntu/Windows 295/295, sanitizer 293/293, formatting and management API).
