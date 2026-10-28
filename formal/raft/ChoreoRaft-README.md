@@ -202,19 +202,42 @@ The successful bound does **not** imply unrestricted network-fault coverage,
 full Raft safety, physical power-loss correctness, or C++ refinement.
 
 
-## Bounded AppendEntries response faults (PR #59 draft; unverified)
+## Bounded RequestVote response faults (PR #60 draft; unverified)
 
-`ChoreoRaftAppendReplyFaults.tla` extends the byte-for-byte unchanged pinned
-`ChoreoRaft.tla` with bounded drops and duplicates of `AEResp` from the
-designated successor to the primary. Explicit `appendReplyFaults` flags
-are set only when the corresponding new action executes, so the two
-expected-failure witness gates cannot pass simply because a response was
-never generated. The three-server, two-term, one-entry, MaxMsgs=3 bound
-retains the existing safety invariants and temporal properties. The hosted
-formal workflow must pass both the bounded safety slice and the two named
-witnesses before merge, alongside all five standard exact-head CI jobs.
+`ChoreoRaftVoteReplyFaults.tla` extends the unchanged pinned model with
+restricted `RVResp` drops and duplicates from the designated successor to
+the primary. The `voteReplyFaults` flags are changed only by the explicit
+drop/duplicate actions. Dedicated expected-failure witness configurations
+must demonstrate that those actions are reachable, rather than passing
+vacuously when no response is sent. The existing three-server, two-term,
+one-entry, MaxMsgs=3 bounds, safety invariants and temporal properties remain
+enabled. Require exact-head TLC and all five standard CI jobs before merge.
 
-This is a draft acceptance gate, not evidence of unrestricted network loss,
+This is not unrestricted packet loss, general Raft liveness, production
+power-loss verification, or a TLC-to-C++ refinement proof.
+
+## Bounded AppendEntries response faults (verified October 28, 2026)
+
+`ChoreoRaftAppendReplyFaults.tla` extends the unchanged pinned
+`ChoreoRaft.tla` with restricted `AEResp` drops and duplicates from the
+designated successor to the primary. The `appendReplyFaults` flags change
+only when the corresponding fault action executes, preventing vacuous
+reachability witnesses. The existing safety invariants and temporal properties
+remain enabled under the three-server, two-term, one-entry, MaxMsgs=3 bound.
+
+PR #59 was squash-merged into main
+`4a8b0865a462b3d92bc869b7ecb1f0df9a2696d5` after all five exact-head
+standard CI jobs passed in
+https://github.com/Albert-bit07/Choreolog/actions/runs/40649912539
+(Ubuntu/Windows 295/295, sanitized 293/293, formatting and management API).
+Exact-head formal verification
+https://github.com/Albert-bit07/Choreolog/actions/runs/40649912548
+explored 15,825 generated / 4,198 distinct states (depth 35, queue 0),
+with no bounded safety/property violation. Both expected-failure witnesses
+reached the explicit response drop and duplicate actions. These expected
+counterexamples are reachability checks, not safety failures.
+
+This restricted model does not establish arbitrary network-loss safety,
 liveness, physical power-loss behavior, or complete TLC-to-C++ refinement.
 
 ## Bounded AppendEntries request faults (verified October 28, 2026)

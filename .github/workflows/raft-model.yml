@@ -172,6 +172,36 @@ jobs:
             fi
           done
 
+      - name: Check bounded combined RequestVote-response faults
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftCombinedVoteReplyFaults.cfg -workers 2 ChoreoRaftVoteReplyFaults.tla
+
+      - name: Require actual RequestVote-response drop and duplicate actions
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          for spec in \
+            "ReachCombinedVoteReplyDrop.cfg:NoCombinedVoteReplyDropWitness" \
+            "ReachCombinedVoteReplyDuplicate.cfg:NoCombinedVoteReplyDuplicateWitness"; do
+            IFS=: read -r cfg invariant <<< "$spec"
+            set +e
+            timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+              -config "$cfg" -workers 2 ChoreoRaftVoteReplyFaults.tla \
+              > "$RUNNER_TEMP/$cfg.log" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/$cfg.log"
+            if [[ $result -ne 12 ]] || ! grep -Fq "Invariant $invariant is violated" "$RUNNER_TEMP/$cfg.log"; then
+              echo "::error::Required explicit RequestVote-response fault witness $invariant missing; TLC exit code $result"
+              exit 1
+            fi
+          done
+
       - name: Check bounded combined AppendEntries-response faults
         shell: bash
         working-directory: formal/raft
