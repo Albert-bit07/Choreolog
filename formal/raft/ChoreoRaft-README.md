@@ -202,7 +202,22 @@ The successful bound does **not** imply unrestricted network-fault coverage,
 full Raft safety, physical power-loss correctness, or C++ refinement.
 
 
-## Bounded AppendEntries request faults (PR #58 draft; unverified)
+## Bounded AppendEntries response faults (PR #59 draft; unverified)
+
+`ChoreoRaftAppendReplyFaults.tla` extends the byte-for-byte unchanged pinned
+`ChoreoRaft.tla` with bounded drops and duplicates of `AEResp` from the
+designated successor to the primary. Explicit `appendReplyFaults` flags
+are set only when the corresponding new action executes, so the two
+expected-failure witness gates cannot pass simply because a response was
+never generated. The three-server, two-term, one-entry, MaxMsgs=3 bound
+retains the existing safety invariants and temporal properties. The hosted
+formal workflow must pass both the bounded safety slice and the two named
+witnesses before merge, alongside all five standard exact-head CI jobs.
+
+This is a draft acceptance gate, not evidence of unrestricted network loss,
+liveness, physical power-loss behavior, or complete TLC-to-C++ refinement.
+
+## Bounded AppendEntries request faults (verified October 28, 2026)
 
 `ChoreoRaftAppendFaults.tla` extends the byte-for-byte unchanged pinned model
 with bounded drops and duplicates of `AEReq` from the designated primary to
@@ -213,7 +228,14 @@ existing restricted three-server, two-term, one-entry, three-message combined
 slice, safety invariants, and temporal properties remain enabled. The formal
 workflow requires an exhaustive restricted safety run and both named witnesses.
 
-This is draft work pending exact-head formal and standard CI. It excludes
+PR #58 was squash-merged into main `9c22953ba2c2691a6f2c16ce2d0f22ef49709b8c` after all five exact-head standard CI jobs passed in
+https://github.com/Albert-bit07/Choreolog/actions/runs/40643102447
+(Ubuntu/Windows 295/295, sanitized 293/293, formatting and management API).
+Exact-head formal run
+https://github.com/Albert-bit07/Choreolog/actions/runs/40643102431
+exhausted 17,024 generated / 4,754 distinct states (depth 36, queue 0),
+with both explicit expected-failure drop/duplicate witnesses and no bounded
+safety violation. The model still excludes
 arbitrary AppendEntries responses, unrestricted packet loss, all-node crashes,
 liveness, physical power-loss behavior, and full TLC-to-C++ refinement.
 
