@@ -422,6 +422,87 @@ def compare_interrupted_vote(rows, crash):
            "restart retained an unacknowledged vote or leaked deferred effects")
 
 
+def failed_vote_schedule(crash):
+    """Fail the combined higher-term vote write, then restart from acknowledged disk."""
+    return schedule(crash)[:-3] + ["fail a", "restart a"]
+
+
+def compare_failed_vote(doc, rows, crash):
+    """Check failure of the C++ combined write, not a TLC term-only crash.
+
+    The model can durably retain a term-only torn write; this pure compiled
+    core's failed write must instead recover its *previous* acknowledged
+    term/vote record. Neither behavior proves physical disk failure atomicity.
+    """
+    demand(len(rows) == len(failed_vote_schedule(crash)),
+           "failed vote schedule length diverged")
+    staged, failed, restarted = rows[-3:]
+    offset = 2 if crash else 0
+    demand(staged.get("v") == failed.get("v") == restarted.get("v") == 2 and
+           [row.get("seq") for row in rows] == list(range(len(rows))) and
+           staged.get("seq") == 17 + offset and
+           failed.get("seq") == 18 + offset and
+           restarted.get("seq") == 19 + offset and
+           staged.get("node") == failed.get("node") == restarted.get("node") == "a" and
+           staged.get("act") == "HandleRVReq" and
+           failed.get("act") == "PersistFailed" and
+           restarted.get("act") == "Restart",
+           "failed vote transition identity diverged")
+    durable = staged["post"]["durable"]
+    demand(staged["post"]["term"] == 2 and
+           staged["post"]["votedFor"] == "b" and
+           staged["post"]["alive"] is True and
+           durable["term"] == 1 and durable["votedFor"] == "a" and
+           durable["log"] == [{"term": 1, "val": "v1"}] and
+           durable["commit"] == 1 and
+           durable["applied"] == (1 if crash else 0) and
+           staged["effects"]["send"] == [] and
+           staged["effects"]["halt"] is False and
+           staged["effects"]["persist"] == staged["pending_after"] and
+           type(staged["pending_after"]) is int and staged["pending_after"] > 0,
+           "failed vote fixture did not stage the expected durable boundary")
+    token = staged["pending_after"]
+    demand(failed["input_token"] == token and
+           failed["pending_before"] == token and
+           failed["pending_after"] is None and
+           failed["pre"]["durable"] == durable and
+           failed["post"]["durable"] == durable and
+           failed["post"]["term"] == durable["term"] and
+           failed["post"]["votedFor"] == durable["votedFor"] and
+           failed["post"]["role"] == "Follower" and
+           failed["post"]["alive"] is False and
+           failed["effects"]["halt"] is True and
+           failed["effects"]["send"] == [] and
+           failed["effects"]["persist"] is None and
+           failed["effects"]["apply"] == 0,
+           "failed combined write advanced durable vote or leaked an effect")
+    demand(restarted["pending_before"] is None and
+           restarted["pending_after"] is None and
+           restarted["pre"]["durable"] == durable and
+           restarted["post"]["durable"] == durable and
+           restarted["post"]["term"] == durable["term"] and
+           restarted["post"]["votedFor"] == durable["votedFor"] and
+           restarted["post"]["role"] == "Follower" and
+           restarted["post"]["alive"] is True and
+           restarted["effects"]["halt"] is False and
+           restarted["effects"]["send"] == [] and
+           restarted["effects"]["persist"] is None and
+           restarted["effects"]["apply"] == 0,
+           "restart recovered an unacknowledged higher-term vote")
+    # A failed C++ combined write is not identified with TLC's intermediate
+    # term-only durable state, which this pinned model reaches via a torn crash.
+    phases = check_higher_term_envelope(doc["states"], "s1", "s2")
+    term_only = node_function(
+        doc["states"][phases["term_sync"]]["variables"]["disk"])["s1"]
+    voted = node_function(
+        doc["states"][phases["vote_sync"]]["variables"]["disk"])["s1"]
+    demand(term_only["term"] == 2 and
+           term_only["votedFor"] == {"$model": "Nil"} and
+           voted["term"] == 2 and voted["votedFor"] == {"$model": "s2"} and
+           durable["term"] == 1 and durable["votedFor"] == "a",
+           "model torn term-only state was conflated with C++ failed write")
+
+
 class CombinedCoreBridgeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -474,6 +555,57 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 demand(invalid.returncode != 0 and
                        "pending" in invalid.stderr.lower(),
                        "stale persistence completion unexpectedly accepted")
+
+
+    def test_failed_higher_term_vote_never_acknowledges_or_recovers(self):
+        for crash in (False, True):
+            with self.subTest(crash=crash):
+                doc = witness(crash, MODEL, CRASH_CONFIG if crash else HANDOFF_CONFIG)
+                commands = failed_vote_schedule(crash)
+                result = subprocess.run(
+                    [str(RUNNER), "--replay-inputs"],
+                    input="\n".join(commands) + "\n",
+                    capture_output=True, text=True, timeout=30, check=False)
+                demand(result.returncode == 0,
+                       "failed vote schedule rejected: " + result.stderr.strip())
+                rows = [json.loads(line) for line in result.stdout.splitlines()]
+                compare_failed_vote(doc, rows, crash)
+                mutations = [
+                    lambda r: r[-3]["effects"].update(send=[{"kind": "RVResp"}]),
+                    lambda r: r[-2].update(input_token=r[-3]["pending_after"] + 1),
+                    lambda r: r[-2]["post"]["durable"].update(term=2),
+                    lambda r: r[-2]["post"]["durable"].update(votedFor="b"),
+                    lambda r: r[-2]["post"].update(term=2),
+                    lambda r: r[-2]["post"].update(alive=True),
+                    lambda r: r[-2]["effects"].update(halt=False),
+                    lambda r: r[-2]["effects"].update(send=[{"kind": "RVResp"}]),
+                    lambda r: r[-2].update(pending_after=r[-3]["pending_after"]),
+                    lambda r: r[-1]["post"]["durable"].update(term=2),
+                    lambda r: r[-1]["post"].update(votedFor="b"),
+                    lambda r: r[-1]["post"].update(alive=False),
+                    lambda r: r[-1]["effects"].update(send=[{"kind": "RVResp"}]),
+                    lambda r: r[-1].update(pending_after=r[-3]["pending_after"]),
+                ]
+                for index, mutate in enumerate(mutations, 1):
+                    with self.subTest(crash=crash, mutation=index):
+                        changed = copy.deepcopy(rows)
+                        mutate(changed)
+                        with self.assertRaises(BridgeMismatch):
+                            compare_failed_vote(doc, changed, crash)
+                # The harness must not invent a stale completion or an
+                # undurable positive vote after the failed callback.
+                for command, error in (
+                    ("complete a", "pending"),
+                    ("deliver a b RVResp", "message is not available"),
+                ):
+                    invalid = subprocess.run(
+                        [str(RUNNER), "--replay-inputs"],
+                        input="\n".join(commands + [command]) + "\n",
+                        capture_output=True, text=True, timeout=30, check=False)
+                    demand(invalid.returncode != 0 and
+                           error in invalid.stderr.lower(),
+                           "failed vote unexpectedly accepted " + command)
+
 
     def test_negative_model_and_core_divergences(self):
         for crash in (False, True):
