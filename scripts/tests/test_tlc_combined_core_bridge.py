@@ -205,7 +205,7 @@ def compare_model_promotion_to_core_heartbeats(doc, elected):
     demand(all(message.get("leader") == "b" and
                message.get("prev_index") == len(model_log) and
                message.get("prev_term") == model_log[-1]["term"] and
-               message.get("entries") == [] and
+               message.get("entries_count") == 0 and
                message.get("leader_commit") == elected["post"]["durable"]["commit"]
                for message in sends),
            "compiled initial heartbeat predecessor/commit metadata diverged")
@@ -464,7 +464,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 lambda r: r[19 + offset]["effects"]["send"][0].update(prev_index=0),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(prev_term=0),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(
-                    entries=[{"term": 1, "val": "v1"}]),
+                    entries_count=1),
                 lambda r: r[19 + offset]["effects"]["send"][0].update(leader_commit=99),
                 lambda r: r[20 + offset]["post"]["durable"].update(term=1),
                 lambda r: r[20 + offset]["post"]["durable"].update(log=[]),
