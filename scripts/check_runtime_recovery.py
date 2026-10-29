@@ -68,6 +68,15 @@ def main():
             return {"ok": True, "duplicate": receipt.group(1) == "duplicate",
                     "index": int(receipt.group(2)), "hash": receipt.group(3)}
 
+        def reject_conflicting_add(endpoint):
+            # The same command ID with a different payload must not replay as a duplicate.
+            conflicting = ("--command-id", "recovery-add", "--id", "alice",
+                           "--x-mm", "1000", "--y-mm", "1000", "--count", "2")
+            result = run([cli, "--output", "json", "add-dancer", "--leader", endpoint,
+                          *conflicting])
+            assert result.returncode != 0, "conflicting command ID was accepted"
+            assert "CommandConflict" in result.stdout + result.stderr, result.stdout + result.stderr
+
         def wait_leader(endpoint):
             until = time.monotonic() + 20
             while time.monotonic() < until:
@@ -118,14 +127,22 @@ def main():
             legacy_add = remote(endpoint, "add-dancer", *add_flags)
             assert legacy_add["ok"] and legacy_add["duplicate"], legacy_add
             assert legacy_add["index"] == added["index"], legacy_add
-            assert legacy_add["hash"] == added["hash"], legacy_add
+            # CLI 'hash' is the current committed state hash, not a command-receipt hash.
+            # A new leader may commit an election no-op, legitimately changing that hash.
+            legacy_state = remote(endpoint, "status")
+            assert legacy_add["hash"] == legacy_state["hash"], (legacy_add, legacy_state)
+            reject_conflicting_add(endpoint)
+            assert remote(endpoint, "status")["hash"] == legacy_state["hash"]
             kill(process)
             process, endpoint = launch(config)
             wait_leader(endpoint)
             transition_add = remote(endpoint, "add-dancer", *add_flags)
             assert transition_add["ok"] and transition_add["duplicate"], transition_add
             assert transition_add["index"] == added["index"], transition_add
-            assert transition_add["hash"] == added["hash"], transition_add
+            transition_state = remote(endpoint, "status")
+            assert transition_add["hash"] == transition_state["hash"], (transition_add, transition_state)
+            reject_conflicting_add(endpoint)
+            assert remote(endpoint, "status")["hash"] == transition_state["hash"]
             kill(process)
             print("PASS: transition process writes/recovery, both-backend writer exclusion, "
                   "offline-tool exclusion, OS crash-release, durable retry and "
