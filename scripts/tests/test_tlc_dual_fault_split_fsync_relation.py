@@ -361,6 +361,116 @@ def check_identity_projection_mutations(document, rows):
     return len(mutants)
 
 
+
+def wire_only_grant_prefix(document, rows):
+    """Compare only positive vote-grant events, deliberately ignoring disk.
+
+    TLC net-bag appearance and C++ send effects are compared only at this
+    selected vote-fsync prefix. This is not a recovery-safe refinement map.
+    """
+    states = third_peer_states(document)
+    disks = [disk_projection(node(s, "disk", "s3")) for s in states]
+    vote_at = next((i for i, disk in enumerate(disks)
+                    if disk["term"] == 2 and disk["votedFor"] == "b"), None)
+    require(vote_at is not None and vote_at > 0,
+            "wire prefix has no durable model vote boundary")
+    model_events = [
+        tuple((msg.get("mdst"), msg.get("mterm"), msg.get("granted"))
+              for msg in third_peer_positive_replies(state))
+        for state in states[:vote_at + 1]
+    ]
+    compiled_events = [
+        tuple((msg.get("to"), msg.get("term"), msg.get("positive"))
+              for msg in row["effects"]["send"]
+              if msg.get("kind") == "RVResp" and msg.get("positive") is True)
+        for row in rows[-3:-1]
+    ]
+    require(model_events[:-1] == [()] * vote_at and
+            model_events[-1] == ((model("s2"), 2, True),) and
+            compiled_events == [(), (("b", 2, True),)],
+            "bounded wire-only grant prefix diverged")
+    return model_events, compiled_events
+
+
+def check_wire_projection_limits(document, rows):
+    """Demonstrate that a passing wire-only prefix can hide real defects."""
+    baseline = wire_only_grant_prefix(document, rows)
+    blind_spots = []
+
+    changed = copy.deepcopy(document)
+    term_only = [node(s, "disk", "s3") for s in third_peer_states(changed)
+                 if (disk_projection(node(s, "disk", "s3"))["term"] == 2
+                     and disk_projection(node(s, "disk", "s3"))["votedFor"] is None)]
+    require(bool(term_only), "missing model term-only fsync to challenge")
+    for disk in term_only:
+        disk["term"] = 1
+    blind_spots.append((changed, rows))  # Wire view hides term-only fsync.
+
+    changed = copy.deepcopy(rows)
+    changed[-2]["effects"]["send"][0]["request_id"] = -1
+    blind_spots.append((document, changed))  # Wire view hides correlation ID.
+
+    changed = copy.deepcopy(rows)
+    changed[-5]["post"]["durable"]["term"] = 2
+    blind_spots.append((document, changed))  # Wire view hides failed disk.
+
+    for index, (doc, core) in enumerate(blind_spots, 1):
+        require(wire_only_grant_prefix(doc, core) == baseline,
+                f"wire-only blind spot {index} unexpectedly became observable")
+        try:
+            check_relation(doc, core)
+        except ProjectionMismatch:
+            continue
+        raise ProjectionMismatch(
+            f"strict durable/identity relation accepted wire blind spot {index}")
+    return len(blind_spots)
+
+
+def check_wire_projection_mutations(document, rows):
+    """The weak projection still rejects forged or premature visible grants."""
+    mutants = []
+    changed = copy.deepcopy(document)
+    states = third_peer_states(changed)
+    vote_at = next(i for i, state in enumerate(states)
+                   if disk_projection(node(state, "disk", "s3"))["votedFor"] == "b")
+    grant = copy.deepcopy(granted_replies(states[vote_at])[0])
+    before = states[vote_at - 1]["net"]
+    if before == {"$sequence": []}:
+        states[vote_at - 1]["net"] = {"$function": [[grant, 1]]}
+    else:
+        before["$function"].append([grant, 1])
+    mutants.append((changed, rows))  # Early model grant.
+
+    changed = copy.deepcopy(document)
+    states = third_peer_states(changed)
+    vote_at = next(i for i, state in enumerate(states)
+                   if disk_projection(node(state, "disk", "s3"))["votedFor"] == "b")
+    granted_replies(states[vote_at])[0]["mterm"] = 1
+    mutants.append((changed, rows))  # Wrong model grant term.
+
+    for offset, field, value in (
+        (-2, "to", "a"),
+        (-2, "term", 1),
+    ):
+        changed = copy.deepcopy(rows)
+        changed[offset]["effects"]["send"][0][field] = value
+        mutants.append((document, changed))
+
+    changed = copy.deepcopy(rows)
+    changed[-3]["effects"]["send"] = [
+        {"kind": "RVResp", "to": "b", "term": 2, "positive": True}
+    ]
+    mutants.append((document, changed))  # Premature compiled grant.
+
+    for index, (doc, core) in enumerate(mutants, 1):
+        try:
+            wire_only_grant_prefix(doc, core)
+        except ProjectionMismatch:
+            continue
+        raise ProjectionMismatch(f"wire projection mutation {index} escaped")
+    return len(mutants)
+
+
 def main():
     if len(sys.argv) != 4:
         raise ProjectionMismatch("usage: split_fsync_relation.py RUNNER MODEL CONFIG")
@@ -379,10 +489,14 @@ def main():
     mutations = check_mutations(document, rows)
     observations = check_identity_projection_counterexample(document, rows)
     counterexample_mutations = check_identity_projection_mutations(document, rows)
+    blind_spots = check_wire_projection_limits(document, rows)
+    wire_mutations = check_wire_projection_mutations(document, rows)
     print(f"Bounded split/combined relation: {transitions} ordered model fsyncs, "
           f"{mutations} negative mutations rejected.")
     print(f"Literal full-state stuttering counterexample: {observations} model "
           f"observations, {counterexample_mutations} negative mutations rejected.")
+    print(f"Wire-only prefix: {wire_mutations} negative mutations rejected, "
+          f"{blind_spots} disk/identity blind spots exposed.")
     print("Two model term-only boundaries are unmatched; no full refinement.")
 
 
