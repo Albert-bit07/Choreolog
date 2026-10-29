@@ -586,6 +586,155 @@ def compare_failed_candidate(rows, crash):
            "restart revived an unacknowledged candidate self-vote")
 
 
+
+def combined_candidate_and_follower_failure_schedule(crash):
+    """Fail candidate b, retry its election, then fail follower a's vote write.
+
+    The second election may still obtain a quorum from c. This deliberately
+    tests a compiled-core fault combination, not a TLC lockstep trace.
+    """
+    offset = 2 if crash else 0
+    return schedule(crash)[:16 + offset] + [
+        "fail b", "restart b", "timeout b", "complete b",
+        "deliver b a RVReq", "fail a", "restart a",
+        "deliver b c RVReq", "complete c", "deliver c b RVResp",
+    ]
+
+
+def compare_combined_candidate_and_follower_failures(rows, crash):
+    commands = combined_candidate_and_follower_failure_schedule(crash)
+    demand(len(rows) == len(commands), "combined failure schedule length diverged")
+    demand([row.get("seq") for row in rows] == list(range(len(rows))) and
+           all(row.get("v") == 2 for row in rows),
+           "combined failure trace sequence or diagnostic version diverged")
+    (staged_b, failed_b, restarted_b, retried_b, synced_b, staged_a,
+     failed_a, restarted_a, staged_c, synced_c, elected_b) = rows[-11:]
+    demand([row.get("node") for row in rows[-11:]] ==
+           ["b", "b", "b", "b", "b", "a", "a", "a", "c", "c", "b"] and
+           [row.get("act") for row in rows[-11:]] ==
+           ["Timeout", "PersistFailed", "Restart", "Timeout",
+            "PersistCompleted", "HandleRVReq", "PersistFailed", "Restart",
+            "HandleRVReq", "PersistCompleted", "HandleRVResp"],
+           "combined failure actor/action order diverged")
+    old_b = staged_b["post"]["durable"]
+    expected_log = [{"term": 1, "val": "v1"}]
+    demand(old_b["term"] == 1 and old_b["votedFor"] == "a" and
+           old_b["log"] == expected_log and
+           staged_b["post"]["term"] == 2 and
+           staged_b["post"]["votedFor"] == "b" and
+           staged_b["effects"]["send"] == [] and
+           type(staged_b["pending_after"]) is int and
+           staged_b["pending_after"] == staged_b["effects"]["persist"],
+           "candidate staged an unreviewed initial self-vote")
+    demand(failed_b["input_token"] == staged_b["pending_after"] and
+           failed_b["pending_before"] == staged_b["pending_after"] and
+           failed_b["pending_after"] is None and
+           failed_b["post"]["durable"] == old_b and
+           failed_b["post"]["alive"] is False and
+           failed_b["effects"]["halt"] is True and
+           failed_b["effects"]["send"] == [] and
+           failed_b["effects"]["persist"] is None and
+           failed_b["effects"]["apply"] == 0,
+           "candidate failure acknowledged a vote or leaked election effects")
+    demand(restarted_b["post"]["durable"] == old_b and
+           restarted_b["post"]["term"] == 1 and
+           restarted_b["post"]["votedFor"] == "a" and
+           restarted_b["post"]["role"] == "Follower" and
+           restarted_b["post"]["alive"] is True and
+           restarted_b["pending_after"] is None and
+           restarted_b["effects"]["send"] == [],
+           "candidate restart retained an unacknowledged self-vote")
+    demand(retried_b["post"]["term"] == 2 and
+           retried_b["post"]["votedFor"] == "b" and
+           retried_b["post"]["role"] == "Candidate" and
+           retried_b["post"]["durable"] == old_b and
+           retried_b["effects"]["send"] == [] and
+           type(retried_b["pending_after"]) is int and
+           retried_b["pending_after"] == retried_b["effects"]["persist"],
+           "retry election sent messages before durable self-vote")
+    demand(synced_b["input_token"] == retried_b["pending_after"] and
+           synced_b["pending_before"] == retried_b["pending_after"] and
+           synced_b["pending_after"] is None and
+           synced_b["post"]["durable"]["term"] == 2 and
+           synced_b["post"]["durable"]["votedFor"] == "b" and
+           synced_b["post"]["durable"]["log"] == expected_log,
+           "retried self-vote did not become durable")
+    requests = synced_b["effects"]["send"]
+    demand(len(requests) == 2 and
+           {msg.get("to") for msg in requests} == {"a", "c"} and
+           all(msg.get("kind") == "RVReq" and msg.get("term") == 2 and
+               msg.get("candidate") == "b" and msg.get("last_index") == 1 and
+               msg.get("last_term") == 1 and
+               type(msg.get("request_id")) is int and msg["request_id"] > 0
+               for msg in requests) and
+           len({msg["request_id"] for msg in requests}) == 2,
+           "retry election lost peer identity or request correlation")
+    request_c = next(msg for msg in requests if msg["to"] == "c")
+    old_a = staged_a["post"]["durable"]
+    demand(old_a["term"] == 1 and old_a["votedFor"] == "a" and
+           old_a["log"] == expected_log and
+           staged_a["post"]["term"] == 2 and
+           staged_a["post"]["votedFor"] == "b" and
+           staged_a["effects"]["send"] == [] and
+           type(staged_a["pending_after"]) is int and
+           staged_a["pending_after"] == staged_a["effects"]["persist"],
+           "follower replied before durable higher-term vote")
+    demand(failed_a["input_token"] == staged_a["pending_after"] and
+           failed_a["pending_before"] == staged_a["pending_after"] and
+           failed_a["pending_after"] is None and
+           failed_a["post"]["durable"] == old_a and
+           failed_a["post"]["alive"] is False and
+           failed_a["effects"]["halt"] is True and
+           failed_a["effects"]["send"] == [] and
+           failed_a["effects"]["persist"] is None and
+           failed_a["effects"]["apply"] == 0,
+           "follower failure acknowledged an undurable vote")
+    demand(restarted_a["post"]["durable"] == old_a and
+           restarted_a["post"]["term"] == 1 and
+           restarted_a["post"]["votedFor"] == "a" and
+           restarted_a["post"]["role"] == "Follower" and
+           restarted_a["post"]["alive"] is True and
+           restarted_a["pending_after"] is None and
+           restarted_a["effects"]["send"] == [],
+           "follower restart retained an unacknowledged vote")
+    demand(staged_c["post"]["term"] == 2 and
+           staged_c["post"]["votedFor"] == "b" and
+           staged_c["post"]["durable"]["term"] == 0 and
+           staged_c["post"]["durable"]["votedFor"] is None and
+           staged_c["effects"]["send"] == [] and
+           type(staged_c["pending_after"]) is int and
+           staged_c["pending_after"] == staged_c["effects"]["persist"],
+           "alternative voter c replied before fsync")
+    demand(synced_c["input_token"] == staged_c["pending_after"] and
+           synced_c["pending_before"] == staged_c["pending_after"] and
+           synced_c["pending_after"] is None and
+           synced_c["post"]["durable"]["term"] == 2 and
+           synced_c["post"]["durable"]["votedFor"] == "b" and
+           len(synced_c["effects"]["send"]) == 1 and
+           synced_c["effects"]["send"][0].get("kind") == "RVResp" and
+           synced_c["effects"]["send"][0].get("to") == "b" and
+           synced_c["effects"]["send"][0].get("term") == 2 and
+           synced_c["effects"]["send"][0].get("positive") is True and
+           synced_c["effects"]["send"][0].get("request_id") ==
+           request_c["request_id"],
+           "alternative voter did not durably grant correlated vote")
+    heartbeats = elected_b["effects"]["send"]
+    demand(elected_b["post"]["role"] == "Leader" and
+           elected_b["post"]["term"] == 2 and
+           elected_b["post"]["durable"] == synced_b["post"]["durable"] and
+           elected_b["pending_before"] is None and
+           elected_b["pending_after"] is None and
+           elected_b["effects"]["persist"] is None and
+           elected_b["effects"]["apply"] == 0 and
+           len(heartbeats) == 2 and
+           {msg.get("to") for msg in heartbeats} == {"a", "c"} and
+           all(msg.get("kind") == "AEReq" and msg.get("term") == 2 and
+               msg.get("leader") == "b" and
+               type(msg.get("request_id")) is int and
+               msg["request_id"] > max(req["request_id"] for req in requests)
+               for msg in heartbeats),
+           "alternative quorum did not elect a durable leader with fresh heartbeats")
+
 class CombinedCoreBridgeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -739,6 +888,67 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                            error in invalid.stderr.lower(),
                            "failed vote unexpectedly accepted " + command)
 
+
+
+    def test_two_node_failures_retry_and_alternative_quorum(self):
+        for crash in (False, True):
+            with self.subTest(crash=crash):
+                # Pinned TLC witnesses anchor the successful checkpoints only.
+                # This new two-failure schedule is a compiled-core experiment.
+                witness(crash, MODEL, CRASH_CONFIG if crash else HANDOFF_CONFIG)
+                commands = combined_candidate_and_follower_failure_schedule(crash)
+                result = subprocess.run(
+                    [str(RUNNER), "--replay-inputs"],
+                    input="\\n".join(commands) + "\\n",
+                    capture_output=True, text=True, timeout=30, check=False)
+                demand(result.returncode == 0,
+                       "two-node failure replay rejected: " + result.stderr.strip())
+                rows = [json.loads(line) for line in result.stdout.splitlines()]
+                compare_combined_candidate_and_follower_failures(rows, crash)
+                mutations = [
+                    lambda r: r[-11]["effects"].update(send=[{"kind": "RVReq"}]),
+                    lambda r: r[-10]["post"]["durable"].update(term=2),
+                    lambda r: r[-10]["effects"].update(halt=False),
+                    lambda r: r[-9]["post"].update(votedFor="b"),
+                    lambda r: r[-8]["effects"].update(send=[{"kind": "RVReq"}]),
+                    lambda r: r[-7]["post"]["durable"].update(votedFor="a"),
+                    lambda r: r[-7]["effects"]["send"][0].update(candidate="a"),
+                    lambda r: r[-7]["effects"]["send"][1].update(to="a"),
+                    lambda r: r[-6]["effects"].update(send=[{"kind": "RVResp"}]),
+                    lambda r: r[-5]["post"]["durable"].update(term=2),
+                    lambda r: r[-5]["effects"].update(halt=False),
+                    lambda r: r[-4]["post"].update(votedFor="b"),
+                    lambda r: r[-3]["effects"].update(send=[{"kind": "RVResp"}]),
+                    lambda r: r[-2]["post"]["durable"].update(votedFor="a"),
+                    lambda r: r[-2]["effects"]["send"][0].update(positive=False),
+                    lambda r: r[-2]["effects"]["send"][0].update(request_id=0),
+                    lambda r: r[-1]["post"].update(role="Candidate"),
+                    lambda r: r[-1]["effects"]["send"][0].update(to="b"),
+                ]
+                for index, mutate in enumerate(mutations, 1):
+                    with self.subTest(crash=crash, mutation=index):
+                        changed = copy.deepcopy(rows)
+                        mutate(changed)
+                        with self.assertRaises(BridgeMismatch):
+                            compare_combined_candidate_and_follower_failures(
+                                changed, crash)
+                # Stale callbacks and undurable replies are not fabricatable.
+                invalid_prefixes = [
+                    (commands[:17 + (2 if crash else 0)] +
+                     ["restart b", "complete b"], "pending"),
+                    (commands[:18 + (2 if crash else 0)] +
+                     ["deliver b a RVReq"], "message is not available"),
+                    (commands[:-3] + ["deliver a b RVResp"],
+                     "message is not available"),
+                ]
+                for invalid_commands, expected_error in invalid_prefixes:
+                    invalid = subprocess.run(
+                        [str(RUNNER), "--replay-inputs"],
+                        input="\\n".join(invalid_commands) + "\\n",
+                        capture_output=True, text=True, timeout=30, check=False)
+                    demand(invalid.returncode != 0 and
+                           expected_error in invalid.stderr.lower(),
+                           "two-node fault schedule accepted a forbidden action")
 
     def test_negative_model_and_core_divergences(self):
         for crash in (False, True):
