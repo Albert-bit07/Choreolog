@@ -131,6 +131,32 @@ def check_relation(document, rows):
             failed_a["effects"]["send"] == [] and
             restarted_a["effects"]["send"] == [],
             "model term-only failure was incorrectly identified with C++ write")
+    # The former leader's failed combined persistence is not a successful
+    # term-only model fsync. The exact staged token must fail closed; restart
+    # must reconstruct the old acknowledged vote, not the staged vote for b.
+    old_durable = staged_a["post"]["durable"]
+    token = staged_a["pending_after"]
+    require(staged_a["node"] == failed_a["node"] == restarted_a["node"] == "a" and
+            staged_a["act"] == "HandleRVReq" and
+            failed_a["act"] == "PersistFailed" and
+            restarted_a["act"] == "Restart" and
+            type(token) is int and token > 0 and
+            staged_a["effects"]["persist"] == token and
+            staged_a["effects"]["send"] == [] and
+            failed_a["pending_before"] == failed_a["input_token"] == token and
+            failed_a["pending_after"] is None and
+            failed_a["pre"]["durable"] == old_durable and
+            failed_a["post"]["durable"] == old_durable and
+            failed_a["post"]["term"] == old_durable["term"] == 1 and
+            failed_a["post"]["votedFor"] == old_durable["votedFor"] == "a" and
+            failed_a["effects"]["halt"] is True and
+            failed_a["effects"]["send"] == [] and
+            restarted_a["pending_after"] is None and
+            restarted_a["post"]["durable"] == old_durable and
+            restarted_a["post"]["term"] == 1 and
+            restarted_a["post"]["votedFor"] == "a" and
+            restarted_a["effects"]["send"] == [],
+            "failed combined vote write or restart leaked a durable grant")
     return len(transitions)
 
 
@@ -203,6 +229,27 @@ def check_mutations(document, rows):
         (-2, ("effects", "send", 0), "term", 1),
         (-2, ("effects", "send", 0), "kind", "AEReq"),
         (-5, ("post", "durable"), "term", 2),
+    ):
+        changed = copy.deepcopy(rows)
+        target = changed[offset]
+        for part in path:
+            target = target[part]
+        target[key] = value
+        mutants.append((document, changed))
+    # A model term-only failure must not grow a durable vote, and a
+    # compiled failed write/restart must not invent a vote for b or bypass
+    # the persistence callback identity.
+    changed = copy.deepcopy(document)
+    node(third_peer_states(changed)[0], "disk", "s1")["votedFor"] = model("s2")
+    mutants.append((changed, rows))
+    for offset, path, key, value in (
+        (-5, ("post", "durable"), "votedFor", "b"),
+        (-4, ("post", "durable"), "votedFor", "b"),
+        (-5, ("effects",), "send", [{"kind": "RVResp", "positive": True,
+                                    "to": "b", "term": 2}]),
+        (-5, (), "input_token", -1),
+        (-4, ("post",), "term", 2),
+        (-6, (), "pending_after", None),
     ):
         changed = copy.deepcopy(rows)
         target = changed[offset]
