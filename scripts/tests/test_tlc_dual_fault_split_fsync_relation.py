@@ -267,6 +267,125 @@ def check_mutations(document, rows):
 
 
 
+
+def third_peer_vote_requests(values):
+    """Outstanding candidate-b requests addressed to the third peer."""
+    return [(msg, count) for msg, count in raw_messages(values["net"])
+            if msg.get("mtype") == "RVReq"
+            and msg.get("msrc") == model("s2")
+            and msg.get("mdst") == model("s3")]
+
+
+def check_request_conservation(document, rows):
+    """Bounded RequestVote causality across split fsync and combined callback.
+
+    TLC retains the network-bag request through UpdateTerm/term fsync, then
+    HandleRVReq consumes it. C++ observes the originating send and correlated
+    reply; it does not expose a model-equivalent receive bag.
+    """
+    states = third_peer_states(document)
+    staged = [i for i, values in enumerate(states)
+              if isinstance(node(values, "pending", "s3").get("target"), dict)
+              and node(values, "pending", "s3")["target"]["votedFor"]
+              == model("s2")]
+    require(len(staged) == 1 and staged[0] > 0,
+            "model third-peer vote staging boundary missing or duplicated")
+    consumed_at = staged[0]
+    expected = {"mtype": "RVReq", "msrc": model("s2"),
+                "mdst": model("s3"), "mterm": 2,
+                "mlastIdx": 1, "mlastTerm": 1}
+    for index, values in enumerate(states):
+        requests = third_peer_vote_requests(values)
+        if index < consumed_at:
+            require(len(requests) == 1 and requests[0][1] == 1 and
+                    requests[0][0] == expected,
+                    "model vote request changed or disappeared before handling")
+        else:
+            require(not requests,
+                    "model vote request survived HandleRVReq consumption")
+
+    pending = node(states[consumed_at], "pending", "s3")
+    after = pending.get("after")
+    require(isinstance(after, dict) and set(after) == {"$set"} and
+            len(after["$set"]) == 1 and
+            after["$set"][0] == granted_replies(next(
+                values for values in states if granted_replies(values)))[0],
+            "model deferred vote reply diverged from durable release")
+
+    synced_b, staged_c, synced_c = rows[-7], rows[-3], rows[-2]
+    outbound = [msg for msg in synced_b["effects"]["send"]
+                if msg.get("kind") == "RVReq" and msg.get("to") == "c"]
+    require(len(outbound) == 1 and
+            all(outbound[0].get(key) == value
+                for key, value in (("candidate", "b"), ("term", 2),
+                                   ("last_index", 1), ("last_term", 1))) and
+            type(outbound[0].get("request_id")) is int and
+            outbound[0]["request_id"] > 0 and
+            staged_c["effects"]["send"] == [] and
+            len(synced_c["effects"]["send"]) == 1 and
+            synced_c["effects"]["send"][0].get("request_id")
+            == outbound[0]["request_id"],
+            "compiled third-peer vote request or reply causality diverged")
+    return consumed_at
+
+
+def check_request_conservation_mutations(document, rows):
+    """Reject changes to candidate/log freshness, bag conservation and ID."""
+    mutants = []
+    for field, value in (("msrc", model("s1")),
+                         ("mterm", 1), ("mlastIdx", 0),
+                         ("mlastTerm", 0)):
+        changed = copy.deepcopy(document)
+        third_peer_vote_requests(third_peer_states(changed)[0])[0][0][field] = value
+        mutants.append((changed, rows))
+    changed = copy.deepcopy(document)
+    pair = next(pair for pair in raw_messages(third_peer_states(changed)[0]["net"])
+                if pair[0].get("mtype") == "RVReq"
+                and pair[0].get("msrc") == model("s2")
+                and pair[0].get("mdst") == model("s3"))
+    pair[1] += 1
+    mutants.append((changed, rows))
+
+    changed = copy.deepcopy(document)
+    states = third_peer_states(changed)
+    first = third_peer_vote_requests(states[0])[0][0]
+    remaining = [pair for pair in raw_messages(states[0]["net"])
+                 if pair[0] is not first]
+    states[0]["net"] = ({"$function": remaining} if remaining
+                        else {"$sequence": []})
+    mutants.append((changed, rows))
+
+    changed = copy.deepcopy(document)
+    states = third_peer_states(changed)
+    staged = next(values for values in states
+                  if isinstance(node(values, "pending", "s3").get("target"), dict)
+                  and node(values, "pending", "s3")["target"]["votedFor"]
+                  == model("s2"))
+    node(staged, "pending", "s3")["after"]["$set"][0]["mterm"] = 1
+    mutants.append((changed, rows))
+
+    for field, value in (("candidate", "a"), ("term", 1),
+                         ("last_index", 0), ("last_term", 0),
+                         ("request_id", -1)):
+        changed = copy.deepcopy(rows)
+        request = next(msg for msg in changed[-7]["effects"]["send"]
+                       if msg.get("to") == "c")
+        request[field] = value
+        mutants.append((document, changed))
+    changed = copy.deepcopy(rows)
+    changed[-2]["effects"]["send"][0]["request_id"] = -1
+    mutants.append((document, changed))
+
+    for index, (doc, core) in enumerate(mutants, 1):
+        try:
+            check_request_conservation(doc, core)
+        except (ProjectionMismatch, KeyError, TypeError, ValueError, IndexError):
+            continue
+        raise ProjectionMismatch(
+            f"third-peer vote causality mutation {index} was not rejected")
+    return len(mutants)
+
+
 def model_term_vote_observation(values):
     """Observed in-memory and fsynced term/vote, without hiding disk writes."""
     memory = disk_projection(node(values, "mem", "s3"))
@@ -486,6 +605,8 @@ def main():
     compare_combined_candidate_and_follower_failures(rows, False)
     compare(document, rows)
     transitions = check_relation(document, rows)
+    handled_at = check_request_conservation(document, rows)
+    request_mutations = check_request_conservation_mutations(document, rows)
     mutations = check_mutations(document, rows)
     observations = check_identity_projection_counterexample(document, rows)
     counterexample_mutations = check_identity_projection_mutations(document, rows)
@@ -497,6 +618,8 @@ def main():
           f"observations, {counterexample_mutations} negative mutations rejected.")
     print(f"Wire-only prefix: {wire_mutations} negative mutations rejected, "
           f"{blind_spots} disk/identity blind spots exposed.")
+    print(f"Third-peer RequestVote consumed at split-state {handled_at}; "
+          f"{request_mutations} causality mutations rejected.")
     print("Two model term-only boundaries are unmatched; no full refinement.")
 
 

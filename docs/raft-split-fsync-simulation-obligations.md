@@ -78,6 +78,25 @@ only the finite observations described above. They do **not** establish
 unrestricted Raft safety, complete TLA+-to-C++ refinement, liveness, or
 physical power-loss correctness.
 
+## Third-peer RequestVote causality (proposed bounded check)
+
+The selected dual-failure witness also permits a more precise check than the
+wire-only grant projection: the term-two RequestVote from `s2` to `s3`
+must retain its candidate, term and last-log index/term while the model
+performs `UpdateTerm` and term fsync. `HandleRVReq` must consume exactly
+one copy before staging a single deferred positive response; vote fsync
+releases that response. In the compiled schedule, the request from `b` to
+`c` must carry matching candidate and log-freshness fields, and the reply
+must retain its originating request ID. Negative mutations exercise request
+content, multiplicity, early removal, deferred reply term, and compiled
+correlation.
+
+The comparison deliberately does **not** equate a TLC network-bag entry to
+an actual C++ transport receive. It does not supply a crash/restart witness
+for the model's term-only durable state, establish a global message mapping,
+or justify compound-action stuttering. The existing strict durable-state
+checker remains mandatory.
+
 ## Next experiments
 
 1. Generate a TLC witness with a crash/restart *after* the term-only fsync
