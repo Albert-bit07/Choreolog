@@ -308,7 +308,8 @@ def check_request_conservation(document, rows):
     after = pending.get("after")
     require(isinstance(after, dict) and set(after) == {"$set"} and
             len(after["$set"]) == 1 and
-            after["$set"][0] == granted_replies(next(\n                values for values in states if granted_replies(values)))[0],
+            after["$set"][0] == granted_replies(next(
+                values for values in states if granted_replies(values)))[0],
             "model deferred vote reply diverged from durable release")
 
     synced_b, staged_c, synced_c = rows[-7], rows[-3], rows[-2]
