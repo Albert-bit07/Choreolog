@@ -308,7 +308,7 @@ def check_request_conservation(document, rows):
     after = pending.get("after")
     require(isinstance(after, dict) and set(after) == {"$set"} and
             len(after["$set"]) == 1 and
-            after["$set"][0] == granted_replies(states[-1])[0],
+            after["$set"][0] == granted_replies(next(\n                values for values in states if granted_replies(values)))[0],
             "model deferred vote reply diverged from durable release")
 
     synced_b, staged_c, synced_c = rows[-7], rows[-3], rows[-2]
@@ -338,16 +338,20 @@ def check_request_conservation_mutations(document, rows):
         third_peer_vote_requests(third_peer_states(changed)[0])[0][0][field] = value
         mutants.append((changed, rows))
     changed = copy.deepcopy(document)
-    third_peer_vote_requests(third_peer_states(changed)[0])[0][1] += 1
+    pair = next(pair for pair in raw_messages(third_peer_states(changed)[0]["net"])
+                if pair[0].get("mtype") == "RVReq"
+                and pair[0].get("msrc") == model("s2")
+                and pair[0].get("mdst") == model("s3"))
+    pair[1] += 1
     mutants.append((changed, rows))
 
     changed = copy.deepcopy(document)
     states = third_peer_states(changed)
     first = third_peer_vote_requests(states[0])[0][0]
-    for pair in raw_messages(states[0]["net"]):
-        if pair[0] is first:
-            pair[1] = 0
-            break
+    remaining = [pair for pair in raw_messages(states[0]["net"])
+                 if pair[0] is not first]
+    states[0]["net"] = ({"$function": remaining} if remaining
+                        else {"$sequence": []})
     mutants.append((changed, rows))
 
     changed = copy.deepcopy(document)
