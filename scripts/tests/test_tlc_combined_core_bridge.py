@@ -899,7 +899,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 commands = combined_candidate_and_follower_failure_schedule(crash)
                 result = subprocess.run(
                     [str(RUNNER), "--replay-inputs"],
-                    input="\\n".join(commands) + "\\n",
+                    input="\n".join(commands) + "\n",
                     capture_output=True, text=True, timeout=30, check=False)
                 demand(result.returncode == 0,
                        "two-node failure replay rejected: " + result.stderr.strip())
@@ -944,7 +944,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 for invalid_commands, expected_error in invalid_prefixes:
                     invalid = subprocess.run(
                         [str(RUNNER), "--replay-inputs"],
-                        input="\\n".join(invalid_commands) + "\\n",
+                        input="\n".join(invalid_commands) + "\n",
                         capture_output=True, text=True, timeout=30, check=False)
                     demand(invalid.returncode != 0 and
                            expected_error in invalid.stderr.lower(),
