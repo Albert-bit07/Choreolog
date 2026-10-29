@@ -111,6 +111,40 @@ jobs:
           timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
             -config ChoreoRaftCombinedThreeMessages.cfg -workers 2 ChoreoRaft.tla
 
+      - name: Check ordered two-node persistence-failure safety
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          timeout 240s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ChoreoRaftDualPersistenceFaults.cfg -workers 2 ChoreoRaftDualPersistenceFaults.tla
+
+      - name: Require both failed writes and third-peer quorum in one TLC behavior
+        shell: bash
+        working-directory: formal/raft
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 90s java -Xmx3g -XX:+UseParallelGC -jar "$RUNNER_TEMP/tla2tools.jar" \
+            -config ReachDualPersistenceAlternativeQuorum.cfg -workers 2 ChoreoRaftDualPersistenceFaults.tla \
+            > "$RUNNER_TEMP/dual-persistence-alternative-quorum.txt" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/dual-persistence-alternative-quorum.txt"
+          if [[ $result -ne 12 ]] || ! grep -Fq \
+            'Invariant NoDualFailureAlternativeQuorumWitness is violated' \
+            "$RUNNER_TEMP/dual-persistence-alternative-quorum.txt"; then
+            echo "::error::Ordered two-failure quorum witness missing; TLC exit code $result"
+            exit 1
+          fi
+
+      - name: Preserve bounded dual-persistence TLC witness
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-dual-persistence-fault-witness
+          path: ${{ runner.temp }}/dual-persistence-alternative-quorum.txt
+          if-no-files-found: error
+
       - name: Check bounded combined vote-message faults
         shell: bash
         working-directory: formal/raft
