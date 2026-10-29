@@ -53,6 +53,7 @@ RestartCandidate ==
 RetryCandidateElection ==
   /\ faultPhase = 2
   /\ Timeout(CombinedSuccessor)
+  /\ UNCHANGED alive
   /\ faultPhase' = 3
 
 FsyncRetriedSelfVote ==
@@ -95,6 +96,7 @@ ThirdPeerVoteStep ==
        /\ m.mdst = CombinedThird
        /\ m.mterm = 2
        /\ (UpdateTerm(CombinedThird, m) \/ HandleRVReq(CombinedThird, m))
+  /\ UNCHANGED alive
   /\ UNCHANGED faultPhase
 
 ThirdPeerFsync ==
@@ -110,6 +112,7 @@ FinishAlternativeQuorum ==
           /\ m.mdst = CombinedSuccessor
           /\ HandleRVResp(CombinedSuccessor, m)
       \/ BecomeLeader(CombinedSuccessor))
+  /\ UNCHANGED alive
   /\ UNCHANGED faultPhase
 
 DualFaultNext ==
