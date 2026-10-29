@@ -519,6 +519,73 @@ def compare_failed_vote(doc, rows, crash):
            "model torn term-only state was conflated with C++ failed write")
 
 
+def failed_candidate_schedule(crash):
+    """Fail the successor candidate's self-vote fsync before any RVReq fanout."""
+    offset = 2 if crash else 0
+    return schedule(crash)[:16 + offset] + ["fail b", "restart b"]
+
+
+def compare_failed_candidate(rows, crash):
+    """A failed candidate self-vote cannot publish a term-two election.
+
+    This is a compiled-core combined-write failure boundary. TLC has separate
+    term and vote fsync actions, so its term-only intermediate disk state is
+    not equated to the C++ failed-write recovery state.
+    """
+    commands = failed_candidate_schedule(crash)
+    demand(len(rows) == len(commands), "failed candidate schedule length diverged")
+    staged, failed, restarted = rows[-3:]
+    offset = 2 if crash else 0
+    demand([row.get("seq") for row in rows] == list(range(len(rows))) and
+           all(row.get("v") == 2 for row in rows) and
+           [row.get("node") for row in (staged, failed, restarted)] == ["b"] * 3 and
+           staged.get("seq") == 15 + offset and
+           failed.get("seq") == 16 + offset and
+           restarted.get("seq") == 17 + offset and
+           [row.get("act") for row in (staged, failed, restarted)] ==
+           ["Timeout", "PersistFailed", "Restart"],
+           "candidate failure transition identity diverged")
+    durable = staged["post"]["durable"]
+    demand(staged["post"]["term"] == 2 and staged["post"]["votedFor"] == "b" and
+           staged["post"]["role"] == "Candidate" and
+           staged["post"]["alive"] is True and
+           durable["term"] == 1 and durable["votedFor"] == "a" and
+           durable["log"] == [{"term": 1, "val": "v1"}] and
+           staged["effects"]["send"] == [] and
+           staged["effects"]["halt"] is False and
+           staged["effects"]["persist"] == staged["pending_after"] and
+           type(staged["pending_after"]) is int and staged["pending_after"] > 0,
+           "candidate emitted a vote request before its self-vote was durable")
+    token = staged["pending_after"]
+    demand(failed["input_token"] == token and
+           failed["pending_before"] == token and
+           failed["pending_after"] is None and
+           failed["pre"]["durable"] == durable and
+           failed["post"]["durable"] == durable and
+           failed["post"]["term"] == durable["term"] and
+           failed["post"]["votedFor"] == durable["votedFor"] and
+           failed["post"]["role"] == "Follower" and
+           failed["post"]["alive"] is False and
+           failed["effects"]["halt"] is True and
+           failed["effects"]["send"] == [] and
+           failed["effects"]["persist"] is None and
+           failed["effects"]["apply"] == 0,
+           "failed candidate write leaked an election or changed acknowledged disk")
+    demand(restarted["pending_before"] is None and
+           restarted["pending_after"] is None and
+           restarted["pre"]["durable"] == durable and
+           restarted["post"]["durable"] == durable and
+           restarted["post"]["term"] == durable["term"] and
+           restarted["post"]["votedFor"] == durable["votedFor"] and
+           restarted["post"]["role"] == "Follower" and
+           restarted["post"]["alive"] is True and
+           restarted["effects"]["halt"] is False and
+           restarted["effects"]["send"] == [] and
+           restarted["effects"]["persist"] is None and
+           restarted["effects"]["apply"] == 0,
+           "restart revived an unacknowledged candidate self-vote")
+
+
 class CombinedCoreBridgeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -571,6 +638,56 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 demand(invalid.returncode != 0 and
                        "pending" in invalid.stderr.lower(),
                        "stale persistence completion unexpectedly accepted")
+
+
+    def test_failed_candidate_self_vote_cannot_fan_out_requests(self):
+        for crash in (False, True):
+            with self.subTest(crash=crash):
+                witness(crash, MODEL, CRASH_CONFIG if crash else HANDOFF_CONFIG)
+                commands = failed_candidate_schedule(crash)
+                result = subprocess.run(
+                    [str(RUNNER), "--replay-inputs"],
+                    input="\\n".join(commands) + "\\n",
+                    capture_output=True, text=True, timeout=30, check=False)
+                demand(result.returncode == 0,
+                       "failed candidate schedule rejected: " + result.stderr.strip())
+                rows = [json.loads(line) for line in result.stdout.splitlines()]
+                compare_failed_candidate(rows, crash)
+                mutations = [
+                    lambda r: r[-3]["effects"].update(send=[{"kind": "RVReq"}]),
+                    lambda r: r[-3]["post"]["durable"].update(term=2),
+                    lambda r: r[-2].update(input_token=r[-3]["pending_after"] + 1),
+                    lambda r: r[-2]["post"]["durable"].update(votedFor="b"),
+                    lambda r: r[-2]["post"].update(term=2),
+                    lambda r: r[-2]["post"].update(alive=True),
+                    lambda r: r[-2]["effects"].update(halt=False),
+                    lambda r: r[-2]["effects"].update(send=[{"kind": "RVReq"}]),
+                    lambda r: r[-2].update(pending_after=r[-3]["pending_after"]),
+                    lambda r: r[-1]["post"]["durable"].update(term=2),
+                    lambda r: r[-1]["post"].update(votedFor="b"),
+                    lambda r: r[-1]["post"].update(role="Candidate"),
+                    lambda r: r[-1]["effects"].update(send=[{"kind": "RVReq"}]),
+                    lambda r: r[-1].update(pending_after=r[-3]["pending_after"]),
+                ]
+                for index, mutate in enumerate(mutations, 1):
+                    with self.subTest(crash=crash, mutation=index):
+                        changed = copy.deepcopy(rows)
+                        mutate(changed)
+                        with self.assertRaises(BridgeMismatch):
+                            compare_failed_candidate(changed, crash)
+                # Neither a stale fsync callback nor an undurable RVReq can
+                # be invented after failure and recovery.
+                for command, error in (
+                    ("complete b", "pending"),
+                    ("deliver b a RVReq", "message is not available"),
+                ):
+                    invalid = subprocess.run(
+                        [str(RUNNER), "--replay-inputs"],
+                        input="\\n".join(commands + [command]) + "\\n",
+                        capture_output=True, text=True, timeout=30, check=False)
+                    demand(invalid.returncode != 0 and
+                           error in invalid.stderr.lower(),
+                           "failed self-vote unexpectedly accepted " + command)
 
 
     def test_failed_higher_term_vote_never_acknowledges_or_recovers(self):
