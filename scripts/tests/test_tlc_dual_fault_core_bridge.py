@@ -111,7 +111,9 @@ def compare(document, rows):
                 "failed/restarted compiled candidate diverged from model disk")
     for phase in (1, 2):
         values = edges[phase][1]
-        require(node(values, "mem", "s2") == node(values, "disk", "s2"),
+        disk = node(values, "disk", "s2")
+        require(node(values, "mem", "s2") ==
+                {field: disk[field] for field in ("term", "votedFor", "log")},
                 "TLC failed/restarted candidate retained undurable memory")
     require(all(row["effects"]["send"] == []
                 for row in (staged_b, failed_b, restarted_b, retried_b)),
