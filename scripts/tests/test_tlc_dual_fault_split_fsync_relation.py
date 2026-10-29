@@ -285,7 +285,7 @@ def check_request_conservation(document, rows):
     """
     states = third_peer_states(document)
     staged = [i for i, values in enumerate(states)
-              if isinstance(node(values, "pending", "s3"), dict)
+              if isinstance(node(values, "pending", "s3").get("target"), dict)
               and node(values, "pending", "s3")["target"]["votedFor"]
               == model("s2")]
     require(len(staged) == 1 and staged[0] > 0,
@@ -358,7 +358,7 @@ def check_request_conservation_mutations(document, rows):
     changed = copy.deepcopy(document)
     states = third_peer_states(changed)
     staged = next(values for values in states
-                  if isinstance(node(values, "pending", "s3"), dict)
+                  if isinstance(node(values, "pending", "s3").get("target"), dict)
                   and node(values, "pending", "s3")["target"]["votedFor"]
                   == model("s2"))
     node(staged, "pending", "s3")["after"]["$set"][0]["mterm"] = 1
