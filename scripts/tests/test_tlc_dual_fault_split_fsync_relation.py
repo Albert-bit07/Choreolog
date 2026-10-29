@@ -266,6 +266,101 @@ def check_mutations(document, rows):
     return len(mutants)
 
 
+
+def model_term_vote_observation(values):
+    """Observed in-memory and fsynced term/vote, without hiding disk writes."""
+    memory = disk_projection(node(values, "mem", "s3"))
+    durable = disk_projection(node(values, "disk", "s3"))
+    return ((memory["term"], memory["votedFor"]),
+            (durable["term"], durable["votedFor"]))
+
+
+def compiled_term_vote_observation(row):
+    post = row["post"]
+    durable = post["durable"]
+    return ((post["term"], post["votedFor"]),
+            (durable["term"], durable["votedFor"]))
+
+
+def check_identity_projection_counterexample(document, rows):
+    """Falsify a *literal* full-state stuttering claim on this witness.
+
+    A valid refinement could use a different abstraction or a compound model
+    action; these assertions do not establish or disprove such a refinement.
+    """
+    states = third_peer_states(document)
+    observed = [model_term_vote_observation(s) for s in states]
+    staged, synced = rows[-3:-1]
+    combined_stage = compiled_term_vote_observation(staged)
+    combined_fsync = compiled_term_vote_observation(synced)
+
+    require(((2, None), (2, None)) in observed,
+            "model term-only durable observation disappeared")
+    require(combined_stage == ((2, "b"), (0, None)),
+            "compiled combined-write staging observation changed")
+    require(combined_stage not in observed,
+            "literal full-state relation unexpectedly matched combined staging")
+    require(combined_fsync == ((2, "b"), (2, "b")) and
+            combined_fsync in observed,
+            "model and compiled fully durable vote endpoint diverged")
+
+    model_failed = disk_projection(node(states[0], "disk", "s1"))
+    compiled_failed = rows[-5]["post"]["durable"]
+    require((model_failed["term"], model_failed["votedFor"]) == (2, None)
+            and (compiled_failed["term"], compiled_failed["votedFor"]) == (1, "a"),
+            "failed term-only and combined-write durable outcomes conflated")
+    return len(observed)
+
+
+def check_identity_projection_mutations(document, rows):
+    mutants = []
+    changed = copy.deepcopy(document)
+    first = third_peer_states(changed)[0]
+    node(first, "mem", "s3")["term"] = 2
+    node(first, "mem", "s3")["votedFor"] = model("s2")
+    mutants.append((changed, rows))  # Invent a model combined-staging state.
+
+    changed = copy.deepcopy(document)
+    for values in third_peer_states(changed):
+        durable = node(values, "disk", "s3")
+        if durable["term"] == 2 and durable["votedFor"] == model("Nil"):
+            durable["term"] = 1
+    mutants.append((changed, rows))  # Erase the model term-only disk state.
+
+    changed = copy.deepcopy(document)
+    for values in third_peer_states(changed):
+        memory = node(values, "mem", "s3")
+        durable = node(values, "disk", "s3")
+        if (memory["term"] == 2 and memory["votedFor"] == model("s2")
+                and durable["term"] == 2
+                and durable["votedFor"] == model("s2")):
+            memory["votedFor"] = model("Nil")
+    mutants.append((changed, rows))  # Erase the matching durable endpoint.
+
+    for offset, location, field, value in (
+        (-3, ("post",), "votedFor", None),
+        (-3, ("post", "durable"), "term", 2),
+        (-2, ("post", "durable"), "votedFor", None),
+        (-2, ("post",), "term", 1),
+        (-5, ("post", "durable"), "term", 2),
+    ):
+        changed = copy.deepcopy(rows)
+        target = changed[offset]
+        for key in location:
+            target = target[key]
+        target[field] = value
+        mutants.append((document, changed))
+
+    for index, (doc, core) in enumerate(mutants, 1):
+        try:
+            check_identity_projection_counterexample(doc, core)
+        except (ProjectionMismatch, KeyError, TypeError, ValueError, IndexError):
+            continue
+        raise ProjectionMismatch(
+            f"literal projection counterexample mutation {index} escaped")
+    return len(mutants)
+
+
 def main():
     if len(sys.argv) != 4:
         raise ProjectionMismatch("usage: split_fsync_relation.py RUNNER MODEL CONFIG")
@@ -282,8 +377,12 @@ def main():
     compare(document, rows)
     transitions = check_relation(document, rows)
     mutations = check_mutations(document, rows)
+    observations = check_identity_projection_counterexample(document, rows)
+    counterexample_mutations = check_identity_projection_mutations(document, rows)
     print(f"Bounded split/combined relation: {transitions} ordered model fsyncs, "
           f"{mutations} negative mutations rejected.")
+    print(f"Literal full-state stuttering counterexample: {observations} model "
+          f"observations, {counterexample_mutations} negative mutations rejected.")
     print("Two model term-only boundaries are unmatched; no full refinement.")
 
 
