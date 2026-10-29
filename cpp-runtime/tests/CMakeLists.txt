@@ -153,3 +153,16 @@ add_test(
           "${PROJECT_SOURCE_DIR}/formal/raft/ReachCombinedCrashAfterApply.cfg"
 )
 set_tests_properties(tlc-combined-core-bridge-tests PROPERTIES TIMEOUT 120)
+
+# Pin a real 32-state dual-persistence TLC witness and compare selected durable
+# C++ checkpoints. Torn term-only model state is NOT the compiled failed write;
+# this is a bounded correspondence check, not full refinement.
+add_test(
+  NAME tlc-dual-fault-core-bridge-tests
+  COMMAND "${Python3_EXECUTABLE}"
+          "${PROJECT_SOURCE_DIR}/scripts/tests/test_tlc_dual_fault_core_bridge.py"
+          "$<TARGET_FILE:choreoos-raft-conformance>"
+          "${PROJECT_SOURCE_DIR}/formal/raft/ChoreoRaftDualPersistenceFaults.tla"
+          "${PROJECT_SOURCE_DIR}/formal/raft/ReachDualPersistenceAlternativeQuorum.cfg"
+)
+set_tests_properties(tlc-dual-fault-core-bridge-tests PROPERTIES TIMEOUT 120)
