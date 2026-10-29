@@ -647,7 +647,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 commands = failed_candidate_schedule(crash)
                 result = subprocess.run(
                     [str(RUNNER), "--replay-inputs"],
-                    input="\\n".join(commands) + "\\n",
+                    input="\n".join(commands) + "\n",
                     capture_output=True, text=True, timeout=30, check=False)
                 demand(result.returncode == 0,
                        "failed candidate schedule rejected: " + result.stderr.strip())
@@ -683,7 +683,7 @@ class CombinedCoreBridgeTests(unittest.TestCase):
                 ):
                     invalid = subprocess.run(
                         [str(RUNNER), "--replay-inputs"],
-                        input="\\n".join(commands + [command]) + "\\n",
+                        input="\n".join(commands + [command]) + "\n",
                         capture_output=True, text=True, timeout=30, check=False)
                     demand(invalid.returncode != 0 and
                            error in invalid.stderr.lower(),
