@@ -30,14 +30,19 @@ def third_peer_states(document):
     return states
 
 
-def granted_replies(values):
+def third_peer_positive_replies(values):
+    """All positive replies from s3, including misrouted or stale-term grants."""
     return [msg for msg, count in raw_messages(values["net"])
             for _ in range(count)
             if msg.get("mtype") == "RVResp"
             and msg.get("msrc") == model("s3")
-            and msg.get("mdst") == model("s2")
-            and msg.get("mterm") == 2
             and msg.get("granted") is True]
+
+
+def granted_replies(values):
+    return [msg for msg in third_peer_positive_replies(values)
+            if msg.get("mdst") == model("s2")
+            and msg.get("mterm") == 2]
 
 
 def check_relation(document, rows):
@@ -78,9 +83,12 @@ def check_relation(document, rows):
             node(states[term_at], "pending", "s3") == model("Nil") and
             node(states[vote_at], "pending", "s3") == model("Nil"),
             "model staged term/vote writes were not separately fsynced")
-    require(all(not granted_replies(s) for s in states[:vote_at]) and
+    # Count every positive third-peer response, not just the expected
+    # destination/term: a misrouted or stale-term grant is still a violation.
+    require(all(not third_peer_positive_replies(s) for s in states[:vote_at]) and
+            len(third_peer_positive_replies(states[vote_at])) == 1 and
             len(granted_replies(states[vote_at])) == 1,
-            "model third peer sent a positive vote before durable vote fsync")
+            "model third peer sent an early, duplicate or misidentified grant")
 
     synced_b, staged_a, failed_a, restarted_a, staged_c, synced_c, elected_b = rows[-7:]
     require(staged_c["node"] == synced_c["node"] == "c" and
@@ -144,6 +152,43 @@ def check_mutations(document, rows):
     changed = copy.deepcopy(document)
     node(third_peer_states(changed)[-1], "disk", "s3")["log"] = {"$sequence": [{"term": 99, "val": model("v1")}]}
     mutants.append((changed, rows))
+    # Network mutations: a forged grant before vote fsync, a wrong
+    # destination/term, or a duplicated positive response must all fail.
+    def vote_index(states):
+        return next(i for i, state in enumerate(states)
+                    if disk_projection(node(state, "disk", "s3"))["votedFor"] == "b")
+
+    changed = copy.deepcopy(document)
+    states = third_peer_states(changed)
+    index = vote_index(states)
+    grant = copy.deepcopy(granted_replies(states[index])[0])
+    before = states[index - 1]["net"]
+    if before == {"$sequence": []}:
+        states[index - 1]["net"] = {"$function": [[grant, 1]]}
+    else:
+        before["$function"].append([grant, 1])
+    mutants.append((changed, rows))
+
+    for field, value in (("mdst", model("s1")), ("mterm", 1)):
+        changed = copy.deepcopy(document)
+        states = third_peer_states(changed)
+        index = vote_index(states)
+        matching = granted_replies(states[index])
+        require(len(matching) == 1, "missing baseline third-peer reply")
+        matching[0][field] = value
+        mutants.append((changed, rows))
+
+    changed = copy.deepcopy(document)
+    states = third_peer_states(changed)
+    index = vote_index(states)
+    for pair in raw_messages(states[index]["net"]):
+        if pair[0].get("mtype") == "RVResp" and pair[0].get("msrc") == model("s3") and pair[0].get("granted") is True:
+            pair[1] += 1
+            break
+    else:
+        raise ProjectionMismatch("missing baseline third-peer reply multiplicity")
+    mutants.append((changed, rows))
+
     # Compiled transitions: no early send, exact persistence token, stable
     # durable endpoint and correlated positive reply are all mandatory.
     for offset, path, key, value in (
@@ -155,6 +200,8 @@ def check_mutations(document, rows):
         (-2, ("effects", "send", 0), "request_id", -1),
         (-2, ("effects", "send", 0), "to", "a"),
         (-2, ("effects", "send", 0), "positive", False),
+        (-2, ("effects", "send", 0), "term", 1),
+        (-2, ("effects", "send", 0), "kind", "AEReq"),
         (-5, ("post", "durable"), "term", 2),
     ):
         changed = copy.deepcopy(rows)
