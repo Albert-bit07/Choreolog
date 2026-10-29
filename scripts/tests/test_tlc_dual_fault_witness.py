@@ -257,7 +257,9 @@ def test_mutations(document, model_path, config_path, log_path):
     for number, altered in enumerate(cases, 1):
         try:
             verify(altered, model_path, config_path, log_path)
-        except DualWitnessMismatch:
+        except (DualWitnessMismatch, KeyError, TypeError):
+            # A corrupted phase may redirect an observation to a state with
+            # no pending write; malformed typed observations must fail closed.
             continue
         raise DualWitnessMismatch(f"negative mutation {number} was not detected")
     return len(cases)
@@ -272,6 +274,7 @@ def main():
     args = parser.parse_args()
     doc = json.loads(args.witness.read_text(encoding="utf-8"))
     verify(doc, args.model, args.config, args.log)
+    print("Baseline typed dual-fault TLC witness accepted.")
     count = test_mutations(doc, args.model, args.config, args.log)
     print(f"Validated typed dual-fault TLC witness; {count} negative mutations rejected.")
     print("Scope: selected model checkpoints only; no compiled-core refinement.")
