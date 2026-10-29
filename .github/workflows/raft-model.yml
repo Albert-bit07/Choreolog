@@ -10,6 +10,7 @@ on:
       - 'scripts/tests/test_export_tlc_trace.py'
       - 'scripts/tests/test_tlc_witness_prefix.py'
       - 'scripts/tests/test_combined_tlc_witness.py'
+      - 'scripts/tests/test_tlc_dual_fault_witness.py'
   pull_request:
     paths:
       - 'formal/raft/**'
@@ -19,6 +20,7 @@ on:
       - 'scripts/tests/test_export_tlc_trace.py'
       - 'scripts/tests/test_tlc_witness_prefix.py'
       - 'scripts/tests/test_combined_tlc_witness.py'
+      - 'scripts/tests/test_tlc_dual_fault_witness.py'
 
 permissions:
   contents: read
@@ -137,6 +139,22 @@ jobs:
             echo "::error::Ordered two-failure quorum witness missing; TLC exit code $result"
             exit 1
           fi
+
+      - name: Export and validate typed dual-fault TLC behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/export_tlc_trace.py \
+            --log "$RUNNER_TEMP/dual-persistence-alternative-quorum.txt" \
+            --model formal/raft/ChoreoRaftDualPersistenceFaults.tla \
+            --config formal/raft/ReachDualPersistenceAlternativeQuorum.cfg \
+            --invariant NoDualFailureAlternativeQuorumWitness \
+            --output "$RUNNER_TEMP/dual-persistence-typed.json"
+          python3 scripts/tests/test_tlc_dual_fault_witness.py \
+            --witness "$RUNNER_TEMP/dual-persistence-typed.json" \
+            --model formal/raft/ChoreoRaftDualPersistenceFaults.tla \
+            --config formal/raft/ReachDualPersistenceAlternativeQuorum.cfg \
+            --log "$RUNNER_TEMP/dual-persistence-alternative-quorum.txt"
 
       - name: Preserve bounded dual-persistence TLC witness
         uses: actions/upload-artifact@v4
